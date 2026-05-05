@@ -11,6 +11,7 @@ class FileTreeNode {
     var children: [FileTreeNode] = []
     var isExpanded: Bool = false
     var isLoaded: Bool = false
+    var hasCheckedForChildren: Bool = false
 
     weak var parent: FileTreeNode?
 
@@ -45,15 +46,65 @@ class FileTreeNode {
 
         // For directories, we'll lazy load children
         if isDirectory {
-            // Add placeholder to show expansion arrow
             self.isLoaded = false
+            // Quick check if directory has any content to show disclosure triangle
+            self.hasCheckedForChildren = false
         } else {
             self.isLoaded = true
+            self.hasCheckedForChildren = true
         }
     }
 
-    func loadChildren(showHidden: Bool = false, gitIgnoreChecker: GitIgnoreChecker? = nil) {
-        guard isDirectory && !isLoaded else { return }
+    /// Quick synchronous check if directory has any children (for showing disclosure triangle)
+    func hasChildren(showHidden: Bool = false) -> Bool {
+        guard isDirectory else { return false }
+
+        // If already loaded, check actual children
+        if isLoaded {
+            return !children.isEmpty
+        }
+
+        // Do a quick peek to see if directory has content
+        if !hasCheckedForChildren {
+            do {
+                let contents = try FileManager.default.contentsOfDirectory(
+                    at: url,
+                    includingPropertiesForKeys: [.isHiddenKey],
+                    options: [.skipsPackageDescendants, .skipsSubdirectoryDescendants]
+                )
+
+                // Check if there are any visible items
+                for item in contents {
+                    let name = item.lastPathComponent
+                    if !showHidden && name.hasPrefix(".") {
+                        continue
+                    }
+                    // Found at least one visible item
+                    hasCheckedForChildren = true
+                    return true
+                }
+
+                hasCheckedForChildren = true
+                return false
+            } catch {
+                // If we can't read the directory, assume it might have children
+                // (could be permission issue)
+                return true
+            }
+        }
+
+        // Default to true for directories if we haven't checked yet
+        return true
+    }
+
+    func loadChildren(showHidden: Bool = false, gitIgnoreChecker: GitIgnoreChecker? = nil, completion: (() -> Void)? = nil) {
+        guard isDirectory && !isLoaded else {
+            completion?()
+            return
+        }
+
+        // Mark as checked since we're loading now
+        hasCheckedForChildren = true
 
         do {
             let contents = try FileManager.default.contentsOfDirectory(
@@ -91,24 +142,27 @@ class FileTreeNode {
                 newChildren.append(child)
             }
 
-            DispatchQueue.main.async { [weak self] in
-                self?.children = newChildren
-                self?.isLoaded = true
-            }
+            self.children = newChildren
+            self.isLoaded = true
+            completion?()
 
         } catch {
-            print("Error loading directory contents: \\(error)")
-            DispatchQueue.main.async { [weak self] in
-                self?.isLoaded = true
-            }
+            print("Error loading directory contents: \(error)")
+            self.isLoaded = true
+            completion?()
         }
     }
 
-    func expand(showHidden: Bool = false, gitIgnoreChecker: GitIgnoreChecker? = nil) {
-        guard isDirectory else { return }
+    func expand(showHidden: Bool = false, gitIgnoreChecker: GitIgnoreChecker? = nil, completion: (() -> Void)? = nil) {
+        guard isDirectory else {
+            completion?()
+            return
+        }
 
         if !isLoaded {
-            loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
+            loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker, completion: completion)
+        } else {
+            completion?()
         }
 
         isExpanded = true
@@ -118,11 +172,12 @@ class FileTreeNode {
         isExpanded = false
     }
 
-    func toggle(showHidden: Bool = false, gitIgnoreChecker: GitIgnoreChecker? = nil) {
+    func toggle(showHidden: Bool = false, gitIgnoreChecker: GitIgnoreChecker? = nil, completion: (() -> Void)? = nil) {
         if isExpanded {
             collapse()
+            completion?()
         } else {
-            expand(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
+            expand(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker, completion: completion)
         }
     }
 

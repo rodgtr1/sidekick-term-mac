@@ -5,7 +5,7 @@ protocol TerminalViewControllerDelegate: AnyObject {
     func terminalDidUpdateTitle(_ terminal: TerminalViewController, directory: String, branch: String?)
 }
 
-class TerminalViewController: NSViewController {
+class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate {
     weak var delegate: TerminalViewControllerDelegate?
     private var terminalView: LocalProcessTerminalView!
     private var config: Config
@@ -29,16 +29,8 @@ class TerminalViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupTerminal()
+        startShell()
         startCWDTracking()
-    }
-
-    override func viewDidAppear() {
-        super.viewDidAppear()
-
-        // Start shell after view is fully visible and laid out
-        if terminalView.superview != nil {
-            startShell()
-        }
     }
 
     private func setupTerminal() {
@@ -58,6 +50,9 @@ class TerminalViewController: NSViewController {
 
         terminalView.caretColor = NSColor(hex: "#f5e0dc")!
 
+        // Set delegate to receive process events
+        terminalView.processDelegate = self
+
         setupURLHandling()
 
         view.addSubview(terminalView)
@@ -71,34 +66,33 @@ class TerminalViewController: NSViewController {
     }
 
     private func startShell() {
-        // Use zsh with no initialization files to avoid hanging
-        let shell = "/bin/zsh"
-        let args = ["--no-rcs"]  // Skip all initialization files
+        let shell = getShell()
+        let shellIdiom = "-" + NSString(string: shell).lastPathComponent
 
-        // Get home directory
-        let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+        // Change to home directory before starting shell
+        FileManager.default.changeCurrentDirectoryPath(FileManager.default.homeDirectoryForCurrentUser.path)
 
-        // Minimal environment
-        let environment = [
-            "HOME=\(homeDir)",
-            "TERM=xterm-256color",
-            "TERM_PROGRAM=Sidekick",
-            "USER=\(NSUserName())",
-            "SHELL=\(shell)",
-            "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        ]
+        // Start the shell process - don't pass empty environment, let SwiftTerm handle defaults
+        terminalView.startProcess(executable: shell, execName: shellIdiom)
+    }
 
-        print("🔧 Starting shell: \(shell) with args: \(args)")
-
-        // Start shell
-        terminalView.startProcess(executable: shell, args: args, environment: environment, execName: shell)
-
-        print("✅ Shell process started")
-
-        // Find shell PID after shell starts
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.findShellPID()
+    // Returns the shell associated with the current account
+    private func getShell() -> String {
+        let bufsize = sysconf(_SC_GETPW_R_SIZE_MAX)
+        guard bufsize != -1 else {
+            return "/bin/bash"
         }
+        let buffer = UnsafeMutablePointer<Int8>.allocate(capacity: bufsize)
+        defer {
+            buffer.deallocate()
+        }
+        var pwd = passwd()
+        var result: UnsafeMutablePointer<passwd>? = UnsafeMutablePointer<passwd>.allocate(capacity: 1)
+
+        if getpwuid_r(getuid(), &pwd, buffer, bufsize, &result) != 0 {
+            return "/bin/bash"
+        }
+        return String(cString: pwd.pw_shell)
     }
 
     private func startCWDTracking() {
@@ -164,8 +158,6 @@ class TerminalViewController: NSViewController {
         } catch {
             return nil
         }
-
-        return nil
     }
 
     private func getGitBranchDetached(at path: String) -> String? {
@@ -235,8 +227,34 @@ class TerminalViewController: NSViewController {
         } catch {}
     }
 
-    func processTerminated(_ exitCode: Int32) {
+    // MARK: - LocalProcessTerminalViewDelegate Methods
+
+    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {
+        // Terminal has been resized - SwiftTerm handles this automatically
+    }
+
+    func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
+        // Update window title if needed
+        DispatchQueue.main.async { [weak self] in
+            self?.view.window?.title = "\(title) - Sidekick"
+        }
+    }
+
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        // OSC 7 command received - update current directory
+        if let directory = directory {
+            currentCWD = directory
+            updateTitle()
+        }
+    }
+
+    func processTerminated(source: TerminalView, exitCode: Int32?) {
         handleProcessTerminated()
+        if let exitCode = exitCode {
+            print("Shell process terminated with exit code: \(exitCode)")
+        } else {
+            print("Shell process vanished unexpectedly")
+        }
     }
 
     private func setupURLHandling() {

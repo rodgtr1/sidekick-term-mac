@@ -83,11 +83,11 @@ class FileTreeViewController: NSViewController {
         }
 
         rootNode = FileTreeNode(url: url)
-        rootNode?.expand(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
-
-        DispatchQueue.main.async { [weak self] in
-            self?.outlineView.reloadData()
-            self?.outlineView.expandItem(self?.rootNode)
+        rootNode?.expand(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) { [weak self] in
+            DispatchQueue.main.async {
+                self?.outlineView.reloadData()
+                self?.outlineView.expandItem(self?.rootNode)
+            }
         }
     }
 
@@ -125,8 +125,12 @@ class FileTreeViewController: NSViewController {
         guard row >= 0, let node = outlineView.item(atRow: row) as? FileTreeNode else { return }
 
         if node.isDirectory {
-            node.toggle(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
-            outlineView.reloadItem(node, reloadChildren: true)
+            node.toggle(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) { [weak self, weak node] in
+                guard let self = self, let node = node else { return }
+                DispatchQueue.main.async {
+                    self.outlineView.reloadItem(node, reloadChildren: true)
+                }
+            }
         } else {
             delegate?.fileTree(self, didOpenFile: node.url)
         }
@@ -143,7 +147,12 @@ extension FileTreeViewController: NSOutlineViewDataSource {
 
         if node.isDirectory && !node.isLoaded {
             // Lazy load children when needed
-            node.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
+            node.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) { [weak self, weak node] in
+                guard let self = self, let node = node else { return }
+                DispatchQueue.main.async {
+                    self.outlineView.reloadItem(node, reloadChildren: true)
+                }
+            }
         }
 
         return node.children.count
@@ -163,7 +172,7 @@ extension FileTreeViewController: NSOutlineViewDataSource {
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         guard let node = item as? FileTreeNode else { return false }
-        return node.isDirectory
+        return node.isDirectory && node.hasChildren(showHidden: showHidden)
     }
 }
 
@@ -236,7 +245,12 @@ extension FileTreeViewController: NSOutlineViewDelegate {
         guard let node = item as? FileTreeNode else { return false }
 
         if node.isDirectory && !node.isLoaded {
-            node.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
+            node.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) { [weak self, weak node] in
+                guard let self = self, let node = node else { return }
+                DispatchQueue.main.async {
+                    self.outlineView.reloadItem(node, reloadChildren: true)
+                }
+            }
         }
 
         node.isExpanded = true
