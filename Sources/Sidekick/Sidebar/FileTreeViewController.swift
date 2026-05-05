@@ -65,15 +65,19 @@ class FileTreeViewController: NSViewController {
     }
 
     func loadFileTree(for path: String) {
-        guard path != currentPath else { return }
+        // Find git root if we're in a git project
+        let gitRoot = findGitRoot(from: path)
+        let displayPath = gitRoot ?? path
 
-        currentPath = path
-        let url = URL(fileURLWithPath: path)
+        guard displayPath != currentPath else { return }
+
+        currentPath = displayPath
+        let url = URL(fileURLWithPath: displayPath)
 
         // Check if this is a git repository
         let gitPath = url.appendingPathComponent(".git").path
         if FileManager.default.fileExists(atPath: gitPath) {
-            gitIgnoreChecker = GitIgnoreChecker(rootPath: path)
+            gitIgnoreChecker = GitIgnoreChecker(rootPath: displayPath)
         } else {
             gitIgnoreChecker = nil
         }
@@ -85,6 +89,22 @@ class FileTreeViewController: NSViewController {
             self?.outlineView.reloadData()
             self?.outlineView.expandItem(self?.rootNode)
         }
+    }
+
+    // Find the git repository root by walking up the directory tree
+    private func findGitRoot(from path: String) -> String? {
+        var currentURL = URL(fileURLWithPath: path)
+
+        // Walk up the directory tree looking for .git
+        while currentURL.path != "/" {
+            let gitURL = currentURL.appendingPathComponent(".git")
+            if FileManager.default.fileExists(atPath: gitURL.path) {
+                return currentURL.path
+            }
+            currentURL = currentURL.deletingLastPathComponent()
+        }
+
+        return nil
     }
 
     func toggleHiddenFiles() {

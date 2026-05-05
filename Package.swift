@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
@@ -21,11 +21,18 @@ let package = Package(
                 "SwiftTerm",
                 "TOMLKit",
             ],
-            path: "Sources/Sidekick"
+            path: "Sources/Sidekick",
+            swiftSettings: [
+                .enableUpcomingFeature("BareSlashRegexLiterals"),
+                .unsafeFlags(["-swift-version", "5"])
+            ]
         ),
         .executableTarget(
             name: "SidekickCtl",
-            path: "Sources/SidekickCtl"
+            path: "Sources/SidekickCtl",
+            swiftSettings: [
+                .unsafeFlags(["-swift-version", "5"])
+            ]
         ),
     ]
 )

@@ -50,5 +50,9 @@
     </dict>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSMainNibFile</key>
+    <string></string>
+    <key>LSUIElement</key>
+    <false/>
 </dict>
 </plist>

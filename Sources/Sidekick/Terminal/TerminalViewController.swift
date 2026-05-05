@@ -32,15 +32,30 @@ class TerminalViewController: NSViewController {
         startCWDTracking()
     }
 
+    override func viewDidAppear() {
+        super.viewDidAppear()
+
+        // Start shell after view is fully visible and laid out
+        if terminalView.superview != nil {
+            startShell()
+        }
+    }
+
     private func setupTerminal() {
-        let font = NSFont(name: config.terminal.fontFamily, size: CGFloat(config.terminal.fontSize))
-            ?? NSFont.monospacedSystemFont(ofSize: CGFloat(config.terminal.fontSize), weight: .regular)
+        let font = NSFont(name: config.font.family, size: CGFloat(config.font.size))
+            ?? NSFont.monospacedSystemFont(ofSize: CGFloat(config.font.size), weight: .regular)
 
         terminalView = LocalProcessTerminalView(frame: view.bounds)
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         terminalView.font = font
         terminalView.installColors(ColorPalette.catppuccinMocha)
-        terminalView.layer?.backgroundColor = NSColor(hex: "#1e1e2e")!.cgColor
+
+        // Make sure the view has a visible background
+        terminalView.wantsLayer = true
+        let backgroundColor = NSColor(hex: "#1e1e2e")!
+        terminalView.layer?.backgroundColor = backgroundColor.cgColor
+        terminalView.layer?.isOpaque = true
+
         terminalView.caretColor = NSColor(hex: "#f5e0dc")!
 
         setupURLHandling()
@@ -53,16 +68,34 @@ class TerminalViewController: NSViewController {
             terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             terminalView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+    }
 
-        let shell = config.shell.program.isEmpty ?
-            (ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh") :
-            config.shell.program
-        let args = config.shell.args
-        let environment = ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
+    private func startShell() {
+        // Use zsh with no initialization files to avoid hanging
+        let shell = "/bin/zsh"
+        let args = ["--no-rcs"]  // Skip all initialization files
 
+        // Get home directory
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+
+        // Minimal environment
+        let environment = [
+            "HOME=\(homeDir)",
+            "TERM=xterm-256color",
+            "TERM_PROGRAM=Sidekick",
+            "USER=\(NSUserName())",
+            "SHELL=\(shell)",
+            "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        ]
+
+        print("🔧 Starting shell: \(shell) with args: \(args)")
+
+        // Start shell
         terminalView.startProcess(executable: shell, args: args, environment: environment, execName: shell)
 
-        // SwiftTerm doesn't expose the PID directly, we'll need to find it
+        print("✅ Shell process started")
+
+        // Find shell PID after shell starts
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.findShellPID()
         }
@@ -212,6 +245,8 @@ class TerminalViewController: NSViewController {
     }
 
     deinit {
-        cwdTimer?.invalidate()
+        MainActor.assumeIsolated {
+            cwdTimer?.invalidate()
+        }
     }
 }

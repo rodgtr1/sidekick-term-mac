@@ -92,6 +92,10 @@ class PaneSplitController: NSViewController {
         setActivePane(index: activePaneIndex)
     }
 
+    func closeActivePane() {
+        closePane(index: activePaneIndex)
+    }
+
     func setActivePane(index: Int) {
         guard index >= 0 && index < panes.count else { return }
 

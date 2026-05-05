@@ -1,12 +1,12 @@
 import Foundation
 import Cocoa
 
-class PaneModel: ObservableObject, Identifiable {
+class PaneModel: Identifiable {
     let id = UUID()
-    @Published var isFocused: Bool = false
-    @Published var title: String = ""
-    @Published var currentDirectory: String = ""
-    @Published var gitBranch: String?
+    var isFocused: Bool = false
+    var title: String = ""
+    var currentDirectory: String = ""
+    var gitBranch: String?
 
     var terminalViewController: TerminalViewController?
     var editorViewController: EditorViewController?

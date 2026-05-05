@@ -24,11 +24,11 @@ enum SidebarPanel: String, CaseIterable {
 
     var shortcut: String {
         switch self {
-        case .files: return "Cmd+Shift+E"
-        case .git: return "Cmd+Shift+G"
-        case .search: return "Cmd+Shift+F"
-        case .run: return "Cmd+Shift+R"
-        case .browser: return "Cmd+Shift+W"
+        case .files: return "⌘⇧E"
+        case .git: return "⌘⇧G"
+        case .search: return "⌘⇧F"
+        case .run: return "⌘⇧R"
+        case .browser: return "⌘⇧O"
         }
     }
 }
@@ -95,7 +95,7 @@ class ActivityBarView: NSView {
         button.tag = index
 
         // Add tooltip
-        button.toolTip = "\\(panel.rawValue) (\\(panel.shortcut))"
+        button.toolTip = "\(panel.rawValue) (\(panel.shortcut))"
 
         // Style button
         styleButton(button, isSelected: false)

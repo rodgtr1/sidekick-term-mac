@@ -2,25 +2,37 @@ import Foundation
 import TOMLKit
 
 public struct Config: Codable {
-    public var colors: Colors
-    public var terminal: Terminal
-    public var tasks: Tasks
-    public var diff: Diff
-    public var window: Window
-    public var shell: Shell
+    public var theme: ThemeConfig
+    public var font: FontConfig
+    public var cursor: CursorConfig
+    public var window: WindowConfig
+    public var behavior: BehaviorConfig
+    public var tasks: [Task]
+    public var shell: ShellConfig
+    public var diff: DiffConfig
 
     public init() {
-        self.colors = Colors()
-        self.terminal = Terminal()
-        self.tasks = Tasks()
-        self.diff = Diff()
-        self.window = Window()
-        self.shell = Shell()
+        self.theme = ThemeConfig()
+        self.font = FontConfig()
+        self.cursor = CursorConfig()
+        self.window = WindowConfig()
+        self.behavior = BehaviorConfig()
+        self.tasks = []
+        self.shell = ShellConfig()
+        self.diff = DiffConfig()
     }
 
     public static func load(from path: String = "~/.config/sidekick/config.toml") -> Config {
         let expandedPath = NSString(string: path).expandingTildeInPath
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: expandedPath)),
+
+        // Create default config if doesn't exist
+        let fileURL = URL(fileURLWithPath: expandedPath)
+        if !FileManager.default.fileExists(atPath: expandedPath) {
+            createDefaultConfig(at: fileURL)
+            return Config()
+        }
+
+        guard let data = try? Data(contentsOf: fileURL),
               let tomlString = String(data: data, encoding: .utf8) else {
             return Config()
         }
@@ -34,84 +46,198 @@ public struct Config: Codable {
             return Config()
         }
     }
-}
 
-public struct Colors: Codable {
-    public var foreground: String = "#cdd6f4"
-    public var background: String = "#1e1e2e"
-    public var cursor: String = "#f5e0dc"
-    public var selection: String = "#45475a"
+    private static func createDefaultConfig(at url: URL) {
+        let defaultConfig = """
+[theme]
+# Available themes: catppuccin-mocha
+name = "catppuccin-mocha"
+# Background opacity: 0.0 (fully transparent) to 1.0 (fully opaque)
+opacity = 0.9
 
-    public var black: String = "#45475a"
-    public var red: String = "#f38ba8"
-    public var green: String = "#a6e3a1"
-    public var yellow: String = "#f9e2af"
-    public var blue: String = "#89b4fa"
-    public var magenta: String = "#f5c2e7"
-    public var cyan: String = "#94e2d5"
-    public var white: String = "#bac2de"
+[font]
+# Font family — use any monospace font installed on your system
+family = "Menlo"
+# Size in points
+size = 13
+# Bold text uses bright palette colors (like most terminals)
+bold_is_bright = true
 
-    public var brightBlack: String = "#585b70"
-    public var brightRed: String = "#f38ba8"
-    public var brightGreen: String = "#a6e3a1"
-    public var brightYellow: String = "#f9e2af"
-    public var brightBlue: String = "#89b4fa"
-    public var brightMagenta: String = "#f5c2e7"
-    public var brightCyan: String = "#94e2d5"
-    public var brightWhite: String = "#a6adc8"
+[cursor]
+# shape: block | ibeam | underline
+shape = "block"
+blink = true
 
-    public init() {}
-}
+[window]
+# Inner padding around the terminal content (pixels)
+padding = 8
 
-public struct Terminal: Codable {
-    public var fontFamily: String = "JetBrains Mono"
-    public var fontSize: Double = 13.0
-    public var lineHeight: Double = 1.2
-    public var scrollback: Int = 10000
-    public var copyOnSelect: Bool = true
-    public var pasteOnMiddleClick: Bool = true
+[behavior]
+# Lines of scrollback (-1 for unlimited)
+scrollback_lines = 10000
+# Scroll to bottom when new output appears
+scroll_on_output = false
+# Scroll to bottom when you type
+scroll_on_keystroke = true
+# Clickable URLs
+allow_hyperlinks = true
+# Hide mouse cursor while typing
+mouse_autohide = true
+audible_bell = false
 
-    public init() {}
-}
+[shell]
+# Shell program (leave empty to use $SHELL)
+program = ""
+# Shell arguments
+args = []
+# Default working directory (~ for home)
+default_cwd = "~"
 
-public struct Tasks: Codable {
-    public var global: [Task] = []
+[diff]
+# Number of context lines to show in diffs
+context_lines = 3
 
-    public init() {}
-}
+# Global run-panel tasks (available in every project)
+# [[tasks]]
+# name = "My task"
+# cmd  = "echo hello"
+"""
 
-public struct Task: Codable {
-    public var name: String
-    public var command: String
-    public var llmPrompt: String?
-    public var hotkey: String?
-
-    public init(name: String, command: String, llmPrompt: String? = nil, hotkey: String? = nil) {
-        self.name = name
-        self.command = command
-        self.llmPrompt = llmPrompt
-        self.hotkey = hotkey
+        // Create directory if needed
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                  withIntermediateDirectories: true)
+        try? defaultConfig.write(to: url, atomically: true, encoding: .utf8)
     }
 }
 
-public struct Diff: Codable {
-    public var contextLines: Int = 3
+// MARK: - Theme Configuration
+public struct ThemeConfig: Codable {
+    public var name: String
+    public var opacity: Double
 
-    public init() {}
+    public init() {
+        self.name = "catppuccin-mocha"
+        self.opacity = 0.9
+    }
 }
 
-public struct Window: Codable {
-    public var opacity: Double = 0.95
-    public var blur: Bool = false
-    public var defaultWidth: Int = 1200
-    public var defaultHeight: Int = 800
+// MARK: - Font Configuration
+public struct FontConfig: Codable {
+    public var family: String
+    public var size: Int
+    public var boldIsBright: Bool
 
-    public init() {}
+    enum CodingKeys: String, CodingKey {
+        case family
+        case size
+        case boldIsBright = "bold_is_bright"
+    }
+
+    public init() {
+        self.family = "Menlo"
+        self.size = 13
+        self.boldIsBright = true
+    }
 }
 
-public struct Shell: Codable {
-    public var program: String = ""
-    public var args: [String] = []
+// MARK: - Cursor Configuration
+public struct CursorConfig: Codable {
+    public var shape: String  // block | ibeam | underline
+    public var blink: Bool
 
-    public init() {}
+    public init() {
+        self.shape = "block"
+        self.blink = true
+    }
+}
+
+// MARK: - Window Configuration
+public struct WindowConfig: Codable {
+    public var padding: Int
+
+    public init() {
+        self.padding = 8
+    }
+}
+
+// MARK: - Behavior Configuration
+public struct BehaviorConfig: Codable {
+    public var scrollbackLines: Int
+    public var scrollOnOutput: Bool
+    public var scrollOnKeystroke: Bool
+    public var allowHyperlinks: Bool
+    public var mouseAutohide: Bool
+    public var audibleBell: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case scrollbackLines = "scrollback_lines"
+        case scrollOnOutput = "scroll_on_output"
+        case scrollOnKeystroke = "scroll_on_keystroke"
+        case allowHyperlinks = "allow_hyperlinks"
+        case mouseAutohide = "mouse_autohide"
+        case audibleBell = "audible_bell"
+    }
+
+    public init() {
+        self.scrollbackLines = 10000
+        self.scrollOnOutput = false
+        self.scrollOnKeystroke = true
+        self.allowHyperlinks = true
+        self.mouseAutohide = true
+        self.audibleBell = false
+    }
+}
+
+// MARK: - Shell Configuration
+public struct ShellConfig: Codable {
+    public var program: String
+    public var args: [String]
+    public var defaultCwd: String
+
+    enum CodingKeys: String, CodingKey {
+        case program
+        case args
+        case defaultCwd = "default_cwd"
+    }
+
+    public init() {
+        self.program = ""
+        self.args = []
+        self.defaultCwd = "~"
+    }
+}
+
+// MARK: - Diff Configuration
+public struct DiffConfig: Codable {
+    public var contextLines: Int
+
+    enum CodingKeys: String, CodingKey {
+        case contextLines = "context_lines"
+    }
+
+    public init() {
+        self.contextLines = 3
+    }
+}
+
+// MARK: - Task Configuration
+public struct Task: Codable {
+    public var name: String
+    public var cmd: String
+    public var llmPrompt: String?
+    public var hotkey: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case cmd
+        case llmPrompt = "llm_prompt"
+        case hotkey
+    }
+
+    public init(name: String, cmd: String, llmPrompt: String? = nil, hotkey: String? = nil) {
+        self.name = name
+        self.cmd = cmd
+        self.llmPrompt = llmPrompt
+        self.hotkey = hotkey
+    }
 }

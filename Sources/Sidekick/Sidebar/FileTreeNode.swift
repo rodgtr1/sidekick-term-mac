@@ -2,15 +2,15 @@ import Foundation
 import Cocoa
 import UniformTypeIdentifiers
 
-class FileTreeNode: ObservableObject {
+class FileTreeNode {
     let url: URL
     let name: String
     let isDirectory: Bool
     let isHidden: Bool
 
-    @Published var children: [FileTreeNode] = []
-    @Published var isExpanded: Bool = false
-    @Published var isLoaded: Bool = false
+    var children: [FileTreeNode] = []
+    var isExpanded: Bool = false
+    var isLoaded: Bool = false
 
     weak var parent: FileTreeNode?
 

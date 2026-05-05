@@ -56,6 +56,9 @@ class MainWindowController: NSWindowController {
         setupMainContent()
 
         layoutViews()
+
+        // Create initial tab after all views are set up
+        createNewTab()
     }
 
     private func setupTabBar() {
@@ -63,9 +66,6 @@ class MainWindowController: NSWindowController {
         tabBarView.delegate = self
         tabBarView.translatesAutoresizingMaskIntoConstraints = false
         window?.contentView?.addSubview(tabBarView)
-
-        // Create initial tab
-        createNewTab()
     }
 
     private func setupActivityBar() {
@@ -296,8 +296,52 @@ extension MainWindowController {
         let modifiers = event.modifierFlags
         let keyCode = event.keyCode
 
+        // Ctrl+Tab / Ctrl+Shift+Tab - Cycle through tabs
+        if modifiers.contains(.control) && keyCode == 48 { // Tab key
+            if modifiers.contains(.shift) {
+                // Ctrl+Shift+Tab - Previous tab
+                cycleTabs(forward: false)
+            } else {
+                // Ctrl+Tab - Next tab
+                cycleTabs(forward: true)
+            }
+            return
+        }
+
+        // Cmd+Shift combinations (check these first to avoid conflicts)
+        if modifiers.contains([.command, .shift]) {
+            switch keyCode {
+            case 14: // Cmd+Shift+E (Files)
+                showSidebarPanel(.files)
+                return
+            case 5: // Cmd+Shift+G (Git)
+                showSidebarPanel(.git)
+                return
+            case 3: // Cmd+Shift+F (Search)
+                showSidebarPanel(.search)
+                return
+            case 15: // Cmd+Shift+R (Run)
+                showSidebarPanel(.run)
+                return
+            case 31: // Cmd+Shift+O (Browser) - Fixed from W to O
+                showSidebarPanel(.browser)
+                return
+            case 13: // Cmd+Shift+W (Close Pane)
+                closeCurrentPane()
+                return
+            case 2: // Cmd+Shift+D (Split Down)
+                currentPaneSplitController?.splitPane(direction: .vertical)
+                return
+            case 47: // Cmd+Shift+. (Toggle hidden files)
+                sidebarContainerView.toggleHiddenFiles()
+                return
+            default:
+                break
+            }
+        }
+
         // Cmd key combinations
-        if modifiers.contains(.command) {
+        if modifiers.contains(.command) && !modifiers.contains(.shift) {
             switch keyCode {
             case 17: // Cmd+T (New Tab)
                 createNewTab()
@@ -314,12 +358,6 @@ extension MainWindowController {
             case 2: // Cmd+D (Split Right)
                 currentPaneSplitController?.splitPane(direction: .horizontal)
                 return
-            case 2 where modifiers.contains(.shift): // Cmd+Shift+D (Split Down)
-                currentPaneSplitController?.splitPane(direction: .vertical)
-                return
-            case 2 where modifiers.contains(.shift): // Cmd+Shift+W (Close Pane)
-                // TODO: Implement close pane
-                return
             case 18...26: // Cmd+1-9 (Switch tabs)
                 let tabIndex = Int(keyCode) - 18
                 if tabIndex < tabs.count {
@@ -331,33 +369,25 @@ extension MainWindowController {
             }
         }
 
-        // Cmd+Shift combinations for sidebar panels
-        if modifiers.contains([.command, .shift]) {
-            switch keyCode {
-            case 14: // Cmd+Shift+E (Files)
-                showSidebarPanel(.files)
-                return
-            case 5: // Cmd+Shift+G (Git)
-                showSidebarPanel(.git)
-                return
-            case 3: // Cmd+Shift+F (Search)
-                showSidebarPanel(.search)
-                return
-            case 15: // Cmd+Shift+R (Run)
-                showSidebarPanel(.run)
-                return
-            case 13: // Cmd+Shift+W (Browser)
-                showSidebarPanel(.browser)
-                return
-            case 47: // Cmd+Shift+. (Toggle hidden files)
-                sidebarContainerView.toggleHiddenFiles()
-                return
-            default:
-                break
-            }
-        }
-
         super.keyDown(with: event)
+    }
+
+    private func cycleTabs(forward: Bool) {
+        guard tabs.count > 1 else { return }
+
+        if forward {
+            // Next tab
+            let nextIndex = (activeTabIndex + 1) % tabs.count
+            switchToTab(index: nextIndex)
+        } else {
+            // Previous tab
+            let prevIndex = (activeTabIndex - 1 + tabs.count) % tabs.count
+            switchToTab(index: prevIndex)
+        }
+    }
+
+    private func closeCurrentPane() {
+        currentPaneSplitController?.closeActivePane()
     }
 
     private func toggleSidebar() {
