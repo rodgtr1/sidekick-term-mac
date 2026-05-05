@@ -71,6 +71,8 @@ blink = true
 [window]
 # Inner padding around the terminal content (pixels)
 padding = 8
+# Window opacity: 0.0 (fully transparent) to 1.0 (fully opaque)
+opacity = 0.9
 
 [behavior]
 # Lines of scrollback (-1 for unlimited)
@@ -107,6 +109,25 @@ context_lines = 3
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                   withIntermediateDirectories: true)
         try? defaultConfig.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    public func save(to path: String = "~/.config/sidekick/config.toml") {
+        let expandedPath = NSString(string: path).expandingTildeInPath
+        let fileURL = URL(fileURLWithPath: expandedPath)
+
+        do {
+            let encoder = TOMLEncoder()
+            let toml = try encoder.encode(self)
+            let tomlString = toml.description
+
+            // Create directory if needed
+            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                                   withIntermediateDirectories: true)
+
+            try tomlString.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            print("Failed to save config: \(error)")
+        }
     }
 }
 
@@ -154,9 +175,11 @@ public struct CursorConfig: Codable {
 // MARK: - Window Configuration
 public struct WindowConfig: Codable {
     public var padding: Int
+    public var opacity: Double
 
     public init() {
         self.padding = 8
+        self.opacity = 0.9
     }
 }
 

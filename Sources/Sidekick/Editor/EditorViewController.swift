@@ -189,6 +189,36 @@ class EditorViewController: NSViewController {
         return currentURL?.path
     }
 
+    func navigateToLine(_ line: Int) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self,
+                  let textView = self.textView else { return }
+
+            let content = textView.string
+            let lines = content.components(separatedBy: .newlines)
+
+            guard line > 0 && line <= lines.count else { return }
+
+            // Calculate the character offset for the target line
+            var characterOffset = 0
+            for i in 0..<(line - 1) {
+                if i < lines.count {
+                    characterOffset += lines[i].count + 1 // +1 for newline
+                }
+            }
+
+            // Set the selection to the beginning of the target line
+            let range = NSRange(location: characterOffset, length: 0)
+            textView.setSelectedRange(range)
+
+            // Scroll to make the line visible
+            textView.scrollRangeToVisible(range)
+
+            // Focus the text view
+            textView.window?.makeFirstResponder(textView)
+        }
+    }
+
     deinit {
         NotificationCenter.default.removeObserver(self)
     }

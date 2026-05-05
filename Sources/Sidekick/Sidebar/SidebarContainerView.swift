@@ -3,6 +3,9 @@ import Cocoa
 protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL)
     func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestRunTask command: String)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestPasteCommand command: String)
 }
 
 class SidebarContainerView: NSView {
@@ -95,25 +98,20 @@ class SidebarContainerView: NSView {
             gitPanelVC.delegate = self
             panelControllers[panel] = gitPanelVC
             return gitPanelVC.view
-        default:
-            // Placeholder for other panels
-            let view = NSView()
-            view.wantsLayer = true
-            view.layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
-
-            let label = NSTextField(labelWithString: "\\(panel.rawValue) Panel\\n\\nComing soon...")
-            label.font = NSFont.systemFont(ofSize: 14)
-            label.textColor = NSColor(hex: "#6c7086")
-            label.alignment = .center
-            label.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(label)
-
-            NSLayoutConstraint.activate([
-                label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                label.centerYAnchor.constraint(equalTo: view.centerYAnchor)
-            ])
-
-            return view
+        case .search:
+            let searchPanelVC = SearchPanelViewController()
+            searchPanelVC.delegate = self
+            panelControllers[panel] = searchPanelVC
+            return searchPanelVC.view
+        case .run:
+            let runPanelVC = RunPanelViewController()
+            runPanelVC.delegate = self
+            panelControllers[panel] = runPanelVC
+            return runPanelVC.view
+        case .browser:
+            let browserPanelVC = BrowserPanelViewController()
+            panelControllers[panel] = browserPanelVC
+            return browserPanelVC.view
         }
     }
 
@@ -158,6 +156,16 @@ class SidebarContainerView: NSView {
         if let gitPanelVC = panelControllers[.git] as? GitPanelViewController {
             gitPanelVC.setRepositoryPath(path)
         }
+
+        // Update search panel working directory
+        if let searchPanelVC = panelControllers[.search] as? SearchPanelViewController {
+            searchPanelVC.updateWorkingDirectory(path)
+        }
+
+        // Update run panel working directory
+        if let runPanelVC = panelControllers[.run] as? RunPanelViewController {
+            runPanelVC.updateWorkingDirectory(path)
+        }
     }
 
     func toggleHiddenFiles() {
@@ -186,5 +194,21 @@ extension SidebarContainerView: FileTreeDelegate {
 extension SidebarContainerView: GitPanelDelegate {
     func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String) {
         delegate?.sidebarContainer(self, didRequestDiffFor: filePath)
+    }
+}
+
+extension SidebarContainerView: SearchPanelDelegate {
+    func searchPanel(_ panel: SearchPanelViewController, didRequestOpenFile filePath: String, atLine line: Int) {
+        delegate?.sidebarContainer(self, didRequestOpenFile: filePath, atLine: line)
+    }
+}
+
+extension SidebarContainerView: RunPanelDelegate {
+    func runPanel(_ panel: RunPanelViewController, didRequestRunTask command: String) {
+        delegate?.sidebarContainer(self, didRequestRunTask: command)
+    }
+
+    func runPanel(_ panel: RunPanelViewController, didRequestPasteCommand command: String) {
+        delegate?.sidebarContainer(self, didRequestPasteCommand: command)
     }
 }

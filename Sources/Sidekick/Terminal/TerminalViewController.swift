@@ -262,6 +262,15 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // For now, users can copy URLs manually and open them
     }
 
+    func getCurrentWorkingDirectory() -> String {
+        return currentCWD
+    }
+
+    func send(text: String) {
+        // Send text to the terminal
+        terminalView.send(txt: text)
+    }
+
     deinit {
         MainActor.assumeIsolated {
             cwdTimer?.invalidate()

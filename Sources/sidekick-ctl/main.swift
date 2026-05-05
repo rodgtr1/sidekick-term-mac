@@ -65,15 +65,15 @@ class IPCClient {
     }
 
     func ping() -> Bool {
-        return sendCommand(["command": "ping"])
+        return sendCommand(["action": "ping"])
     }
 
     func newTab(cwd: String) -> Bool {
-        return sendCommand(["command": "new-tab", "cwd": cwd])
+        return sendCommand(["action": "new_tab", "cwd": cwd])
     }
 
     func openDiff(filePath: String) -> Bool {
-        return sendCommand(["command": "open-diff", "file": filePath])
+        return sendCommand(["action": "show_diff", "path": filePath, "old": "", "new": ""])
     }
 
     private func sendCommand(_ command: [String: String]) -> Bool {
@@ -100,10 +100,31 @@ class IPCClient {
 
         do {
             let data = try JSONSerialization.data(withJSONObject: command)
-            let written = data.withUnsafeBytes { bytes in
-                write(socketFD, bytes.bindMemory(to: UInt8.self).baseAddress, data.count)
+            var commandString = String(data: data, encoding: .utf8) ?? ""
+            commandString += "\n" // Add newline for line-based protocol
+
+            let written = commandString.data(using: .utf8)?.withUnsafeBytes { bytes in
+                write(socketFD, bytes.bindMemory(to: UInt8.self).baseAddress, commandString.utf8.count)
+            } ?? 0
+
+            guard written == commandString.utf8.count else { return false }
+
+            // Read response
+            let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 1024)
+            defer { buffer.deallocate() }
+
+            let bytesRead = read(socketFD, buffer, 1024)
+            guard bytesRead > 0 else { return false }
+
+            let responseData = Data(bytes: buffer, count: bytesRead)
+            guard let responseString = String(data: responseData, encoding: .utf8),
+                  let responseJson = responseString.data(using: .utf8),
+                  let response = try? JSONSerialization.jsonObject(with: responseJson) as? [String: Any],
+                  let ok = response["ok"] as? Bool else {
+                return false
             }
-            return written == data.count
+
+            return ok
         } catch {
             return false
         }

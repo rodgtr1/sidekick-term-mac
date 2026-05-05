@@ -11,6 +11,8 @@ class MainWindowController: NSWindowController {
     private var tabs: [TabModel] = []
     private var activeTabIndex: Int = 0
     private var currentPaneSplitController: PaneSplitController?
+    private var quickOpenPanel: QuickOpenPanel?
+    private var preferencesWindowController: PreferencesWindowController?
 
     convenience init() {
         print("🏗️ Creating MainWindowController...")
@@ -41,6 +43,9 @@ class MainWindowController: NSWindowController {
 
         setupUI()
         print("✅ UI setup completed")
+
+        setupIPC()
+        print("✅ IPC server started")
     }
 
     private func setupUI() {
@@ -162,7 +167,7 @@ class MainWindowController: NSWindowController {
         }
     }
 
-    private func createNewTab() {
+    func createNewTab() {
         let tab = TabModel()
         tabs.append(tab)
         activeTabIndex = tabs.count - 1
@@ -256,7 +261,29 @@ extension MainWindowController: SidebarContainerDelegate {
         openDiffViewer(for: filePath)
     }
 
+    func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int) {
+        let url = URL(fileURLWithPath: filePath)
+        openFileInEditor(url, atLine: line)
+    }
+
+    func sidebarContainer(_ container: SidebarContainerView, didRequestRunTask command: String) {
+        runCommandInActiveTerminal(command)
+    }
+
+    func sidebarContainer(_ container: SidebarContainerView, didRequestPasteCommand command: String) {
+        pasteCommandToActiveTerminal(command)
+    }
+
     private func openFileInEditor(_ url: URL) {
+        // Don't try to open directories as files
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+
+        guard exists && !isDirectory.boolValue else {
+            print("Attempted to open directory or non-existent file: \(url.path)")
+            return
+        }
+
         // Create a new editor pane in the current tab
         guard let currentTab = tabs[safe: activeTabIndex] else { return }
 
@@ -269,6 +296,37 @@ extension MainWindowController: SidebarContainerDelegate {
 
         // Update the split view with the new pane
         currentPaneSplitController?.rebuildSplitView(for: currentTab)
+
+        updateTabBar()
+    }
+
+    private func openFileInEditor(_ url: URL, atLine line: Int) {
+        // Don't try to open directories as files
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+
+        guard exists && !isDirectory.boolValue else {
+            print("Attempted to open directory or non-existent file: \(url.path)")
+            return
+        }
+
+        // Create a new editor pane in the current tab
+        guard let currentTab = tabs[safe: activeTabIndex] else { return }
+
+        // Create a new pane for the editor
+        let editorPane = PaneModel()
+        editorPane.createEditorViewController(for: url)
+
+        // Add the editor pane to the current tab
+        currentTab.addPane(editorPane, splitDirection: .horizontal)
+
+        // Update the split view with the new pane
+        currentPaneSplitController?.rebuildSplitView(for: currentTab)
+
+        // Navigate to the specific line
+        if let editorVC = editorPane.editorViewController {
+            editorVC.navigateToLine(line)
+        }
 
         updateTabBar()
     }
@@ -288,6 +346,90 @@ extension MainWindowController: SidebarContainerDelegate {
         currentPaneSplitController?.rebuildSplitView(for: currentTab)
 
         updateTabBar()
+    }
+
+    func showQuickOpen() {
+        guard let window = window else { return }
+
+        // Get current working directory from active terminal
+        let currentWorkingDirectory: String
+        if let activeTab = tabs[safe: activeTabIndex],
+           let terminalPane = activeTab.panes.first(where: { $0.terminalViewController != nil }),
+           let terminalVC = terminalPane.terminalViewController {
+            currentWorkingDirectory = terminalVC.getCurrentWorkingDirectory()
+        } else {
+            currentWorkingDirectory = FileManager.default.currentDirectoryPath
+        }
+
+        // Create or reuse quick open panel
+        if quickOpenPanel == nil {
+            quickOpenPanel = QuickOpenPanel(
+                contentRect: .zero,
+                styleMask: [.titled, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            quickOpenPanel?.quickOpenDelegate = self
+        }
+
+        quickOpenPanel?.show(relativeTo: window, workingDirectory: currentWorkingDirectory)
+    }
+
+    func showPreferences() {
+        if preferencesWindowController == nil {
+            preferencesWindowController = PreferencesWindowController(config: config, mainWindowController: self)
+        }
+
+        preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    func closeCurrentTab() {
+        closeTab(index: activeTabIndex)
+    }
+
+    func saveCurrentFile() {
+        // Save the current file if there's an active editor pane
+        if let activePane = currentPaneSplitController?.activePane,
+           activePane.paneType == .editor,
+           let editor = activePane.editorViewController {
+            _ = editor.saveFile()
+        }
+    }
+
+    private func runCommandInActiveTerminal(_ command: String) {
+        guard let activeTab = tabs[safe: activeTabIndex],
+              let terminalPane = activeTab.panes.first(where: { $0.terminalViewController != nil }),
+              let terminalVC = terminalPane.terminalViewController else {
+            return
+        }
+
+        // Send the command followed by Enter to the terminal
+        let commandWithEnter = command + "\n"
+        terminalVC.send(text: commandWithEnter)
+    }
+
+    private func pasteCommandToActiveTerminal(_ command: String) {
+        guard let activeTab = tabs[safe: activeTabIndex],
+              let terminalPane = activeTab.panes.first(where: { $0.terminalViewController != nil }),
+              let terminalVC = terminalPane.terminalViewController else {
+            return
+        }
+
+        // Send just the command without Enter, so user can edit it
+        terminalVC.send(text: command)
+    }
+
+    private func setupIPC() {
+        IPCServer.shared.delegate = self
+        IPCServer.shared.start()
+    }
+}
+
+// MARK: - QuickOpenPanelDelegate
+extension MainWindowController: QuickOpenPanelDelegate {
+    func quickOpenPanel(_ panel: QuickOpenPanel, didSelectFile filePath: String) {
+        let url = URL(fileURLWithPath: filePath)
+        openFileInEditor(url)
     }
 }
 
@@ -355,6 +497,12 @@ extension MainWindowController {
             case 11: // Cmd+B (Toggle Sidebar)
                 toggleSidebar()
                 return
+            case 35: // Cmd+P (Quick Open)
+                showQuickOpen()
+                return
+            case 43: // Cmd+, (Preferences)
+                showPreferences()
+                return
             case 2: // Cmd+D (Split Right)
                 currentPaneSplitController?.splitPane(direction: .horizontal)
                 return
@@ -390,7 +538,7 @@ extension MainWindowController {
         currentPaneSplitController?.closeActivePane()
     }
 
-    private func toggleSidebar() {
+    func toggleSidebar() {
         sidebarContainerView.toggleVisibility()
         updateMainContentConstraints()
     }
@@ -411,12 +559,43 @@ extension MainWindowController {
         sidebarContainerView.layoutSubtreeIfNeeded()
     }
 
-    private func saveCurrentFile() {
-        // Save the current file if there's an active editor pane
-        if let activePane = currentPaneSplitController?.activePane,
-           activePane.paneType == .editor,
-           let editor = activePane.editorViewController {
-            _ = editor.saveFile()
+}
+
+// MARK: - IPCServerDelegate
+extension MainWindowController: IPCServerDelegate {
+    func ipcServer(_ server: IPCServer, didReceiveCommand command: IPCCommandType) -> IPCResponse {
+        switch command {
+        case .ping:
+            return IPCResponse(ok: true)
+
+        case .newTab(let cwd):
+            // Create new tab with optional working directory
+            createNewTab(workingDirectory: cwd)
+            return IPCResponse(ok: true)
+
+        case .showDiff(let path, _, _):
+            // For now, just open the file - could be enhanced to show actual diff
+            let url = URL(fileURLWithPath: path)
+            openFileInEditor(url)
+            return IPCResponse(ok: true)
+        }
+    }
+
+    private func createNewTab(workingDirectory: String? = nil) {
+        let newTab = TabModel()
+        tabs.append(newTab)
+
+        // Switch to the new tab
+        activeTabIndex = tabs.count - 1
+        switchToTab(index: activeTabIndex)
+
+        updateTabBar()
+
+        // If a working directory was specified, change to it in the new terminal
+        if let cwd = workingDirectory,
+           let terminalPane = newTab.panes.first(where: { $0.terminalViewController != nil }),
+           let terminalVC = terminalPane.terminalViewController {
+            terminalVC.send(text: "cd \"\(cwd)\"\n")
         }
     }
 }
