@@ -74,7 +74,8 @@ class TabBarView: NSView {
         // Tab button
         let tabButton = NSButton(frame: tabRect)
         let dirtyIndicator = tab.isDirty ? "● " : ""
-        tabButton.title = "\(dirtyIndicator)\(tab.title)"
+        let readyIndicator = tab.isAgentReady ? "🟢 " : "" // Green circle when agent is ready
+        tabButton.title = "\(readyIndicator)\(dirtyIndicator)\(tab.title)"
         tabButton.bezelStyle = .recessed
         tabButton.font = NSFont.systemFont(ofSize: 12)
         tabButton.target = self
@@ -82,12 +83,18 @@ class TabBarView: NSView {
         tabButton.tag = index
 
         // Style based on active state
+        tabButton.wantsLayer = true
         if index == activeTabIndex {
-            tabButton.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
+            // Active tab: brighter background with blue border
+            tabButton.layer?.backgroundColor = NSColor(hex: "#313244")?.cgColor
             tabButton.contentTintColor = NSColor(hex: "#cdd6f4")
+            tabButton.layer?.borderColor = NSColor(hex: "#89b4fa")?.cgColor
+            tabButton.layer?.borderWidth = 2
         } else {
+            // Inactive tab: darker, no border
             tabButton.layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
             tabButton.contentTintColor = NSColor(hex: "#6c7086")
+            tabButton.layer?.borderWidth = 0
         }
 
         // Close button

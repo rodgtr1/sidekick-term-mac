@@ -11,6 +11,7 @@ class PaneModel: Identifiable {
     var terminalViewController: TerminalViewController?
     var editorViewController: EditorViewController?
     var diffViewController: DiffViewController?
+    var browserViewController: BrowserPanelViewController?
     var view: NSView?
     var paneType: PaneType = .terminal
 
@@ -18,6 +19,7 @@ class PaneModel: Identifiable {
         case terminal
         case editor
         case diff
+        case browser
     }
 
     init() {
@@ -36,12 +38,20 @@ class PaneModel: Identifiable {
     }
 
     func createEditorViewController(for url: URL) {
+        print("🪟 PaneModel creating editor for: \(url.path)")
         let editorVC = EditorViewController()
         self.editorViewController = editorVC
+
+        // Ensure view is loaded by accessing it
+        print("🪟 Accessing editor view...")
+        _ = editorVC.view
+
         self.view = editorVC.view
         self.paneType = .editor
+        print("🪟 Editor view set, view size: \(editorVC.view.bounds)")
 
         // Open the file
+        print("🪟 Opening file in editor...")
         editorVC.openFile(url)
 
         // Update title based on filename
@@ -49,6 +59,7 @@ class PaneModel: Identifiable {
 
         // Observe editor dirty state changes
         observeEditorDirtyState(editorVC)
+        print("🪟 Editor pane setup complete")
     }
 
     private func observeEditorDirtyState(_ editorVC: EditorViewController) {
@@ -73,6 +84,10 @@ class PaneModel: Identifiable {
     func createDiffViewController(for filePath: String) {
         let diffVC = DiffViewController()
         self.diffViewController = diffVC
+
+        // Ensure view is loaded by accessing it
+        _ = diffVC.view
+
         self.view = diffVC.view
         self.paneType = .diff
 
@@ -82,6 +97,20 @@ class PaneModel: Identifiable {
         // Update title based on filename
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent
         updateTitleForDiff(fileName: fileName)
+    }
+
+    func createBrowserViewController() {
+        let browserVC = BrowserPanelViewController()
+        self.browserViewController = browserVC
+
+        // Ensure view is loaded by accessing it
+        _ = browserVC.view
+
+        self.view = browserVC.view
+        self.paneType = .browser
+
+        // Update title
+        title = "Browser"
     }
 
     private func updateTitleForEditor(fileName: String) {
@@ -108,6 +137,13 @@ class PaneModel: Identifiable {
 
         currentDirectory = directory
         gitBranch = branch
+
+        // Notify that the pane title has changed
+        NotificationCenter.default.post(
+            name: NSNotification.Name("PaneTitleChanged"),
+            object: self,
+            userInfo: ["title": title]
+        )
     }
 
     func focus() {
@@ -115,7 +151,7 @@ class PaneModel: Identifiable {
 
         switch paneType {
         case .terminal:
-            terminalViewController?.view.window?.makeFirstResponder(terminalViewController?.view)
+            terminalViewController?.focusTerminal()
         case .editor:
             if let textView = editorViewController?.view.subviews.first(where: { $0 is NSScrollView })?.subviews.first(where: { $0 is NSTextView }) as? NSTextView {
                 editorViewController?.view.window?.makeFirstResponder(textView)
@@ -124,6 +160,9 @@ class PaneModel: Identifiable {
             if let textView = diffViewController?.view.subviews.first(where: { $0 is NSScrollView })?.subviews.first(where: { $0 is NSTextView }) as? NSTextView {
                 diffViewController?.view.window?.makeFirstResponder(textView)
             }
+        case .browser:
+            // Focus on the browser view
+            browserViewController?.view.window?.makeFirstResponder(browserViewController?.view)
         }
     }
 
@@ -135,6 +174,7 @@ class PaneModel: Identifiable {
         terminalViewController = nil
         editorViewController = nil
         diffViewController = nil
+        browserViewController = nil
         view = nil
     }
 }

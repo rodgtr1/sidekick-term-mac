@@ -7,7 +7,7 @@ public struct Config: Codable {
     public var cursor: CursorConfig
     public var window: WindowConfig
     public var behavior: BehaviorConfig
-    public var tasks: [Task]
+    public var tasks: [Task]?  // Make optional since it's not always in config
     public var shell: ShellConfig
     public var diff: DiffConfig
 

@@ -11,6 +11,7 @@ class MainWindowController: NSWindowController {
     private var tabs: [TabModel] = []
     private var activeTabIndex: Int = 0
     private var currentPaneSplitController: PaneSplitController?
+    private var tabSplitControllers: [UUID: PaneSplitController] = [:] // Map tab IDs to their split controllers
     private var quickOpenPanel: QuickOpenPanel?
     private var preferencesWindowController: PreferencesWindowController?
 
@@ -31,8 +32,10 @@ class MainWindowController: NSWindowController {
         window.title = "Sidekick"
         window.setFrameAutosaveName("MainWindow")
         window.titlebarAppearsTransparent = false
-        window.isOpaque = true  // Make sure window is opaque
-        window.alphaValue = 1.0  // Set to fully opaque for debugging
+        window.isOpaque = false  // Allow transparency
+        window.alphaValue = CGFloat(config.window.opacity)  // Apply opacity from config
+        window.backgroundColor = .clear  // Clear background for blur effect
+
         window.center()  // Center the window on screen
         window.makeKeyAndOrderFront(nil)  // Ensure window is visible
         print("✅ Window configured")
@@ -51,9 +54,15 @@ class MainWindowController: NSWindowController {
     private func setupUI() {
         guard let window = window else { return }
 
-        let contentView = NSView(frame: window.contentView?.bounds ?? .zero)
-        contentView.wantsLayer = true
-        window.contentView = contentView
+        // Create visual effect view for blur as the window's content view
+        let visualEffectView = NSVisualEffectView(frame: window.contentView?.bounds ?? .zero)
+        visualEffectView.blendingMode = .behindWindow
+        visualEffectView.material = .hudWindow
+        visualEffectView.state = .active
+        visualEffectView.autoresizingMask = [.width, .height]
+
+        // Set the visual effect view as the window's content view
+        window.contentView = visualEffectView
 
         setupTabBar()
         setupActivityBar()
@@ -142,6 +151,13 @@ class MainWindowController: NSWindowController {
             name: NSNotification.Name("PaneDirtyStateChanged"),
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(paneTitleChanged(_:)),
+            name: NSNotification.Name("PaneTitleChanged"),
+            object: nil
+        )
     }
 
     @objc private func terminalCWDChanged(_ notification: Notification) {
@@ -167,20 +183,57 @@ class MainWindowController: NSWindowController {
         }
     }
 
+    @objc private func paneTitleChanged(_ notification: Notification) {
+        guard let pane = notification.object as? PaneModel else { return }
+
+        // Find the tab containing this pane
+        for tab in tabs {
+            if tab.panes.contains(where: { $0.id == pane.id }) {
+                // Only update if this is the active pane in the tab
+                if tab.activePane?.id == pane.id {
+                    tab.updateTitleFromActivePane()
+                    updateTabBar()
+                }
+                break
+            }
+        }
+    }
+
     func createNewTab() {
+        // Hide current tab's split controller if exists
+        if let currentController = currentPaneSplitController {
+            currentController.view.isHidden = true
+        }
+
         let tab = TabModel()
         tabs.append(tab)
-        activeTabIndex = tabs.count - 1
 
+        // Mark old tab as inactive
+        if activeTabIndex < tabs.count - 1 {
+            tabs[activeTabIndex].isActive = false
+        }
+
+        activeTabIndex = tabs.count - 1
         tab.isActive = true
+
+        // Initialize the first pane with a terminal
+        if let firstPane = tab.panes.first {
+            firstPane.createTerminalViewController(config: config)
+        }
 
         // Create pane split controller for this tab
         let paneSplitController = PaneSplitController(config: config)
         currentPaneSplitController = paneSplitController
 
-        // Add to main content view
+        // Store the mapping of tab to split controller
+        tabSplitControllers[tab.id] = paneSplitController
+
+        // Add to main content view (this triggers loadView which creates splitView)
         mainContentView.addSubview(paneSplitController.view)
         paneSplitController.view.translatesAutoresizingMaskIntoConstraints = false
+
+        // Now rebuild the split view with the tab's panes
+        paneSplitController.rebuildSplitView(for: tab)
 
         NSLayoutConstraint.activate([
             paneSplitController.view.topAnchor.constraint(equalTo: mainContentView.topAnchor),
@@ -198,17 +251,30 @@ class MainWindowController: NSWindowController {
 
     private func switchToTab(index: Int) {
         guard index >= 0 && index < tabs.count else { return }
+        guard index != activeTabIndex else { return } // Already on this tab
 
-        // Hide current tab content
-        currentPaneSplitController?.view.isHidden = true
+        print("🔄 Switching from tab \(activeTabIndex) to tab \(index)")
+
+        // Hide current tab's split controller
+        if let currentController = currentPaneSplitController {
+            currentController.view.isHidden = true
+            print("  Hiding current controller")
+        }
 
         // Update active state
         tabs[activeTabIndex].isActive = false
         activeTabIndex = index
         tabs[activeTabIndex].isActive = true
 
-        // Show new tab content (simplified for now)
-        currentPaneSplitController?.view.isHidden = false
+        // Get the split controller for the new tab
+        let newTab = tabs[index]
+        if let newController = tabSplitControllers[newTab.id] {
+            currentPaneSplitController = newController
+            newController.view.isHidden = false
+            print("  Showing new controller for tab \(index)")
+        } else {
+            print("  ⚠️ No split controller found for tab \(index)")
+        }
 
         updateTabBar()
     }
@@ -216,15 +282,31 @@ class MainWindowController: NSWindowController {
     private func closeTab(index: Int) {
         guard index >= 0 && index < tabs.count && tabs.count > 1 else { return }
 
+        let tabToClose = tabs[index]
+
+        // Remove and cleanup the split controller for this tab
+        if let controller = tabSplitControllers[tabToClose.id] {
+            controller.view.removeFromSuperview()
+            tabSplitControllers.removeValue(forKey: tabToClose.id)
+        }
+
         tabs.remove(at: index)
 
+        // Adjust active index
         if activeTabIndex >= tabs.count {
             activeTabIndex = tabs.count - 1
         } else if activeTabIndex > index {
             activeTabIndex -= 1
         }
 
-        switchToTab(index: activeTabIndex)
+        // Switch to the new active tab
+        let newTab = tabs[activeTabIndex]
+        if let newController = tabSplitControllers[newTab.id] {
+            currentPaneSplitController = newController
+            newController.view.isHidden = false
+        }
+
+        updateTabBar()
     }
 }
 
@@ -244,7 +326,7 @@ extension MainWindowController: TabBarDelegate {
 
 extension MainWindowController: ActivityBarDelegate {
     func activityBar(_ activityBar: ActivityBarView, didSelectPanel panel: SidebarPanel) {
-        showSidebarPanel(panel)
+        showPanel(panel)
     }
 
     func activityBarDidToggleSidebar(_ activityBar: ActivityBarView) {
@@ -254,7 +336,15 @@ extension MainWindowController: ActivityBarDelegate {
 
 extension MainWindowController: SidebarContainerDelegate {
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL) {
-        openFileInEditor(url)
+        print("📂 Sidebar requested to open file: \(url.path)")
+        // Open file in nvim in the terminal instead of built-in editor
+        openFileInTerminalEditor(url)
+    }
+
+    private func openFileInTerminalEditor(_ url: URL) {
+        let editor = ProcessInfo.processInfo.environment["EDITOR"] ?? "nvim"
+        let command = "\(editor) \"\(url.path)\""
+        runCommandInActiveTerminal(command)
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String) {
@@ -294,8 +384,14 @@ extension MainWindowController: SidebarContainerDelegate {
         // Add the editor pane to the current tab
         currentTab.addPane(editorPane, splitDirection: .horizontal)
 
+        // Set the new pane as active (it's the last pane added)
+        currentTab.activePaneIndex = currentTab.panes.count - 1
+
         // Update the split view with the new pane
         currentPaneSplitController?.rebuildSplitView(for: currentTab)
+
+        // Focus the editor so cursor is active immediately
+        currentPaneSplitController?.setActivePane(index: currentTab.activePaneIndex)
 
         updateTabBar()
     }
@@ -320,6 +416,9 @@ extension MainWindowController: SidebarContainerDelegate {
         // Add the editor pane to the current tab
         currentTab.addPane(editorPane, splitDirection: .horizontal)
 
+        // Set the new pane as active (it's the last pane added)
+        currentTab.activePaneIndex = currentTab.panes.count - 1
+
         // Update the split view with the new pane
         currentPaneSplitController?.rebuildSplitView(for: currentTab)
 
@@ -327,6 +426,9 @@ extension MainWindowController: SidebarContainerDelegate {
         if let editorVC = editorPane.editorViewController {
             editorVC.navigateToLine(line)
         }
+
+        // Focus the editor so cursor is active immediately
+        currentPaneSplitController?.setActivePane(index: currentTab.activePaneIndex)
 
         updateTabBar()
     }
@@ -383,6 +485,21 @@ extension MainWindowController: SidebarContainerDelegate {
         preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
     }
 
+    func openConfigFile() {
+        // Get EDITOR from environment or default to nvim
+        let editor = ProcessInfo.processInfo.environment["EDITOR"] ?? "nvim"
+        let configPath = "~/.config/sidekick/config.toml"
+        let command = "\(editor) \(configPath)"
+
+        print("📝 Opening config file with command: \(command)")
+
+        // Make sure window is focused
+        window?.makeKeyAndOrderFront(nil)
+
+        // Send command to terminal
+        runCommandInActiveTerminal(command)
+    }
+
     func closeCurrentTab() {
         closeTab(index: activeTabIndex)
     }
@@ -397,14 +514,30 @@ extension MainWindowController: SidebarContainerDelegate {
     }
 
     private func runCommandInActiveTerminal(_ command: String) {
-        guard let activeTab = tabs[safe: activeTabIndex],
-              let terminalPane = activeTab.panes.first(where: { $0.terminalViewController != nil }),
-              let terminalVC = terminalPane.terminalViewController else {
+        print("🖥️ runCommandInActiveTerminal called with: \(command)")
+        print("🖥️ tabs.count: \(tabs.count), activeTabIndex: \(activeTabIndex)")
+
+        guard activeTabIndex < tabs.count else {
+            print("❌ activeTabIndex out of bounds!")
+            return
+        }
+
+        let activeTab = tabs[activeTabIndex]
+        print("🖥️ Active tab has \(activeTab.panes.count) panes")
+
+        guard let terminalPane = activeTab.panes.first(where: { $0.terminalViewController != nil }) else {
+            print("❌ No terminal pane found in active tab!")
+            return
+        }
+
+        guard let terminalVC = terminalPane.terminalViewController else {
+            print("❌ Terminal pane has no terminalViewController!")
             return
         }
 
         // Send the command followed by Enter to the terminal
         let commandWithEnter = command + "\n"
+        print("✅ Sending command to terminal: \(commandWithEnter)")
         terminalVC.send(text: commandWithEnter)
     }
 
@@ -454,25 +587,28 @@ extension MainWindowController {
         if modifiers.contains([.command, .shift]) {
             switch keyCode {
             case 14: // Cmd+Shift+E (Files)
-                showSidebarPanel(.files)
+                showPanel(.files)
                 return
             case 5: // Cmd+Shift+G (Git)
-                showSidebarPanel(.git)
+                showPanel(.git)
                 return
             case 3: // Cmd+Shift+F (Search)
-                showSidebarPanel(.search)
+                showPanel(.search)
                 return
             case 15: // Cmd+Shift+R (Run)
-                showSidebarPanel(.run)
-                return
-            case 31: // Cmd+Shift+O (Browser) - Fixed from W to O
-                showSidebarPanel(.browser)
+                showPanel(.run)
                 return
             case 13: // Cmd+Shift+W (Close Pane)
                 closeCurrentPane()
                 return
-            case 2: // Cmd+Shift+D (Split Down)
+            case 2: // Cmd+Shift+D (Split Right)
+                currentPaneSplitController?.splitPane(direction: .horizontal)
+                return
+            case 6: // Cmd+Shift+X (Split Down)
                 currentPaneSplitController?.splitPane(direction: .vertical)
+                return
+            case 17: // Cmd+Shift+T (New Tab)
+                createNewTab()
                 return
             case 47: // Cmd+Shift+. (Toggle hidden files)
                 sidebarContainerView.toggleHiddenFiles()
@@ -505,6 +641,12 @@ extension MainWindowController {
                 return
             case 2: // Cmd+D (Split Right)
                 currentPaneSplitController?.splitPane(direction: .horizontal)
+                return
+            case 33: // Cmd+[ (Focus previous pane)
+                currentPaneSplitController?.focusPreviousPane()
+                return
+            case 30: // Cmd+] (Focus next pane)
+                currentPaneSplitController?.focusNextPane()
                 return
             case 18...26: // Cmd+1-9 (Switch tabs)
                 let tabIndex = Int(keyCode) - 18
@@ -543,7 +685,7 @@ extension MainWindowController {
         updateMainContentConstraints()
     }
 
-    private func showSidebarPanel(_ panel: SidebarPanel) {
+    func showPanel(_ panel: SidebarPanel) {
         sidebarContainerView.showPanel(panel)
         activityBarView.selectPanel(panel)
 
@@ -551,6 +693,11 @@ extension MainWindowController {
             sidebarContainerView.toggleVisibility()
             updateMainContentConstraints()
         }
+    }
+
+    func splitWithBrowser() {
+        print("🌐 MainWindowController: splitWithBrowser called")
+        currentPaneSplitController?.splitWithBrowser(direction: .horizontal)
     }
 
     private func updateMainContentConstraints() {
@@ -577,6 +724,26 @@ extension MainWindowController: IPCServerDelegate {
             // For now, just open the file - could be enhanced to show actual diff
             let url = URL(fileURLWithPath: path)
             openFileInEditor(url)
+            return IPCResponse(ok: true)
+
+        case .agentReady:
+            // Mark the active tab as agent ready
+            if activeTabIndex < tabs.count {
+                tabs[activeTabIndex].isAgentReady = true
+                updateTabBar()
+
+                // Notification: Play sound and bounce dock icon
+                NSSound.beep()
+                NSApp.requestUserAttention(.informationalRequest) // Bounce dock icon once
+            }
+            return IPCResponse(ok: true)
+
+        case .agentBusy:
+            // Mark the active tab as agent busy
+            if activeTabIndex < tabs.count {
+                tabs[activeTabIndex].isAgentReady = false
+                updateTabBar()
+            }
             return IPCResponse(ok: true)
         }
     }

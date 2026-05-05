@@ -9,23 +9,41 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - Auto-detects shell from `$SHELL` environment variable
 - Current working directory tracking with git branch display
 - Catppuccin Mocha color scheme
+- Full copy/paste support (Cmd+C/V)
 
 ✅ **Multi-Tab Interface**
 - Custom tab bar with close buttons
-- Tab switching and management
-- Window title shows current directory + git branch
+- Tab switching with keyboard shortcuts (Ctrl+Tab, Cmd+1-9)
+- Tab title shows current directory + git branch
+- Visual indicator (🟢) on tab when Claude agent is ready
+- Dock icon bounces when agent becomes ready
+- Active tab highlighted with blue border
 
 ✅ **Split Panes**
 - Horizontal splits (side-by-side)
 - Vertical splits (top/bottom)
-- Focus tracking with visual borders
+- Focus tracking with visual borders (blue = active)
+- Pane navigation with Cmd+[ and Cmd+]
 - Up to 4 panes per tab
 
+✅ **Embedded Browser**
+- WKWebView-based browser in split pane (50/50 layout)
+- Navigation controls (back, forward, reload)
+- URL bar with search support
+- Opens alongside terminals and editors
+- Access with Cmd+Shift+O
+
 ✅ **Activity Bar + Sidebar**
-- VS Code-style activity bar with 5 panels
+- VS Code-style activity bar with 4 panels
 - File tree with git integration and hidden file toggle
 - Toggle sidebar visibility
 - SF Symbols icons with tooltips
+
+✅ **Editor Integration**
+- Built-in text editor for file viewing/editing
+- Syntax highlighting support
+- Auto-focus on file open
+- Dirty state tracking (● indicator)
 
 ✅ **Git Panel**
 - Real-time git status with color-coded indicators
@@ -37,21 +55,42 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 ## Keyboard Shortcuts
 
 ### Tabs
-- `Cmd+T` - New tab
+- `Cmd+T` or `Cmd+Shift+T` - New tab
 - `Cmd+W` - Close tab
+- `Ctrl+Tab` - Next tab
+- `Ctrl+Shift+Tab` - Previous tab
 - `Cmd+1-9` - Switch to tab by index
 
 ### Splits
 - `Cmd+D` - Split right (horizontal)
-- `Cmd+Shift+D` - Split down (vertical)
+- `Cmd+Shift+D` - Split right (horizontal, alternative)
+- `Cmd+Shift+X` - Split down (vertical)
+- `Cmd+Shift+W` - Close current pane
 
-### Sidebar
+### Pane Navigation
+- `Cmd+[` - Focus previous pane
+- `Cmd+]` - Focus next pane
+
+### Terminal
+- `Cmd+C` - Copy selected text
+- `Cmd+V` - Paste
+
+### Sidebar Panels
 - `Cmd+B` - Toggle sidebar
 - `Cmd+Shift+E` - Files panel
 - `Cmd+Shift+G` - Git panel
 - `Cmd+Shift+F` - Search panel
 - `Cmd+Shift+R` - Run panel
-- `Cmd+Shift+W` - Browser panel
+
+### Browser
+- `Cmd+Shift+O` - Split with browser (50/50 layout)
+
+### File Operations
+- `Cmd+P` - Quick open file
+- `Cmd+S` - Save current editor file
+
+### System
+- `Cmd+,` - Preferences
 
 ## Quick Start
 
@@ -81,6 +120,27 @@ cp -r build/Sidekick.app /Applications/
 
 # Or if installed system-wide
 sidekick-ctl ping
+```
+
+## IPC Commands
+
+Sidekick supports IPC commands via Unix socket at `~/.config/sidekick/sidekick.sock`:
+
+```bash
+# Notify that Claude agent is ready (shows 🟢 on tab, bounces dock icon, plays sound)
+echo '{"action":"agent_ready"}' | nc -U ~/.config/sidekick/sidekick.sock
+
+# Notify that Claude agent is busy (removes 🟢 from tab)
+echo '{"action":"agent_busy"}' | nc -U ~/.config/sidekick/sidekick.sock
+
+# Create a new tab
+echo '{"action":"new_tab","cwd":"/path/to/dir"}' | nc -U ~/.config/sidekick/sidekick.sock
+
+# Show a diff
+echo '{"action":"show_diff","path":"file.txt","old":"old content","new":"new content"}' | nc -U ~/.config/sidekick/sidekick.sock
+
+# Ping
+echo '{"action":"ping"}' | nc -U ~/.config/sidekick/sidekick.sock
 ```
 
 ## Deployment

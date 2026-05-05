@@ -108,7 +108,7 @@ class RunPanelViewController: NSViewController {
     private func loadTasks() {
         // Load global tasks from config
         let config = Config.load()
-        globalTasks = config.tasks
+        globalTasks = config.tasks ?? []
 
         // Load project tasks from .sidekick.toml
         loadProjectTasks()

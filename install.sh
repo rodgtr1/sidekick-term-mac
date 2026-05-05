@@ -14,6 +14,26 @@ fi
 
 echo "🚀 Installing Sidekick to Applications..."
 
+# Check if Sidekick is running
+if pgrep -x "Sidekick" > /dev/null; then
+    echo "⚠️  Sidekick is currently running. Please quit it first."
+    read -p "   Kill Sidekick now? (y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        killall Sidekick 2>/dev/null || true
+        sleep 1
+    else
+        echo "❌ Installation cancelled. Please quit Sidekick and try again."
+        exit 1
+    fi
+fi
+
+# Remove existing installation if present
+if [ -d "/Applications/${APP_NAME}" ]; then
+    echo "📦 Removing existing Sidekick installation..."
+    sudo rm -rf "/Applications/${APP_NAME}"
+fi
+
 # Copy to Applications
 sudo cp -r "${BUILD_DIR}/${APP_NAME}" /Applications/
 

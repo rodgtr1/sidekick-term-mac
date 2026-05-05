@@ -54,10 +54,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         appMenu.addItem(NSMenuItem.separator())
 
-        // Preferences
-        let preferencesItem = NSMenuItem(title: "Preferences...", action: #selector(showPreferences), keyEquivalent: ",")
-        preferencesItem.target = self
-        appMenu.addItem(preferencesItem)
+        // Edit Config File (Command+,)
+        let editConfigItem = NSMenuItem(title: "Edit Config File...", action: #selector(AppDelegate.editConfigFile), keyEquivalent: ",")
+        editConfigItem.target = self
+        appMenu.addItem(editConfigItem)
 
         appMenu.addItem(NSMenuItem.separator())
 
@@ -91,6 +91,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         mainMenu.addItem(fileMenuItem)
 
+        // Edit Menu
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenuItem.submenu = editMenu
+
+        // Copy
+        let copyItem = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(copyItem)
+
+        // Paste
+        let pasteItem = NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(pasteItem)
+
+        mainMenu.addItem(editMenuItem)
+
         // View Menu
         let viewMenuItem = NSMenuItem()
         let viewMenu = NSMenu(title: "View")
@@ -107,6 +122,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let quickOpenItem = NSMenuItem(title: "Quick Open...", action: #selector(quickOpen), keyEquivalent: "p")
         quickOpenItem.target = self
         viewMenu.addItem(quickOpenItem)
+
+        viewMenu.addItem(NSMenuItem.separator())
+
+        // Activity Bar Panels
+        let filesItem = NSMenuItem(title: "Show Files", action: #selector(showFilesPanel), keyEquivalent: "e")
+        filesItem.keyEquivalentModifierMask = [.command, .shift]
+        filesItem.target = self
+        viewMenu.addItem(filesItem)
+
+        let gitItem = NSMenuItem(title: "Show Git", action: #selector(showGitPanel), keyEquivalent: "g")
+        gitItem.keyEquivalentModifierMask = [.command, .shift]
+        gitItem.target = self
+        viewMenu.addItem(gitItem)
+
+        let searchItem = NSMenuItem(title: "Show Search", action: #selector(showSearchPanel), keyEquivalent: "f")
+        searchItem.keyEquivalentModifierMask = [.command, .shift]
+        searchItem.target = self
+        viewMenu.addItem(searchItem)
+
+        let runItem = NSMenuItem(title: "Show Run", action: #selector(showRunPanel), keyEquivalent: "r")
+        runItem.keyEquivalentModifierMask = [.command, .shift]
+        runItem.target = self
+        viewMenu.addItem(runItem)
+
+        // Split with Browser (Cmd+Shift+O)
+        let splitBrowserItem = NSMenuItem(title: "Split with Browser", action: #selector(splitWithBrowser), keyEquivalent: "o")
+        splitBrowserItem.keyEquivalentModifierMask = [.command, .shift]
+        splitBrowserItem.target = self
+        viewMenu.addItem(splitBrowserItem)
 
         mainMenu.addItem(viewMenuItem)
 
@@ -129,10 +173,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = mainMenu
     }
 
-    @objc private func showPreferences() {
-        mainWindowController?.showPreferences()
-    }
-
     @objc private func newTab() {
         mainWindowController?.createNewTab()
     }
@@ -151,5 +191,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quickOpen() {
         mainWindowController?.showQuickOpen()
+    }
+
+    @objc private func editConfigFile() {
+        print("⌨️ editConfigFile action called")
+        mainWindowController?.openConfigFile()
+    }
+
+    @objc private func showFilesPanel() {
+        mainWindowController?.showPanel(.files)
+    }
+
+    @objc private func showGitPanel() {
+        mainWindowController?.showPanel(.git)
+    }
+
+    @objc private func showSearchPanel() {
+        mainWindowController?.showPanel(.search)
+    }
+
+    @objc private func showRunPanel() {
+        mainWindowController?.showPanel(.run)
+    }
+
+    @objc private func splitWithBrowser() {
+        print("🌐 AppDelegate: Split with Browser action called")
+        mainWindowController?.splitWithBrowser()
     }
 }

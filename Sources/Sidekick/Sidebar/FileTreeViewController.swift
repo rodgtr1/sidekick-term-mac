@@ -22,7 +22,9 @@ class FileTreeViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupOutlineView()
-        loadFileTree(for: FileManager.default.currentDirectoryPath)
+        // Start with home directory instead of root
+        let initialPath = FileManager.default.homeDirectoryForCurrentUser.path
+        loadFileTree(for: initialPath)
     }
 
     private func setupOutlineView() {
@@ -65,28 +67,52 @@ class FileTreeViewController: NSViewController {
     }
 
     func loadFileTree(for path: String) {
+        print("🌳 loadFileTree called with path: \(path)")
         // Find git root if we're in a git project
         let gitRoot = findGitRoot(from: path)
         let displayPath = gitRoot ?? path
+        print("🌳 displayPath: \(displayPath), gitRoot: \(gitRoot ?? "none")")
 
-        guard displayPath != currentPath else { return }
+        guard displayPath != currentPath else {
+            print("🌳 Skipping - already loaded: \(displayPath)")
+            return
+        }
 
         currentPath = displayPath
         let url = URL(fileURLWithPath: displayPath)
+        print("🌳 Creating root node for: \(url.path)")
 
         // Check if this is a git repository
         let gitPath = url.appendingPathComponent(".git").path
         if FileManager.default.fileExists(atPath: gitPath) {
             gitIgnoreChecker = GitIgnoreChecker(rootPath: displayPath)
+            // Reload tree when git ignore data finishes loading
+            gitIgnoreChecker?.onLoadComplete = { [weak self] in
+                guard let self = self else { return }
+                print("🔄 GitIgnore data loaded, refreshing tree")
+                // Reload the root node to apply git ignore filtering
+                self.rootNode?.isLoaded = false
+                self.rootNode?.loadChildren(showHidden: self.showHidden, gitIgnoreChecker: self.gitIgnoreChecker) { [weak self] in
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        self.outlineView.reloadData()
+                        self.outlineView.expandItem(self.rootNode)
+                    }
+                }
+            }
         } else {
             gitIgnoreChecker = nil
         }
 
         rootNode = FileTreeNode(url: url)
-        rootNode?.expand(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) { [weak self] in
+        // Load the root's children synchronously so they're available immediately
+        rootNode?.isExpanded = true
+        rootNode?.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) { [weak self] in
             DispatchQueue.main.async {
-                self?.outlineView.reloadData()
-                self?.outlineView.expandItem(self?.rootNode)
+                guard let self = self else { return }
+                print("📁 Root node loaded with \(self.rootNode?.children.count ?? 0) children")
+                self.outlineView.reloadData()
+                self.outlineView.expandItem(self.rootNode)
             }
         }
     }
@@ -143,22 +169,18 @@ class FileTreeViewController: NSViewController {
 extension FileTreeViewController: NSOutlineViewDataSource {
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         if item == nil {
-            return rootNode != nil ? 1 : 0
+            let count = rootNode != nil ? 1 : 0
+            print("📊 numberOfChildrenOfItem(nil) = \(count)")
+            return count
         }
 
         guard let node = item as? FileTreeNode else { return 0 }
 
-        if node.isDirectory && !node.isLoaded {
-            // Lazy load children when needed
-            node.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) { [weak self, weak node] in
-                guard let self = self, let node = node else { return }
-                DispatchQueue.main.async {
-                    self.outlineView.reloadItem(node, reloadChildren: true)
-                }
-            }
-        }
-
-        return node.children.count
+        // Return children count only if loaded
+        // Loading happens in shouldExpandItem delegate method
+        let count = node.isLoaded ? node.children.count : 0
+        print("📊 numberOfChildrenOfItem(\(node.name)) = \(count), isLoaded: \(node.isLoaded), isExpanded: \(node.isExpanded)")
+        return count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {

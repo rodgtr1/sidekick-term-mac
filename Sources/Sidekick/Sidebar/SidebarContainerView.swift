@@ -108,10 +108,6 @@ class SidebarContainerView: NSView {
             runPanelVC.delegate = self
             panelControllers[panel] = runPanelVC
             return runPanelVC.view
-        case .browser:
-            let browserPanelVC = BrowserPanelViewController()
-            panelControllers[panel] = browserPanelVC
-            return browserPanelVC.view
         }
     }
 

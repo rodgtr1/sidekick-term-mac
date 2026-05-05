@@ -71,6 +71,44 @@ class PaneSplitController: NSViewController {
         }
     }
 
+    func splitWithBrowser(direction: SplitDirection) {
+        print("🌐 splitWithBrowser called, current panes: \(panes.count), max: \(Limits.maxPanesPerTab)")
+        guard panes.count < Limits.maxPanesPerTab else {
+            print("⚠️ Max panes reached, not adding browser")
+            return
+        }
+
+        print("🌐 Creating browser pane...")
+        let newPane = PaneModel()
+        newPane.createBrowserViewController()
+        panes.append(newPane)
+        print("🌐 Browser pane created and added, total panes now: \(panes.count)")
+
+        if direction == .vertical {
+            // Convert to vertical split (top/bottom)
+            splitView.isVertical = false
+        } else {
+            // For horizontal split (side by side), ensure splitView is vertical
+            splitView.isVertical = true
+        }
+
+        if let paneView = newPane.view {
+            splitView.addArrangedSubview(paneView)
+            setActivePane(index: panes.count - 1)
+            addPaneBorder(to: paneView, isActive: false)
+
+            // Set 50/50 split after layout
+            if panes.count == 2 {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    let totalSize = self.splitView.isVertical ? self.splitView.bounds.width : self.splitView.bounds.height
+                    let dividerPosition = totalSize / 2.0
+                    self.splitView.setPosition(dividerPosition, ofDividerAt: 0)
+                }
+            }
+        }
+    }
+
     func closePane(index: Int) {
         guard index >= 0 && index < panes.count && panes.count > 1 else { return }
 
@@ -113,6 +151,18 @@ class PaneSplitController: NSViewController {
         if let paneView = panes[activePaneIndex].view {
             addPaneBorder(to: paneView, isActive: true)
         }
+    }
+
+    func focusNextPane() {
+        guard panes.count > 1 else { return }
+        let nextIndex = (activePaneIndex + 1) % panes.count
+        setActivePane(index: nextIndex)
+    }
+
+    func focusPreviousPane() {
+        guard panes.count > 1 else { return }
+        let prevIndex = (activePaneIndex - 1 + panes.count) % panes.count
+        setActivePane(index: prevIndex)
     }
 
     private func addPaneBorder(to view: NSView, isActive: Bool) {
@@ -160,6 +210,7 @@ class PaneSplitController: NSViewController {
     }
 
     func rebuildSplitView(for tab: TabModel) {
+        print("🔧 rebuildSplitView called with \(tab.panes.count) panes")
         // Clear existing views
         for arrangedSubview in splitView.arrangedSubviews {
             splitView.removeArrangedSubview(arrangedSubview)
@@ -173,8 +224,45 @@ class PaneSplitController: NSViewController {
         // Add all pane views to split view
         for (index, pane) in panes.enumerated() {
             if let paneView = pane.view {
+                print("🔧 Adding pane \(index) (\(pane.paneType)) to split view, view bounds: \(paneView.bounds)")
                 splitView.addArrangedSubview(paneView)
                 addPaneBorder(to: paneView, isActive: index == activePaneIndex)
+                print("🔧 After adding, view bounds: \(paneView.bounds)")
+            } else {
+                print("⚠️ Pane \(index) (\(pane.paneType)) has no view!")
+            }
+        }
+
+        print("🔧 Split view now has \(splitView.arrangedSubviews.count) arranged subviews")
+
+        // Force layout update
+        splitView.layout()
+
+        // Set equal distribution for split view (do this after layout in next run loop)
+        if splitView.arrangedSubviews.count == 2 {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                let totalSize = self.splitView.isVertical ? self.splitView.bounds.width : self.splitView.bounds.height
+                let dividerPosition = totalSize / 2.0
+                print("🔧 Setting divider position to: \(dividerPosition) (total: \(totalSize))")
+                self.splitView.setPosition(dividerPosition, ofDividerAt: 0)
+
+                // Force another layout after setting position
+                self.splitView.layout()
+
+                // Log final sizes after adjustment
+                for (index, pane) in self.panes.enumerated() {
+                    if let paneView = pane.view {
+                        print("🔧 After divider adjustment, pane \(index) bounds: \(paneView.bounds)")
+                    }
+                }
+            }
+        }
+
+        // Log sizes before async adjustment
+        for (index, pane) in panes.enumerated() {
+            if let paneView = pane.view {
+                print("🔧 Before divider adjustment, pane \(index) bounds: \(paneView.bounds)")
             }
         }
 

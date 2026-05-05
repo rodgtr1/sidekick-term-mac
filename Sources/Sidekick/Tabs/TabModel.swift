@@ -6,6 +6,7 @@ class TabModel: ObservableObject, Identifiable {
     @Published var title: String = "Terminal"
     @Published var isActive: Bool = false
     @Published var isDirty: Bool = false
+    @Published var isAgentReady: Bool = false // Indicator that Claude agent is ready
     @Published var panes: [PaneModel] = []
     @Published var activePaneIndex: Int = 0
 
@@ -49,6 +50,20 @@ class TabModel: ObservableObject, Identifiable {
         // Update focus for all panes
         for (i, pane) in panes.enumerated() {
             pane.isFocused = (i == index)
+        }
+
+        // Update tab title from active pane
+        updateTitleFromActivePane()
+    }
+
+    func updateTitleFromActivePane() {
+        guard let activePane = activePane else { return }
+
+        // Use the active pane's title (which includes directory and git branch)
+        if !activePane.title.isEmpty {
+            title = activePane.title
+        } else {
+            title = "Terminal"
         }
     }
 

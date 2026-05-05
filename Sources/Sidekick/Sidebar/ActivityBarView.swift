@@ -10,7 +10,6 @@ enum SidebarPanel: String, CaseIterable {
     case git = "Git"
     case search = "Search"
     case run = "Run"
-    case browser = "Browser"
 
     var icon: String {
         switch self {
@@ -18,7 +17,6 @@ enum SidebarPanel: String, CaseIterable {
         case .git: return "arrow.branch"
         case .search: return "magnifyingglass"
         case .run: return "play.circle"
-        case .browser: return "globe"
         }
     }
 
@@ -28,7 +26,6 @@ enum SidebarPanel: String, CaseIterable {
         case .git: return "⌘⇧G"
         case .search: return "⌘⇧F"
         case .run: return "⌘⇧R"
-        case .browser: return "⌘⇧O"
         }
     }
 }

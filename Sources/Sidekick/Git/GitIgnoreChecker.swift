@@ -4,16 +4,20 @@ class GitIgnoreChecker {
     private let rootPath: String
     private var ignoredFiles: Set<String> = []
     private var isLoaded = false
+    private var isLoading = false
+    private let queue = DispatchQueue(label: "com.sidekick.gitignore", qos: .userInitiated)
+
+    var onLoadComplete: (() -> Void)?
 
     init(rootPath: String) {
         self.rootPath = rootPath
-        loadIgnoredFiles()
+        // Don't load synchronously in init - start async load
+        startLoadingIgnoredFiles()
     }
 
     func isIgnored(path: String) -> Bool {
-        if !isLoaded {
-            loadIgnoredFiles()
-        }
+        // Return false if not loaded yet - we'll refresh the UI when loading completes
+        guard isLoaded else { return false }
 
         // Convert to relative path from root
         let relativePath = path.hasPrefix(rootPath)
@@ -21,6 +25,16 @@ class GitIgnoreChecker {
             : path
 
         return ignoredFiles.contains(relativePath)
+    }
+
+    private func startLoadingIgnoredFiles() {
+        guard !isLoading && !isLoaded else { return }
+        isLoading = true
+
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.loadIgnoredFiles()
+        }
     }
 
     private func loadIgnoredFiles() {
@@ -43,10 +57,20 @@ class GitIgnoreChecker {
                     ignoredFiles = Set(output.split(separator: "\n").map { String($0) })
                 }
             }
-            isLoaded = true
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.isLoaded = true
+                self.isLoading = false
+                self.onLoadComplete?()
+            }
         } catch {
             // Git not available or not a git repo, ignore silently
-            isLoaded = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.isLoaded = true
+                self.isLoading = false
+            }
         }
     }
 }

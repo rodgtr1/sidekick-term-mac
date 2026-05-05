@@ -26,6 +26,8 @@ enum IPCCommandType {
     case ping
     case newTab(cwd: String?)
     case showDiff(path: String, old: String, new: String)
+    case agentReady
+    case agentBusy
 
     static func from(_ command: IPCCommand) -> IPCCommandType? {
         switch command.action {
@@ -38,6 +40,10 @@ enum IPCCommandType {
                   let old = command.old,
                   let new = command.new else { return nil }
             return .showDiff(path: path, old: old, new: new)
+        case "agent_ready":
+            return .agentReady
+        case "agent_busy":
+            return .agentBusy
         default:
             return nil
         }

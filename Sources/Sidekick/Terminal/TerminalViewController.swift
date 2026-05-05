@@ -33,6 +33,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         startCWDTracking()
     }
 
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // Focus terminal after view appears
+        focusTerminal()
+    }
+
     private func setupTerminal() {
         let font = NSFont(name: config.font.family, size: CGFloat(config.font.size))
             ?? NSFont.monospacedSystemFont(ofSize: CGFloat(config.font.size), weight: .regular)
@@ -40,15 +46,21 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         terminalView = LocalProcessTerminalView(frame: view.bounds)
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         terminalView.font = font
+
+        // Install Catppuccin Mocha color palette
         terminalView.installColors(ColorPalette.catppuccinMocha)
+
+        // Set terminal foreground and background colors
+        terminalView.nativeForegroundColor = NSColor(hex: "#cdd6f4")!  // Catppuccin text
+        terminalView.nativeBackgroundColor = NSColor(hex: "#1e1e2e")!  // Catppuccin base
 
         // Make sure the view has a visible background
         terminalView.wantsLayer = true
-        let backgroundColor = NSColor(hex: "#1e1e2e")!
-        terminalView.layer?.backgroundColor = backgroundColor.cgColor
+        terminalView.layer?.backgroundColor = NSColor(hex: "#1e1e2e")!.cgColor
         terminalView.layer?.isOpaque = true
 
-        terminalView.caretColor = NSColor(hex: "#f5e0dc")!
+        // Set caret (cursor) color
+        terminalView.caretColor = NSColor(hex: "#f5e0dc")!  // Catppuccin rosewater
 
         // Set delegate to receive process events
         terminalView.processDelegate = self
@@ -57,23 +69,36 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         view.addSubview(terminalView)
 
+        // Apply padding from config
+        let padding = CGFloat(config.window.padding)
         NSLayoutConstraint.activate([
-            terminalView.topAnchor.constraint(equalTo: view.topAnchor),
-            terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            terminalView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            terminalView.topAnchor.constraint(equalTo: view.topAnchor, constant: padding),
+            terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: padding),
+            terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -padding),
+            terminalView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -padding)
         ])
     }
 
     private func startShell() {
         let shell = getShell()
         let shellIdiom = "-" + NSString(string: shell).lastPathComponent
+        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
 
         // Change to home directory before starting shell
-        FileManager.default.changeCurrentDirectoryPath(FileManager.default.homeDirectoryForCurrentUser.path)
+        // This sets the working directory for the child process
+        FileManager.default.changeCurrentDirectoryPath(homeDirectory)
 
-        // Start the shell process - don't pass empty environment, let SwiftTerm handle defaults
+        // Start the shell process - let SwiftTerm handle environment setup
+        // SwiftTerm will automatically set TERM, HOME, PWD and other required variables
         terminalView.startProcess(executable: shell, execName: shellIdiom)
+
+        // Find the shell PID after a brief delay to allow process to start
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.findShellPID()
+            // Trigger initial CWD update
+            self?.currentCWD = homeDirectory
+            self?.updateTitle()
+        }
     }
 
     // Returns the shell associated with the current account
@@ -234,16 +259,21 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
-        // Update window title if needed
-        DispatchQueue.main.async { [weak self] in
-            self?.view.window?.title = "\(title) - Sidekick"
-        }
+        // Don't update the window title - we use tab titles instead
+        // The window title stays as "Sidekick"
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         // OSC 7 command received - update current directory
+        // The directory comes as a file:// URL, convert to path
         if let directory = directory {
-            currentCWD = directory
+            // Try to parse as URL and extract path
+            if let url = URL(string: directory), url.scheme == "file" {
+                currentCWD = url.path
+            } else {
+                // Fall back to using it as-is if not a URL
+                currentCWD = directory
+            }
             updateTitle()
         }
     }
@@ -266,9 +296,25 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         return currentCWD
     }
 
+    // MARK: - Copy/Paste Support
+    // SwiftTerm's LocalProcessTerminalView already handles copy/paste through the responder chain
+    // These methods ensure the terminal view receives the copy/paste commands
+
+    @objc func copy(_ sender: Any?) {
+        terminalView.copy(sender as Any)
+    }
+
+    @objc func paste(_ sender: Any?) {
+        terminalView.paste(sender as Any)
+    }
+
     func send(text: String) {
         // Send text to the terminal
         terminalView.send(txt: text)
+    }
+
+    func focusTerminal() {
+        view.window?.makeFirstResponder(terminalView)
     }
 
     deinit {

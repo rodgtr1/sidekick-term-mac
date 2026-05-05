@@ -21,15 +21,18 @@ class EditorViewController: NSViewController {
     }
 
     override func loadView() {
+        print("📝 EditorViewController loadView() called")
         view = NSView()
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        print("📝 EditorViewController viewDidLoad() called")
         setupTextView()
     }
 
     private func setupTextView() {
+        print("📝 EditorViewController setupTextView() called")
         scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
@@ -95,6 +98,7 @@ class EditorViewController: NSViewController {
     }
 
     func openFile(_ url: URL) {
+        print("📝 EditorViewController openFile() called with: \(url.path)")
         // Check file size limit
         if Limits.isFileTooLarge(path: url.path) {
             showError("File is too large to open (max \(Limits.maxFileSize / 1024 / 1024)MB)")
