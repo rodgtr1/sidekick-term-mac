@@ -1,0 +1,513 @@
+import Cocoa
+import Combine
+
+protocol GitPanelDelegate: AnyObject {
+    func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String)
+}
+
+class GitPanelViewController: NSViewController {
+    private var gitStatusModel: GitStatusModel!
+    private var cancellables = Set<AnyCancellable>()
+
+    weak var delegate: GitPanelDelegate?
+
+    // UI Elements
+    private var scrollView: NSScrollView!
+    private var tableView: NSTableView!
+    private var headerView: NSView!
+    private var branchLabel: NSTextField!
+    private var statusLabel: NSTextField!
+    private var commitMessageTextView: NSTextView!
+    private var commitButton: NSButton!
+    private var stageAllButton: NSButton!
+    private var unstageAllButton: NSButton!
+    private var refreshButton: NSButton!
+    private var pullButton: NSButton!
+    private var pushButton: NSButton!
+
+    override func loadView() {
+        view = NSView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        gitStatusModel = GitStatusModel()
+        setupUI()
+        setupBindings()
+    }
+
+    private func setupUI() {
+        setupHeader()
+        setupTableView()
+        setupCommitArea()
+        layoutViews()
+    }
+
+    private func setupHeader() {
+        headerView = NSView()
+        headerView.wantsLayer = true
+        headerView.layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
+        headerView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(headerView)
+
+        // Branch info
+        branchLabel = NSTextField(labelWithString: "main")
+        branchLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        branchLabel.textColor = NSColor(hex: "#89b4fa")
+        branchLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerView.addSubview(branchLabel)
+
+        // Status info
+        statusLabel = NSTextField(labelWithString: "Clean")
+        statusLabel.font = NSFont.systemFont(ofSize: 11)
+        statusLabel.textColor = NSColor(hex: "#a6e3a1")
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerView.addSubview(statusLabel)
+
+        // Refresh button
+        refreshButton = NSButton()
+        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
+        refreshButton.bezelStyle = .shadowlessSquare
+        refreshButton.isBordered = false
+        refreshButton.target = self
+        refreshButton.action = #selector(refreshClicked)
+        refreshButton.translatesAutoresizingMaskIntoConstraints = false
+        headerView.addSubview(refreshButton)
+
+        NSLayoutConstraint.activate([
+            branchLabel.leadingAnchor.constraint(equalTo: headerView.leadingAnchor, constant: 12),
+            branchLabel.topAnchor.constraint(equalTo: headerView.topAnchor, constant: 8),
+
+            statusLabel.leadingAnchor.constraint(equalTo: branchLabel.leadingAnchor),
+            statusLabel.topAnchor.constraint(equalTo: branchLabel.bottomAnchor, constant: 2),
+
+            refreshButton.trailingAnchor.constraint(equalTo: headerView.trailingAnchor, constant: -12),
+            refreshButton.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
+            refreshButton.widthAnchor.constraint(equalToConstant: 20),
+            refreshButton.heightAnchor.constraint(equalToConstant: 20)
+        ])
+    }
+
+    private func setupTableView() {
+        scrollView = NSScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+
+        tableView = NSTableView()
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.headerView = nil
+        tableView.usesAlternatingRowBackgroundColors = false
+        if #available(macOS 12.0, *) {
+            tableView.style = .sourceList
+        } else {
+            tableView.selectionHighlightStyle = .sourceList
+        }
+        tableView.allowsMultipleSelection = true
+
+        // Create columns
+        let statusColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Status"))
+        statusColumn.title = "Status"
+        statusColumn.width = 30
+        statusColumn.minWidth = 30
+        statusColumn.maxWidth = 30
+        tableView.addTableColumn(statusColumn)
+
+        let fileColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("File"))
+        fileColumn.title = "File"
+        fileColumn.isEditable = false
+        tableView.addTableColumn(fileColumn)
+
+        let actionsColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Actions"))
+        actionsColumn.title = "Actions"
+        actionsColumn.width = 80
+        actionsColumn.minWidth = 80
+        actionsColumn.maxWidth = 80
+        tableView.addTableColumn(actionsColumn)
+
+        // Add double-click action for diff viewing
+        tableView.doubleAction = #selector(tableViewDoubleClicked(_:))
+        tableView.target = self
+
+        scrollView.documentView = tableView
+        view.addSubview(scrollView)
+
+        // Add control buttons
+        let buttonStack = NSStackView()
+        buttonStack.orientation = .horizontal
+        buttonStack.spacing = 8
+        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+
+        stageAllButton = NSButton(title: "Stage All", target: self, action: #selector(stageAllClicked))
+        stageAllButton.bezelStyle = .rounded
+        stageAllButton.controlSize = .small
+        buttonStack.addArrangedSubview(stageAllButton)
+
+        unstageAllButton = NSButton(title: "Unstage All", target: self, action: #selector(unstageAllClicked))
+        unstageAllButton.bezelStyle = .rounded
+        unstageAllButton.controlSize = .small
+        buttonStack.addArrangedSubview(unstageAllButton)
+
+        pullButton = NSButton(title: "Pull", target: self, action: #selector(pullClicked))
+        pullButton.bezelStyle = .rounded
+        pullButton.controlSize = .small
+        buttonStack.addArrangedSubview(pullButton)
+
+        pushButton = NSButton(title: "Push", target: self, action: #selector(pushClicked))
+        pushButton.bezelStyle = .rounded
+        pushButton.controlSize = .small
+        buttonStack.addArrangedSubview(pushButton)
+
+        view.addSubview(buttonStack)
+
+        NSLayoutConstraint.activate([
+            buttonStack.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 8),
+            buttonStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            buttonStack.heightAnchor.constraint(equalToConstant: 24)
+        ])
+    }
+
+    private func setupCommitArea() {
+        // Commit message area
+        let commitContainer = NSView()
+        commitContainer.wantsLayer = true
+        commitContainer.layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
+        commitContainer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(commitContainer)
+
+        let commitLabel = NSTextField(labelWithString: "Commit Message")
+        commitLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        commitLabel.textColor = NSColor(hex: "#cdd6f4")
+        commitLabel.translatesAutoresizingMaskIntoConstraints = false
+        commitContainer.addSubview(commitLabel)
+
+        // Text view for commit message
+        let commitScrollView = NSScrollView()
+        commitScrollView.hasVerticalScroller = true
+        commitScrollView.hasHorizontalScroller = false
+        commitScrollView.borderType = .lineBorder
+        commitScrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        commitMessageTextView = NSTextView()
+        commitMessageTextView.isEditable = true
+        commitMessageTextView.isRichText = false
+        commitMessageTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        commitMessageTextView.backgroundColor = NSColor(hex: "#1e1e2e") ?? .textBackgroundColor
+        commitMessageTextView.textColor = NSColor(hex: "#cdd6f4") ?? .textColor
+        commitMessageTextView.insertionPointColor = NSColor(hex: "#f5e0dc") ?? .textColor
+
+        commitScrollView.documentView = commitMessageTextView
+        commitContainer.addSubview(commitScrollView)
+
+        commitButton = NSButton(title: "Commit", target: self, action: #selector(commitClicked))
+        commitButton.bezelStyle = .rounded
+        commitButton.keyEquivalent = "\r"
+        commitButton.keyEquivalentModifierMask = [.command]
+        commitButton.isEnabled = false
+        commitButton.translatesAutoresizingMaskIntoConstraints = false
+        commitContainer.addSubview(commitButton)
+
+        view.addSubview(commitContainer)
+
+        NSLayoutConstraint.activate([
+            commitLabel.topAnchor.constraint(equalTo: commitContainer.topAnchor, constant: 8),
+            commitLabel.leadingAnchor.constraint(equalTo: commitContainer.leadingAnchor, constant: 12),
+
+            commitScrollView.topAnchor.constraint(equalTo: commitLabel.bottomAnchor, constant: 4),
+            commitScrollView.leadingAnchor.constraint(equalTo: commitContainer.leadingAnchor, constant: 12),
+            commitScrollView.trailingAnchor.constraint(equalTo: commitContainer.trailingAnchor, constant: -12),
+            commitScrollView.heightAnchor.constraint(equalToConstant: 60),
+
+            commitButton.topAnchor.constraint(equalTo: commitScrollView.bottomAnchor, constant: 8),
+            commitButton.trailingAnchor.constraint(equalTo: commitContainer.trailingAnchor, constant: -12),
+            commitButton.bottomAnchor.constraint(equalTo: commitContainer.bottomAnchor, constant: -8),
+            commitButton.widthAnchor.constraint(equalToConstant: 80)
+        ])
+    }
+
+    private func layoutViews() {
+        NSLayoutConstraint.activate([
+            headerView.topAnchor.constraint(equalTo: view.topAnchor),
+            headerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            headerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            headerView.heightAnchor.constraint(equalToConstant: 50),
+
+            scrollView.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 40),
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -120)
+        ])
+
+        // Commit area constraints
+        if let commitContainer = view.subviews.last {
+            NSLayoutConstraint.activate([
+                commitContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                commitContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                commitContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                commitContainer.heightAnchor.constraint(equalToConstant: 120)
+            ])
+        }
+    }
+
+    private func setupBindings() {
+        // Observe git status changes
+        gitStatusModel.$files
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.tableView.reloadData()
+            }
+            .store(in: &cancellables)
+
+        gitStatusModel.$currentBranch
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] branch in
+                self?.branchLabel.stringValue = branch.isEmpty ? "No repository" : branch
+            }
+            .store(in: &cancellables)
+
+        gitStatusModel.$isClean
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isClean in
+                self?.statusLabel.stringValue = isClean ? "Working tree clean" : "Changes detected"
+                self?.statusLabel.textColor = isClean ? NSColor(hex: "#a6e3a1") : NSColor(hex: "#fab387")
+            }
+            .store(in: &cancellables)
+
+        gitStatusModel.$commitMessage
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] message in
+                if self?.commitMessageTextView.string != message {
+                    self?.commitMessageTextView.string = message
+                }
+            }
+            .store(in: &cancellables)
+
+        // Enable commit button when message is not empty
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(commitMessageChanged),
+            name: NSText.didChangeNotification,
+            object: commitMessageTextView
+        )
+    }
+
+    func setRepositoryPath(_ path: String) {
+        gitStatusModel.setRepositoryPath(path)
+    }
+
+    // MARK: - Actions
+
+    @objc private func refreshClicked() {
+        gitStatusModel.refreshStatus()
+    }
+
+    @objc private func stageAllClicked() {
+        gitStatusModel.stageAllFiles()
+    }
+
+    @objc private func unstageAllClicked() {
+        gitStatusModel.unstageAllFiles()
+    }
+
+    @objc private func commitClicked() {
+        let message = commitMessageTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        gitStatusModel.commit(message: message) { [weak self] success, error in
+            DispatchQueue.main.async {
+                if success {
+                    self?.commitMessageTextView.string = ""
+                    self?.commitButton.isEnabled = false
+                } else {
+                    let alert = NSAlert()
+                    alert.messageText = "Commit Failed"
+                    alert.informativeText = error ?? "Unknown error"
+                    alert.alertStyle = .warning
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
+    @objc private func commitMessageChanged() {
+        let message = commitMessageTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        commitButton.isEnabled = !message.isEmpty
+    }
+
+    @objc private func pullClicked() {
+        pullButton.isEnabled = false
+        gitStatusModel.pull { [weak self] success, message in
+            DispatchQueue.main.async {
+                self?.pullButton.isEnabled = true
+                self?.showGitOperationResult(title: "Pull", success: success, message: message)
+            }
+        }
+    }
+
+    @objc private func pushClicked() {
+        pushButton.isEnabled = false
+        gitStatusModel.push { [weak self] success, message in
+            DispatchQueue.main.async {
+                self?.pushButton.isEnabled = true
+                self?.showGitOperationResult(title: "Push", success: success, message: message)
+            }
+        }
+    }
+
+    private func showGitOperationResult(title: String, success: Bool, message: String?) {
+        let alert = NSAlert()
+        alert.messageText = success ? "\(title) Successful" : "\(title) Failed"
+        alert.informativeText = message ?? (success ? "Operation completed successfully" : "Unknown error occurred")
+        alert.alertStyle = success ? .informational : .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    deinit {
+        cancellables.removeAll()
+        NotificationCenter.default.removeObserver(self)
+    }
+}
+
+// MARK: - NSTableViewDataSource
+
+extension GitPanelViewController: NSTableViewDataSource {
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        return gitStatusModel.files.count
+    }
+}
+
+// MARK: - NSTableViewDelegate
+
+extension GitPanelViewController: NSTableViewDelegate {
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < gitStatusModel.files.count else { return nil }
+        let file = gitStatusModel.files[row]
+
+        let identifier = tableColumn?.identifier
+        var cellView: NSTableCellView?
+
+        if identifier?.rawValue == "Status" {
+            cellView = tableView.makeView(withIdentifier: identifier!, owner: self) as? NSTableCellView
+            if cellView == nil {
+                cellView = NSTableCellView()
+                cellView?.identifier = identifier
+
+                let statusLabel = NSTextField()
+                statusLabel.isEditable = false
+                statusLabel.isBordered = false
+                statusLabel.backgroundColor = .clear
+                statusLabel.alignment = .center
+                statusLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+                statusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+                cellView?.addSubview(statusLabel)
+                cellView?.textField = statusLabel
+
+                NSLayoutConstraint.activate([
+                    statusLabel.centerXAnchor.constraint(equalTo: cellView!.centerXAnchor),
+                    statusLabel.centerYAnchor.constraint(equalTo: cellView!.centerYAnchor)
+                ])
+            }
+
+            cellView?.textField?.stringValue = file.displayStatus.rawValue
+            cellView?.textField?.textColor = file.displayStatus.color
+
+        } else if identifier?.rawValue == "File" {
+            cellView = tableView.makeView(withIdentifier: identifier!, owner: self) as? NSTableCellView
+            if cellView == nil {
+                cellView = NSTableCellView()
+                cellView?.identifier = identifier
+
+                let textField = NSTextField()
+                textField.isEditable = false
+                textField.isBordered = false
+                textField.backgroundColor = .clear
+                textField.font = NSFont.systemFont(ofSize: 13)
+                textField.lineBreakMode = .byTruncatingTail
+                textField.translatesAutoresizingMaskIntoConstraints = false
+
+                cellView?.addSubview(textField)
+                cellView?.textField = textField
+
+                NSLayoutConstraint.activate([
+                    textField.leadingAnchor.constraint(equalTo: cellView!.leadingAnchor, constant: 4),
+                    textField.trailingAnchor.constraint(equalTo: cellView!.trailingAnchor, constant: -4),
+                    textField.centerYAnchor.constraint(equalTo: cellView!.centerYAnchor)
+                ])
+            }
+
+            cellView?.textField?.stringValue = file.filename
+            cellView?.textField?.textColor = NSColor(hex: "#cdd6f4")
+
+        } else if identifier?.rawValue == "Actions" {
+            cellView = tableView.makeView(withIdentifier: identifier!, owner: self) as? NSTableCellView
+            if cellView == nil {
+                cellView = NSTableCellView()
+                cellView?.identifier = identifier
+
+                let button = NSButton()
+                button.bezelStyle = .shadowlessSquare
+                button.isBordered = false
+                button.font = NSFont.systemFont(ofSize: 10)
+                button.translatesAutoresizingMaskIntoConstraints = false
+
+                cellView?.addSubview(button)
+
+                NSLayoutConstraint.activate([
+                    button.centerXAnchor.constraint(equalTo: cellView!.centerXAnchor),
+                    button.centerYAnchor.constraint(equalTo: cellView!.centerYAnchor),
+                    button.widthAnchor.constraint(equalToConstant: 60),
+                    button.heightAnchor.constraint(equalToConstant: 20)
+                ])
+            }
+
+            if let button = cellView?.subviews.first as? NSButton {
+                if file.isStaged {
+                    button.title = "Unstage"
+                    button.target = self
+                    button.action = #selector(unstageFile(_:))
+                } else {
+                    button.title = "Stage"
+                    button.target = self
+                    button.action = #selector(stageFile(_:))
+                }
+                button.tag = row
+            }
+        }
+
+        return cellView
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        return 24
+    }
+
+    @objc private func stageFile(_ sender: NSButton) {
+        let row = sender.tag
+        guard row < gitStatusModel.files.count else { return }
+        let file = gitStatusModel.files[row]
+        gitStatusModel.stageFile(file)
+    }
+
+    @objc private func unstageFile(_ sender: NSButton) {
+        let row = sender.tag
+        guard row < gitStatusModel.files.count else { return }
+        let file = gitStatusModel.files[row]
+        gitStatusModel.unstageFile(file)
+    }
+
+    @objc private func tableViewDoubleClicked(_ sender: NSTableView) {
+        let row = sender.clickedRow
+        guard row >= 0 && row < gitStatusModel.files.count else { return }
+
+        let file = gitStatusModel.files[row]
+        let fullPath = gitStatusModel.repositoryPath + "/" + file.filename
+
+        // Notify delegate to open diff view
+        delegate?.gitPanel(self, didRequestDiffFor: fullPath)
+    }
+}
