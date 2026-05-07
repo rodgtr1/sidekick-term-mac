@@ -29,7 +29,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "SidekickCtl",
-            path: "Sources/SidekickCtl",
+            path: "Sources/sidekick-ctl",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "5"])
             ]

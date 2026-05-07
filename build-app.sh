@@ -29,14 +29,31 @@ cp ".build/release/${APP_NAME}" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/${AP
 echo "📋 Copying Info.plist..."
 cp "Info.plist" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/Info.plist"
 
-# Create a simple icon (text-based for now)
-echo "🎨 Creating app icon..."
-# Create a simple 512x512 icon using iconutil (if available)
-if command -v sips >/dev/null 2>&1; then
-    # Create a simple colored square as placeholder
-    sips -c 512 512 --setProperty format png -s format png /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns --out "${BUILD_DIR}/${BUNDLE_NAME}/Contents/Resources/AppIcon.png" 2>/dev/null || {
-        echo "ℹ️  Using default icon (sips failed)"
-    }
+# Copy app icon
+echo "🎨 Copying app icon..."
+if [ -f "Resources/icon.png" ]; then
+    # Create iconset from PNG
+    ICONSET_DIR="${BUILD_DIR}/AppIcon.iconset"
+    mkdir -p "${ICONSET_DIR}"
+
+    # Generate different sizes for iconset
+    sips -z 16 16 Resources/icon.png --out "${ICONSET_DIR}/icon_16x16.png" 2>/dev/null
+    sips -z 32 32 Resources/icon.png --out "${ICONSET_DIR}/icon_16x16@2x.png" 2>/dev/null
+    sips -z 32 32 Resources/icon.png --out "${ICONSET_DIR}/icon_32x32.png" 2>/dev/null
+    sips -z 64 64 Resources/icon.png --out "${ICONSET_DIR}/icon_32x32@2x.png" 2>/dev/null
+    sips -z 128 128 Resources/icon.png --out "${ICONSET_DIR}/icon_128x128.png" 2>/dev/null
+    sips -z 256 256 Resources/icon.png --out "${ICONSET_DIR}/icon_128x128@2x.png" 2>/dev/null
+    sips -z 256 256 Resources/icon.png --out "${ICONSET_DIR}/icon_256x256.png" 2>/dev/null
+    sips -z 512 512 Resources/icon.png --out "${ICONSET_DIR}/icon_256x256@2x.png" 2>/dev/null
+    sips -z 512 512 Resources/icon.png --out "${ICONSET_DIR}/icon_512x512.png" 2>/dev/null
+    cp Resources/icon.png "${ICONSET_DIR}/icon_512x512@2x.png" 2>/dev/null
+
+    # Convert to icns
+    iconutil -c icns "${ICONSET_DIR}" -o "${BUILD_DIR}/${BUNDLE_NAME}/Contents/Resources/AppIcon.icns"
+    rm -rf "${ICONSET_DIR}"
+    echo "✅ Icon created from Resources/icon.png"
+else
+    echo "⚠️  Warning: Resources/icon.png not found"
 fi
 
 # Set executable permissions

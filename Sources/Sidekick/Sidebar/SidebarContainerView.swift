@@ -11,7 +11,7 @@ protocol SidebarContainerDelegate: AnyObject {
 class SidebarContainerView: NSView {
     weak var delegate: SidebarContainerDelegate?
 
-    private var currentPanel: SidebarPanel = .files
+    private(set) var currentPanel: SidebarPanel = .files
     private var isVisible: Bool = true
     private var panelViews: [SidebarPanel: NSView] = [:]
     private var panelControllers: [SidebarPanel: NSViewController] = [:]
@@ -33,7 +33,7 @@ class SidebarContainerView: NSView {
 
     private func setupView() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
+        applyBackground(enableBlur: true) // Default to blur enabled
 
         setupHeader()
         setupContent()
@@ -44,7 +44,6 @@ class SidebarContainerView: NSView {
     private func setupHeader() {
         headerView = NSView()
         headerView.wantsLayer = true
-        headerView.layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
         headerView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(headerView)
 
@@ -76,6 +75,12 @@ class SidebarContainerView: NSView {
             contentView.trailingAnchor.constraint(equalTo: trailingAnchor),
             contentView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+    }
+
+    func applyBackground(enableBlur: Bool) {
+        // Sidebar is always opaque (no blur)
+        layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
+        headerView?.layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
     }
 
     private func createPanelViews() {
@@ -135,8 +140,12 @@ class SidebarContainerView: NSView {
     }
 
     func toggleVisibility() {
-        isVisible.toggle()
-        isHidden = !isVisible
+        setVisible(!isVisible)
+    }
+
+    func setVisible(_ visible: Bool) {
+        isVisible = visible
+        isHidden = !visible
     }
 
     var visible: Bool {

@@ -33,6 +33,10 @@ class EditorViewController: NSViewController {
 
     private func setupTextView() {
         print("📝 EditorViewController setupTextView() called")
+
+        // Load config
+        let config = Config.load()
+
         scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
@@ -52,10 +56,19 @@ class EditorViewController: NSViewController {
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
 
-        // Enable line numbers (simplified)
+        // Configure word wrap based on config (default to true if not set)
         textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.textContainer?.widthTracksTextView = true
+        let wordWrap = config.editor?.wordWrap ?? true
+        if wordWrap {
+            // Word wrap enabled: text wraps to view width
+            textView.isHorizontallyResizable = false
+            textView.textContainer?.widthTracksTextView = true
+        } else {
+            // Word wrap disabled: allow horizontal scrolling
+            textView.isHorizontallyResizable = true
+            textView.textContainer?.widthTracksTextView = false
+            textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        }
 
         scrollView.documentView = textView
 

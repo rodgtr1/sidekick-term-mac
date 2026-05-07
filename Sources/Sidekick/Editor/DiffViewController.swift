@@ -33,14 +33,18 @@ class DiffViewController: NSViewController {
 
     override func loadView() {
         view = NSView()
+        // Call setup immediately after creating view
+        setupTextView()
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupTextView()
+        // setupTextView is now called in loadView
     }
 
     private func setupTextView() {
+        print("📝 DiffViewController: setupTextView called")
+
         scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
@@ -48,7 +52,18 @@ class DiffViewController: NSViewController {
         scrollView.autohidesScrollers = false
         scrollView.borderType = .noBorder
 
-        textView = NSTextView()
+        // Create text container and layout manager
+        let textContainer = NSTextContainer()
+        textContainer.widthTracksTextView = true
+        textContainer.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+
+        let layoutManager = NSLayoutManager()
+        layoutManager.addTextContainer(textContainer)
+
+        let textStorage = NSTextStorage()
+        textStorage.addLayoutManager(layoutManager)
+
+        textView = NSTextView(frame: .zero, textContainer: textContainer)
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = true
@@ -59,11 +74,13 @@ class DiffViewController: NSViewController {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.autoresizingMask = [.width]
 
-        // Enable line numbers
+        // Configure for scrolling
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.textContainer?.widthTracksTextView = true
 
         scrollView.documentView = textView
 
@@ -81,9 +98,12 @@ class DiffViewController: NSViewController {
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+
+        print("📝 DiffViewController: setupTextView complete, view bounds: \(view.bounds)")
     }
 
     func showDiff(for filePath: String, isInteractive: Bool = false) {
+        print("📝 DiffViewController: showDiff called for: \(filePath)")
         self.filePath = filePath
         self.isInteractiveMode = isInteractive
 
@@ -91,8 +111,10 @@ class DiffViewController: NSViewController {
             DispatchQueue.main.async {
                 switch result {
                 case .success(let diffContent):
+                    print("📝 DiffViewController: Loaded diff content (\(diffContent.count) chars)")
                     self?.displayDiff(diffContent)
                 case .failure(let error):
+                    print("❌ DiffViewController: Failed to load diff: \(error.localizedDescription)")
                     self?.showError("Failed to load diff: \(error.localizedDescription)")
                 }
             }
@@ -100,10 +122,84 @@ class DiffViewController: NSViewController {
     }
 
     private func loadGitDiff(for filePath: String, completion: @escaping (Result<String, Error>) -> Void) {
+        print("📝 loadGitDiff: filePath = \(filePath)")
+
+        // Find git root directory
+        let gitRoot = findGitRoot(from: filePath) ?? URL(fileURLWithPath: filePath).deletingLastPathComponent().path
+        print("📝 loadGitDiff: gitRoot = \(gitRoot)")
+
+        // Calculate relative path from git root
+        let fileURL = URL(fileURLWithPath: filePath)
+        let gitRootURL = URL(fileURLWithPath: gitRoot)
+        let relativePath = fileURL.path.replacingOccurrences(of: gitRootURL.path + "/", with: "")
+        print("📝 loadGitDiff: relativePath = \(relativePath)")
+
+        // Check git status to determine file state
+        checkFileStatus(relativePath: relativePath, gitRoot: gitRoot) { [weak self] status in
+            guard let self = self else { return }
+
+            switch status {
+            case .untracked:
+                // For untracked files, show the entire file as additions
+                self.loadUntrackedFile(filePath: filePath, completion: completion)
+            case .modified, .staged:
+                // For modified or staged files, show git diff
+                self.loadGitDiffForTrackedFile(relativePath: relativePath, gitRoot: gitRoot, completion: completion)
+            case .unchanged:
+                completion(.success("No changes"))
+            }
+        }
+    }
+
+    private enum FileStatus {
+        case untracked
+        case modified
+        case staged
+        case unchanged
+    }
+
+    private func checkFileStatus(relativePath: String, gitRoot: String, completion: @escaping (FileStatus) -> Void) {
         let task = Process()
         task.launchPath = "/usr/bin/git"
-        task.arguments = ["diff", "HEAD", filePath]
-        task.currentDirectoryPath = URL(fileURLWithPath: filePath).deletingLastPathComponent().path
+        task.arguments = ["status", "--porcelain", relativePath]
+        task.currentDirectoryPath = gitRoot
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+
+        task.terminationHandler = { process in
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                print("📝 git status output: '\(output)'")
+                if output.isEmpty {
+                    completion(.unchanged)
+                } else if output.hasPrefix("??") {
+                    completion(.untracked)
+                } else if output.hasPrefix("M ") || output.hasPrefix(" M") {
+                    completion(.modified)
+                } else if output.hasPrefix("A ") {
+                    completion(.staged)
+                } else {
+                    completion(.modified)
+                }
+            } else {
+                completion(.unchanged)
+            }
+        }
+
+        do {
+            try task.run()
+        } catch {
+            completion(.unchanged)
+        }
+    }
+
+    private func loadGitDiffForTrackedFile(relativePath: String, gitRoot: String, completion: @escaping (Result<String, Error>) -> Void) {
+        let task = Process()
+        task.launchPath = "/usr/bin/git"
+        // For unstaged changes, just use "git diff" without HEAD
+        task.arguments = ["diff", relativePath]
+        task.currentDirectoryPath = gitRoot
 
         let pipe = Pipe()
         task.standardOutput = pipe
@@ -112,8 +208,8 @@ class DiffViewController: NSViewController {
         task.terminationHandler = { process in
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             if let output = String(data: data, encoding: .utf8) {
+                print("📝 loadGitDiff: git diff output length = \(output.count)")
                 if output.isEmpty {
-                    // No changes
                     completion(.success("No changes"))
                 } else {
                     completion(.success(output))
@@ -130,11 +226,56 @@ class DiffViewController: NSViewController {
         }
     }
 
+    private func loadUntrackedFile(filePath: String, completion: @escaping (Result<String, Error>) -> Void) {
+        // For untracked files, show the entire file content as new additions
+        do {
+            let content = try String(contentsOfFile: filePath, encoding: .utf8)
+            // Format as a diff with all lines as additions
+            let lines = content.components(separatedBy: .newlines)
+            var diffOutput = "diff --git a/\(URL(fileURLWithPath: filePath).lastPathComponent) b/\(URL(fileURLWithPath: filePath).lastPathComponent)\n"
+            diffOutput += "new file\n"
+            diffOutput += "--- /dev/null\n"
+            diffOutput += "+++ b/\(URL(fileURLWithPath: filePath).lastPathComponent)\n"
+            diffOutput += "@@ -0,0 +1,\(lines.count) @@\n"
+            for line in lines {
+                diffOutput += "+\(line)\n"
+            }
+            completion(.success(diffOutput))
+        } catch {
+            completion(.failure(error))
+        }
+    }
+
+    private func findGitRoot(from path: String) -> String? {
+        var currentPath = URL(fileURLWithPath: path)
+
+        // If path is a file, start from its directory
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: currentPath.path, isDirectory: &isDir), !isDir.boolValue {
+            currentPath = currentPath.deletingLastPathComponent()
+        }
+
+        // Walk up the directory tree looking for .git
+        while currentPath.path != "/" {
+            let gitPath = currentPath.appendingPathComponent(".git")
+            if FileManager.default.fileExists(atPath: gitPath.path) {
+                return currentPath.path
+            }
+            currentPath = currentPath.deletingLastPathComponent()
+        }
+
+        return nil
+    }
+
     private func displayDiff(_ content: String) {
+        print("📝 DiffViewController: displayDiff called with \(content.count) chars")
         diffContent = content
         parseHunks()
 
-        guard let textStorage = textView.textStorage else { return }
+        guard let textStorage = textView.textStorage else {
+            print("❌ DiffViewController: textStorage is nil!")
+            return
+        }
 
         textStorage.setAttributedString(NSAttributedString())
 
@@ -149,12 +290,14 @@ class DiffViewController: NSViewController {
 
         let lines = content.components(separatedBy: .newlines)
 
-        for line in lines {
+        print("📝 DiffViewController: Processing \(lines.count) lines")
+
+        for (index, line) in lines.enumerated() {
             let attributedLine = formatDiffLine(line)
             textStorage.append(attributedLine)
 
             // Add newline except for the last line
-            if line != lines.last {
+            if index < lines.count - 1 {
                 let newline = NSAttributedString(string: "\n", attributes: [
                     .foregroundColor: DiffColors.text,
                     .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -163,9 +306,18 @@ class DiffViewController: NSViewController {
             }
         }
 
+        print("📝 DiffViewController: Final textStorage length: \(textStorage.length)")
+        print("📝 DiffViewController: textView bounds: \(textView.bounds)")
+        print("📝 DiffViewController: textView isHidden: \(textView.isHidden)")
+        print("📝 DiffViewController: scrollView bounds: \(scrollView.bounds)")
+
         if isInteractiveMode {
             addHunkButtons()
         }
+
+        // Force a layout update
+        textView.setNeedsDisplay(textView.bounds)
+        scrollView.setNeedsDisplay(scrollView.bounds)
     }
 
     private func formatDiffLine(_ line: String) -> NSAttributedString {

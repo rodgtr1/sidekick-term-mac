@@ -10,6 +10,7 @@ public struct Config: Codable {
     public var tasks: [Task]?  // Make optional since it's not always in config
     public var shell: ShellConfig
     public var diff: DiffConfig
+    public var editor: EditorConfig?  // Make optional for backwards compatibility
 
     public init() {
         self.theme = ThemeConfig()
@@ -20,6 +21,7 @@ public struct Config: Codable {
         self.tasks = []
         self.shell = ShellConfig()
         self.diff = DiffConfig()
+        self.editor = EditorConfig()
     }
 
     public static func load(from path: String = "~/.config/sidekick/config.toml") -> Config {
@@ -34,15 +36,18 @@ public struct Config: Codable {
 
         guard let data = try? Data(contentsOf: fileURL),
               let tomlString = String(data: data, encoding: .utf8) else {
+            print("❌ Failed to read config file")
             return Config()
         }
 
         do {
             let toml = try TOMLTable(string: tomlString)
             let decoder = TOMLDecoder()
-            return try decoder.decode(Config.self, from: toml)
+            let config = try decoder.decode(Config.self, from: toml)
+            print("✅ Config loaded: font=\(config.font.family) size=\(config.font.size) opacity=\(config.window.opacity)")
+            return config
         } catch {
-            print("Failed to parse config: \(error)")
+            print("❌ Failed to parse config: \(error)")
             return Config()
         }
     }
@@ -52,8 +57,6 @@ public struct Config: Codable {
 [theme]
 # Available themes: catppuccin-mocha
 name = "catppuccin-mocha"
-# Background opacity: 0.0 (fully transparent) to 1.0 (fully opaque)
-opacity = 0.9
 
 [font]
 # Font family — use any monospace font installed on your system
@@ -72,7 +75,11 @@ blink = true
 # Inner padding around the terminal content (pixels)
 padding = 8
 # Window opacity: 0.0 (fully transparent) to 1.0 (fully opaque)
+# When blur is enabled, this controls the visual effect view opacity
+# When blur is disabled, this controls the window alpha
 opacity = 0.9
+# Enable macOS background blur/vibrancy effect
+enable_blur = true
 
 [behavior]
 # Lines of scrollback (-1 for unlimited)
@@ -98,6 +105,10 @@ default_cwd = "~"
 [diff]
 # Number of context lines to show in diffs
 context_lines = 3
+
+[editor]
+# Wrap long lines in the editor (true = word wrap, false = horizontal scroll)
+word_wrap = true
 
 # Global run-panel tasks (available in every project)
 # [[tasks]]
@@ -134,11 +145,9 @@ context_lines = 3
 // MARK: - Theme Configuration
 public struct ThemeConfig: Codable {
     public var name: String
-    public var opacity: Double
 
     public init() {
         self.name = "catppuccin-mocha"
-        self.opacity = 0.9
     }
 }
 
@@ -176,10 +185,18 @@ public struct CursorConfig: Codable {
 public struct WindowConfig: Codable {
     public var padding: Int
     public var opacity: Double
+    public var enableBlur: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case padding
+        case opacity
+        case enableBlur = "enable_blur"
+    }
 
     public init() {
         self.padding = 8
         self.opacity = 0.9
+        self.enableBlur = true
     }
 }
 
@@ -240,6 +257,19 @@ public struct DiffConfig: Codable {
 
     public init() {
         self.contextLines = 3
+    }
+}
+
+// MARK: - Editor Configuration
+public struct EditorConfig: Codable {
+    public var wordWrap: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case wordWrap = "word_wrap"
+    }
+
+    public init() {
+        self.wordWrap = true
     }
 }
 

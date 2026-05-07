@@ -1,16 +1,28 @@
 import Foundation
 import Cocoa
 
+enum AgentState {
+    case idle       // No agent activity
+    case working    // Agent is processing
+    case ready      // Agent is ready for input (waiting for user)
+    case done       // Agent finished the last run
+}
+
 class TabModel: ObservableObject, Identifiable {
     let id = UUID()
     @Published var title: String = "Terminal"
     @Published var isActive: Bool = false
     @Published var isDirty: Bool = false
-    @Published var isAgentReady: Bool = false // Indicator that Claude agent is ready
+    @Published var agentState: AgentState = .idle
     @Published var panes: [PaneModel] = []
     @Published var activePaneIndex: Int = 0
 
     var rootSplitView: NSSplitView?
+
+    // Backward compatibility
+    var isAgentReady: Bool {
+        return agentState == .ready
+    }
 
     init() {
         // Create initial pane

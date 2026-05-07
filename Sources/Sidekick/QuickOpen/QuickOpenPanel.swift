@@ -18,6 +18,7 @@ class QuickOpenPanel: NSPanel {
     private var tableView: NSTableView!
     private var findTask: Process?
     private var debounceWorkItem: DispatchWorkItem?
+    private var searchFieldDelegate: SearchFieldDelegate?
 
     weak var quickOpenDelegate: QuickOpenPanelDelegate?
 
@@ -80,6 +81,13 @@ class QuickOpenPanel: NSPanel {
         searchField.action = #selector(searchFieldChanged(_:))
         searchField.font = NSFont.systemFont(ofSize: 14)
         searchField.translatesAutoresizingMaskIntoConstraints = false
+
+        // Override search field to handle Escape key
+        searchFieldDelegate = SearchFieldDelegate()
+        searchFieldDelegate?.escapeHandler = { [weak self] in
+            self?.close()
+        }
+        searchField.delegate = searchFieldDelegate
 
         // Table view
         tableView = NSTableView()
@@ -455,5 +463,18 @@ class QuickOpenCellView: NSTableCellView {
     func configure(with result: FileResult) {
         fileNameLabel.stringValue = result.fileName
         pathLabel.stringValue = result.relativePath
+    }
+}
+
+// MARK: - Search Field Delegate for Escape Key
+class SearchFieldDelegate: NSObject, NSSearchFieldDelegate {
+    var escapeHandler: (() -> Void)?
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            escapeHandler?()
+            return true
+        }
+        return false
     }
 }

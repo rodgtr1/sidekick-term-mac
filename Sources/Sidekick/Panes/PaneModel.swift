@@ -1,12 +1,20 @@
 import Foundation
 import Cocoa
 
-class PaneModel: Identifiable {
+class PaneModel: Identifiable, Hashable {
     let id = UUID()
     var isFocused: Bool = false
     var title: String = ""
     var currentDirectory: String = ""
     var gitBranch: String?
+
+    static func == (lhs: PaneModel, rhs: PaneModel) -> Bool {
+        return lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 
     var terminalViewController: TerminalViewController?
     var editorViewController: EditorViewController?
@@ -26,8 +34,8 @@ class PaneModel: Identifiable {
         self.isFocused = false
     }
 
-    func createTerminalViewController(config: Config) {
-        let terminalVC = TerminalViewController(config: config)
+    func createTerminalViewController(config: Config, initialDirectory: String? = nil) {
+        let terminalVC = TerminalViewController(config: config, initialDirectory: initialDirectory)
         terminalVC.delegate = self
         self.terminalViewController = terminalVC
         self.view = terminalVC.view
@@ -117,7 +125,7 @@ class PaneModel: Identifiable {
         title = fileName
     }
 
-    private func updateTitleForDiff(fileName: String) {
+    func updateTitleForDiff(fileName: String) {
         title = "Diff: \(fileName)"
     }
 
@@ -188,6 +196,14 @@ extension PaneModel: TerminalViewControllerDelegate {
             name: NSNotification.Name("TerminalCWDChanged"),
             object: nil,
             userInfo: ["directory": directory, "branch": branch as Any]
+        )
+    }
+
+    func terminalDidDetectAgentState(_ terminal: TerminalViewController, state: AgentState) {
+        NotificationCenter.default.post(
+            name: NSNotification.Name("PaneAgentStateChanged"),
+            object: self,
+            userInfo: ["agentState": state]
         )
     }
 }

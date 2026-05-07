@@ -11,6 +11,10 @@ struct SidekickCtl {
             print("  ping                - Check if sidekick is running")
             print("  new-tab [cwd]       - Create a new terminal tab")
             print("  open-diff <file>    - Open diff view for file")
+            print("  agent-ready         - Mark agent as ready (waiting for user)")
+            print("  agent-busy          - Mark agent as busy (working)")
+            print("  agent-done          - Mark agent as done (finished last run)")
+            print("  agent-idle          - Mark agent as idle (no activity)")
             exit(1)
         }
 
@@ -50,6 +54,38 @@ struct SidekickCtl {
                 exit(1)
             }
 
+        case "agent-ready":
+            if client.agentReady() {
+                print("Agent marked as ready")
+            } else {
+                print("Failed to mark agent as ready")
+                exit(1)
+            }
+
+        case "agent-busy":
+            if client.agentBusy() {
+                print("Agent marked as busy")
+            } else {
+                print("Failed to mark agent as busy")
+                exit(1)
+            }
+
+        case "agent-done":
+            if client.agentDone() {
+                print("Agent marked as done")
+            } else {
+                print("Failed to mark agent as done")
+                exit(1)
+            }
+
+        case "agent-idle":
+            if client.agentIdle() {
+                print("Agent marked as idle")
+            } else {
+                print("Failed to mark agent as idle")
+                exit(1)
+            }
+
         default:
             print("Unknown command: \(command)")
             exit(1)
@@ -74,6 +110,22 @@ class IPCClient {
 
     func openDiff(filePath: String) -> Bool {
         return sendCommand(["action": "show_diff", "path": filePath, "old": "", "new": ""])
+    }
+
+    func agentReady() -> Bool {
+        return sendCommand(["action": "agent_ready"])
+    }
+
+    func agentBusy() -> Bool {
+        return sendCommand(["action": "agent_busy"])
+    }
+
+    func agentDone() -> Bool {
+        return sendCommand(["action": "agent_done"])
+    }
+
+    func agentIdle() -> Bool {
+        return sendCommand(["action": "agent_idle"])
     }
 
     private func sendCommand(_ command: [String: String]) -> Bool {

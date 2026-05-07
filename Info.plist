@@ -18,6 +18,8 @@
     <string>APPL</string>
     <key>CFBundleSignature</key>
     <string>SDKK</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>

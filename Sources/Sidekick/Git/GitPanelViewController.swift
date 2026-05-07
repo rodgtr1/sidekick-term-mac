@@ -134,41 +134,58 @@ class GitPanelViewController: NSViewController {
         tableView.doubleAction = #selector(tableViewDoubleClicked(_:))
         tableView.target = self
 
+        // Add context menu
+        tableView.menu = createContextMenu()
+
         scrollView.documentView = tableView
         view.addSubview(scrollView)
 
-        // Add control buttons
-        let buttonStack = NSStackView()
-        buttonStack.orientation = .horizontal
-        buttonStack.spacing = 8
-        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+        // Add control buttons in a 2x2 grid
+        let topButtonStack = NSStackView()
+        topButtonStack.orientation = .horizontal
+        topButtonStack.spacing = 8
+        topButtonStack.distribution = .fillEqually
+        topButtonStack.translatesAutoresizingMaskIntoConstraints = false
 
         stageAllButton = NSButton(title: "Stage All", target: self, action: #selector(stageAllClicked))
         stageAllButton.bezelStyle = .rounded
         stageAllButton.controlSize = .small
-        buttonStack.addArrangedSubview(stageAllButton)
+        topButtonStack.addArrangedSubview(stageAllButton)
 
         unstageAllButton = NSButton(title: "Unstage All", target: self, action: #selector(unstageAllClicked))
         unstageAllButton.bezelStyle = .rounded
         unstageAllButton.controlSize = .small
-        buttonStack.addArrangedSubview(unstageAllButton)
+        topButtonStack.addArrangedSubview(unstageAllButton)
+
+        let bottomButtonStack = NSStackView()
+        bottomButtonStack.orientation = .horizontal
+        bottomButtonStack.spacing = 8
+        bottomButtonStack.distribution = .fillEqually
+        bottomButtonStack.translatesAutoresizingMaskIntoConstraints = false
 
         pullButton = NSButton(title: "Pull", target: self, action: #selector(pullClicked))
         pullButton.bezelStyle = .rounded
         pullButton.controlSize = .small
-        buttonStack.addArrangedSubview(pullButton)
+        bottomButtonStack.addArrangedSubview(pullButton)
 
         pushButton = NSButton(title: "Push", target: self, action: #selector(pushClicked))
         pushButton.bezelStyle = .rounded
         pushButton.controlSize = .small
-        buttonStack.addArrangedSubview(pushButton)
+        bottomButtonStack.addArrangedSubview(pushButton)
 
-        view.addSubview(buttonStack)
+        view.addSubview(topButtonStack)
+        view.addSubview(bottomButtonStack)
 
         NSLayoutConstraint.activate([
-            buttonStack.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 8),
-            buttonStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            buttonStack.heightAnchor.constraint(equalToConstant: 24)
+            topButtonStack.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 8),
+            topButtonStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            topButtonStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            topButtonStack.heightAnchor.constraint(equalToConstant: 24),
+
+            bottomButtonStack.topAnchor.constraint(equalTo: topButtonStack.bottomAnchor, constant: 4),
+            bottomButtonStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            bottomButtonStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            bottomButtonStack.heightAnchor.constraint(equalToConstant: 24)
         ])
     }
 
@@ -237,7 +254,8 @@ class GitPanelViewController: NSViewController {
             headerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             headerView.heightAnchor.constraint(equalToConstant: 50),
 
-            scrollView.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 40),
+            // 68 = 8 (top margin) + 24 (first row) + 4 (spacing) + 24 (second row) + 8 (bottom margin)
+            scrollView.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 68),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -120)
@@ -298,6 +316,27 @@ class GitPanelViewController: NSViewController {
 
     func setRepositoryPath(_ path: String) {
         gitStatusModel.setRepositoryPath(path)
+    }
+
+    private func createContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.delegate = self
+
+        let stageItem = NSMenuItem(title: "Stage", action: #selector(contextMenuStage), keyEquivalent: "")
+        stageItem.target = self
+        menu.addItem(stageItem)
+
+        let unstageItem = NSMenuItem(title: "Unstage", action: #selector(contextMenuUnstage), keyEquivalent: "")
+        unstageItem.target = self
+        menu.addItem(unstageItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let discardItem = NSMenuItem(title: "Discard Changes", action: #selector(contextMenuDiscard), keyEquivalent: "")
+        discardItem.target = self
+        menu.addItem(discardItem)
+
+        return menu
     }
 
     // MARK: - Actions
@@ -364,6 +403,38 @@ class GitPanelViewController: NSViewController {
         alert.alertStyle = success ? .informational : .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    @objc private func contextMenuStage() {
+        let row = tableView.clickedRow
+        guard row >= 0 && row < gitStatusModel.files.count else { return }
+        let file = gitStatusModel.files[row]
+        gitStatusModel.stageFile(file)
+    }
+
+    @objc private func contextMenuUnstage() {
+        let row = tableView.clickedRow
+        guard row >= 0 && row < gitStatusModel.files.count else { return }
+        let file = gitStatusModel.files[row]
+        gitStatusModel.unstageFile(file)
+    }
+
+    @objc private func contextMenuDiscard() {
+        let row = tableView.clickedRow
+        guard row >= 0 && row < gitStatusModel.files.count else { return }
+        let file = gitStatusModel.files[row]
+
+        // Show confirmation dialog
+        let alert = NSAlert()
+        alert.messageText = "Discard Changes?"
+        alert.informativeText = "Are you sure you want to discard all changes to '\(file.filename)'? This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            gitStatusModel.discardChanges(file)
+        }
     }
 
     deinit {
@@ -509,5 +580,33 @@ extension GitPanelViewController: NSTableViewDelegate {
 
         // Notify delegate to open diff view
         delegate?.gitPanel(self, didRequestDiffFor: fullPath)
+    }
+}
+
+// MARK: - NSMenuDelegate
+
+extension GitPanelViewController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let row = tableView.clickedRow
+        guard row >= 0 && row < gitStatusModel.files.count else {
+            // Disable all items if no valid row
+            for item in menu.items {
+                item.isEnabled = false
+            }
+            return
+        }
+
+        let file = gitStatusModel.files[row]
+
+        // Enable/disable menu items based on file state
+        for item in menu.items {
+            if item.action == #selector(contextMenuStage) {
+                item.isEnabled = !file.isStaged
+            } else if item.action == #selector(contextMenuUnstage) {
+                item.isEnabled = file.isStaged
+            } else if item.action == #selector(contextMenuDiscard) {
+                item.isEnabled = true
+            }
+        }
     }
 }

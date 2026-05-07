@@ -72,20 +72,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenuItem.submenu = fileMenu
 
-        // New Tab
-        let newTabItem = NSMenuItem(title: "New Tab", action: #selector(newTab), keyEquivalent: "t")
+        // New Tab (no key equivalent - handled by event monitor in MainWindowController)
+        let newTabItem = NSMenuItem(title: "New Terminal Tab", action: #selector(newTab), keyEquivalent: "")
         newTabItem.target = self
         fileMenu.addItem(newTabItem)
 
-        // Close Tab
-        let closeTabItem = NSMenuItem(title: "Close Tab", action: #selector(closeTab), keyEquivalent: "w")
-        closeTabItem.target = self
-        fileMenu.addItem(closeTabItem)
+        // Close Pane (no key equivalent - handled by event monitor)
+        let closePaneItem = NSMenuItem(title: "Close Pane", action: #selector(closePane), keyEquivalent: "")
+        closePaneItem.target = self
+        fileMenu.addItem(closePaneItem)
 
         fileMenu.addItem(NSMenuItem.separator())
 
-        // Save
-        let saveItem = NSMenuItem(title: "Save", action: #selector(save), keyEquivalent: "s")
+        // Save (no key equivalent - handled by event monitor)
+        let saveItem = NSMenuItem(title: "Save", action: #selector(save), keyEquivalent: "")
         saveItem.target = self
         fileMenu.addItem(saveItem)
 
@@ -111,44 +111,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: "View")
         viewMenuItem.submenu = viewMenu
 
-        // Toggle Sidebar
-        let sidebarItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "b")
+        // Toggle Sidebar (no key equivalent - handled by event monitor)
+        let sidebarItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "")
         sidebarItem.target = self
         viewMenu.addItem(sidebarItem)
 
         viewMenu.addItem(NSMenuItem.separator())
 
-        // Quick Open
-        let quickOpenItem = NSMenuItem(title: "Quick Open...", action: #selector(quickOpen), keyEquivalent: "p")
+        // Quick Open (no key equivalent - handled by event monitor)
+        let quickOpenItem = NSMenuItem(title: "Quick Open...", action: #selector(quickOpen), keyEquivalent: "")
         quickOpenItem.target = self
         viewMenu.addItem(quickOpenItem)
 
         viewMenu.addItem(NSMenuItem.separator())
 
-        // Activity Bar Panels
-        let filesItem = NSMenuItem(title: "Show Files", action: #selector(showFilesPanel), keyEquivalent: "e")
-        filesItem.keyEquivalentModifierMask = [.command, .shift]
+        // Activity Bar Panels (no key equivalents - handled by event monitor)
+        let filesItem = NSMenuItem(title: "Show Files", action: #selector(showFilesPanel), keyEquivalent: "")
         filesItem.target = self
         viewMenu.addItem(filesItem)
 
-        let gitItem = NSMenuItem(title: "Show Git", action: #selector(showGitPanel), keyEquivalent: "g")
-        gitItem.keyEquivalentModifierMask = [.command, .shift]
+        let gitItem = NSMenuItem(title: "Show Git", action: #selector(showGitPanel), keyEquivalent: "")
         gitItem.target = self
         viewMenu.addItem(gitItem)
 
-        let searchItem = NSMenuItem(title: "Show Search", action: #selector(showSearchPanel), keyEquivalent: "f")
-        searchItem.keyEquivalentModifierMask = [.command, .shift]
+        let searchItem = NSMenuItem(title: "Show Search", action: #selector(showSearchPanel), keyEquivalent: "")
         searchItem.target = self
         viewMenu.addItem(searchItem)
 
-        let runItem = NSMenuItem(title: "Show Run", action: #selector(showRunPanel), keyEquivalent: "r")
-        runItem.keyEquivalentModifierMask = [.command, .shift]
+        let runItem = NSMenuItem(title: "Show Run", action: #selector(showRunPanel), keyEquivalent: "")
         runItem.target = self
         viewMenu.addItem(runItem)
 
-        // Split with Browser (Cmd+Shift+O)
-        let splitBrowserItem = NSMenuItem(title: "Split with Browser", action: #selector(splitWithBrowser), keyEquivalent: "o")
-        splitBrowserItem.keyEquivalentModifierMask = [.command, .shift]
+        // Split with Browser (no key equivalent - handled by event monitor)
+        let splitBrowserItem = NSMenuItem(title: "Split with Browser", action: #selector(splitWithBrowser), keyEquivalent: "")
         splitBrowserItem.target = self
         viewMenu.addItem(splitBrowserItem)
 
@@ -163,12 +158,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let minimizeItem = NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(minimizeItem)
 
-        // Close
-        let closeItem = NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        closeItem.keyEquivalentModifierMask = [.command]
+        // Close (no key equivalent - Cmd+W is handled by event monitor to close tabs)
+        let closeItem = NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "")
         windowMenu.addItem(closeItem)
 
         mainMenu.addItem(windowMenuItem)
+
+        // Help Menu
+        let helpMenuItem = NSMenuItem()
+        let helpMenu = NSMenu(title: "Help")
+        helpMenuItem.submenu = helpMenu
+
+        // Keyboard Shortcuts
+        let shortcutsItem = NSMenuItem(title: "Keyboard Shortcuts", action: #selector(showKeyboardShortcuts), keyEquivalent: "k")
+        shortcutsItem.target = self
+        helpMenu.addItem(shortcutsItem)
+
+        mainMenu.addItem(helpMenuItem)
 
         NSApp.mainMenu = mainMenu
     }
@@ -179,6 +185,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func closeTab() {
         mainWindowController?.closeCurrentTab()
+    }
+
+    @objc private func closePane() {
+        // Close the active pane
+        if let controller = mainWindowController {
+            controller.perform(NSSelectorFromString("closeCurrentPane"))
+        }
     }
 
     @objc private func save() {
@@ -217,5 +230,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func splitWithBrowser() {
         print("🌐 AppDelegate: Split with Browser action called")
         mainWindowController?.splitWithBrowser()
+    }
+
+    @objc private func showKeyboardShortcuts() {
+        mainWindowController?.showKeyboardShortcuts()
     }
 }

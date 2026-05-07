@@ -3,6 +3,24 @@ import SwiftTerm
 
 protocol TerminalViewControllerDelegate: AnyObject {
     func terminalDidUpdateTitle(_ terminal: TerminalViewController, directory: String, branch: String?)
+    func terminalDidDetectAgentState(_ terminal: TerminalViewController, state: AgentState)
+}
+
+private final class AgentAwareTerminalView: LocalProcessTerminalView {
+    var onOutput: ((String) -> Void)?
+    var onInput: (() -> Void)?
+
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        if let output = String(bytes: slice, encoding: .utf8) {
+            onOutput?(output)
+        }
+        super.dataReceived(slice: slice)
+    }
+
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        onInput?()
+        super.send(source: source, data: data)
+    }
 }
 
 class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate {
@@ -12,9 +30,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var cwdTimer: Timer?
     private var currentCWD: String = "~"
     private var shellPID: pid_t = 0
+    private var initialDirectory: String?
+    private var recentOutput = ""
+    private var lastDetectedAgentState: AgentState = .idle
+    private var agentDoneTimer: Timer?
 
-    init(config: Config) {
+    init(config: Config, initialDirectory: String? = nil) {
         self.config = config
+        self.initialDirectory = initialDirectory
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -24,6 +47,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     override func loadView() {
         self.view = NSView()
+        self.view.wantsLayer = true
     }
 
     override func viewDidLoad() {
@@ -43,7 +67,20 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let font = NSFont(name: config.font.family, size: CGFloat(config.font.size))
             ?? NSFont.monospacedSystemFont(ofSize: CGFloat(config.font.size), weight: .regular)
 
-        terminalView = LocalProcessTerminalView(frame: view.bounds)
+        print("🔤 Terminal font: \(font.fontName) size: \(font.pointSize)")
+
+        let agentAwareTerminalView = AgentAwareTerminalView(frame: view.bounds)
+        agentAwareTerminalView.onOutput = { [weak self] output in
+            DispatchQueue.main.async {
+                self?.detectAgentState(from: output)
+            }
+        }
+        agentAwareTerminalView.onInput = { [weak self] in
+            DispatchQueue.main.async {
+                self?.handleTerminalInput()
+            }
+        }
+        terminalView = agentAwareTerminalView
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         terminalView.font = font
 
@@ -52,12 +89,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         // Set terminal foreground and background colors
         terminalView.nativeForegroundColor = NSColor(hex: "#cdd6f4")!  // Catppuccin text
-        terminalView.nativeBackgroundColor = NSColor(hex: "#1e1e2e")!  // Catppuccin base
 
-        // Make sure the view has a visible background
+        // Apply background based on blur configuration
         terminalView.wantsLayer = true
-        terminalView.layer?.backgroundColor = NSColor(hex: "#1e1e2e")!.cgColor
-        terminalView.layer?.isOpaque = true
+        applyTerminalAppearance(config)
 
         // Set caret (cursor) color
         terminalView.caretColor = NSColor(hex: "#f5e0dc")!  // Catppuccin rosewater
@@ -84,9 +119,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let shellIdiom = "-" + NSString(string: shell).lastPathComponent
         let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
 
-        // Change to home directory before starting shell
+        // Use initialDirectory if provided, otherwise use home directory
+        let startDirectory = initialDirectory ?? homeDirectory
+
+        // Change to the starting directory before starting shell
         // This sets the working directory for the child process
-        FileManager.default.changeCurrentDirectoryPath(homeDirectory)
+        FileManager.default.changeCurrentDirectoryPath(startDirectory)
 
         // Start the shell process - let SwiftTerm handle environment setup
         // SwiftTerm will automatically set TERM, HOME, PWD and other required variables
@@ -96,7 +134,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.findShellPID()
             // Trigger initial CWD update
-            self?.currentCWD = homeDirectory
+            self?.currentCWD = startDirectory
             self?.updateTitle()
         }
     }
@@ -292,6 +330,77 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // For now, users can copy URLs manually and open them
     }
 
+    private func detectAgentState(from output: String) {
+        recentOutput += output
+        if recentOutput.count > 8_000 {
+            recentOutput = String(recentOutput.suffix(8_000))
+        }
+
+        let normalizedRecentOutput = normalizeTerminalOutput(recentOutput)
+        let normalizedCurrentOutput = normalizeTerminalOutput(output)
+
+        if containsAgentPrompt(normalizedRecentOutput) {
+            agentDoneTimer?.invalidate()
+            agentDoneTimer = nil
+            notifyDetectedAgentState(.ready)
+        } else if containsAgentWorkingCue(normalizedCurrentOutput) {
+            notifyDetectedAgentState(.working)
+            scheduleDoneAfterQuietPeriod()
+        } else if lastDetectedAgentState == .working {
+            scheduleDoneAfterQuietPeriod()
+        }
+    }
+
+    private func normalizeTerminalOutput(_ output: String) -> String {
+        return output
+            .replacingOccurrences(of: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]", with: "", options: .regularExpression)
+            .lowercased()
+    }
+
+    private func containsAgentPrompt(_ output: String) -> Bool {
+        return output.contains("do you want to proceed?")
+            || output.contains("do you want to continue?")
+            || output.contains("esc to cancel")
+            || output.contains("tab to add additional instructions")
+            || output.contains("don't ask again")
+    }
+
+    private func containsAgentWorkingCue(_ output: String) -> Bool {
+        return output.contains("running...")
+            || output.contains("running…")
+            || output.contains("thinking")
+            || output.contains("working")
+    }
+
+    private func handleTerminalInput() {
+        recentOutput = ""
+        agentDoneTimer?.invalidate()
+        agentDoneTimer = nil
+
+        if lastDetectedAgentState == .ready || lastDetectedAgentState == .done {
+            notifyDetectedAgentState(.working)
+            scheduleDoneAfterQuietPeriod()
+        }
+    }
+
+    private func scheduleDoneAfterQuietPeriod() {
+        agentDoneTimer?.invalidate()
+        agentDoneTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
+            guard let self = self, self.lastDetectedAgentState == .working else { return }
+            self.notifyDetectedAgentState(.done)
+        }
+    }
+
+    private func notifyDetectedAgentState(_ state: AgentState) {
+        guard state != lastDetectedAgentState else { return }
+        lastDetectedAgentState = state
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.delegate?.terminalDidDetectAgentState(self, state: state)
+        }
+    }
+
     func getCurrentWorkingDirectory() -> String {
         return currentCWD
     }
@@ -317,9 +426,53 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         view.window?.makeFirstResponder(terminalView)
     }
 
+    func applyConfig(_ newConfig: Config) {
+        print("🔄 Applying config to terminal: font=\(newConfig.font.family) size=\(newConfig.font.size) blur=\(newConfig.window.enableBlur)")
+        self.config = newConfig
+
+        // Update font
+        if let font = NSFont(name: newConfig.font.family, size: CGFloat(newConfig.font.size)) {
+            print("🔤 Setting font: \(font.fontName) size: \(font.pointSize)")
+            terminalView.font = font
+        } else {
+            let fallbackFont = NSFont.monospacedSystemFont(ofSize: CGFloat(newConfig.font.size), weight: .regular)
+            print("🔤 Using fallback font: \(fallbackFont.fontName) size: \(fallbackFont.pointSize)")
+            terminalView.font = fallbackFont
+        }
+
+        applyTerminalAppearance(newConfig)
+
+        // Force terminal to refresh
+        terminalView.setNeedsDisplay(terminalView.bounds)
+    }
+
+    private func applyTerminalAppearance(_ config: Config) {
+        let baseColor = NSColor(hex: "#1e1e2e")!
+
+        if config.window.enableBlur {
+            let alpha = CGFloat(config.window.opacity)
+            print("🎨 Setting terminal background alpha to \(alpha)")
+            let backgroundColor = baseColor.withAlphaComponent(alpha)
+            view.layer?.backgroundColor = backgroundColor.cgColor
+            view.layer?.isOpaque = false
+            terminalView.nativeBackgroundColor = backgroundColor
+            terminalView.layer?.backgroundColor = NSColor.clear.cgColor
+            terminalView.layer?.isOpaque = false
+            terminalView.alphaValue = 1.0
+        } else {
+            view.layer?.backgroundColor = baseColor.cgColor
+            view.layer?.isOpaque = true
+            terminalView.nativeBackgroundColor = baseColor
+            terminalView.layer?.backgroundColor = baseColor.cgColor
+            terminalView.layer?.isOpaque = true
+            terminalView.alphaValue = 1.0
+        }
+    }
+
     deinit {
         MainActor.assumeIsolated {
             cwdTimer?.invalidate()
+            agentDoneTimer?.invalidate()
         }
     }
 }

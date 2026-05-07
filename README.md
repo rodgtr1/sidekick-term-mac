@@ -127,11 +127,14 @@ sidekick-ctl ping
 Sidekick supports IPC commands via Unix socket at `~/.config/sidekick/sidekick.sock`:
 
 ```bash
-# Notify that Claude agent is ready (shows 🟢 on tab, bounces dock icon, plays sound)
+# Notify that an agent is busy (shows 🟢 on tab)
+echo '{"action":"agent_busy"}' | nc -U ~/.config/sidekick/sidekick.sock
+
+# Notify that an agent is waiting for input (shows 🟡 on tab, bounces dock icon, plays sound)
 echo '{"action":"agent_ready"}' | nc -U ~/.config/sidekick/sidekick.sock
 
-# Notify that Claude agent is busy (removes 🟢 from tab)
-echo '{"action":"agent_busy"}' | nc -U ~/.config/sidekick/sidekick.sock
+# Notify that an agent finished the last run (shows 🔵 on tab, bounces dock icon, plays sound)
+echo '{"action":"agent_done"}' | nc -U ~/.config/sidekick/sidekick.sock
 
 # Create a new tab
 echo '{"action":"new_tab","cwd":"/path/to/dir"}' | nc -U ~/.config/sidekick/sidekick.sock

@@ -11,6 +11,7 @@ class PreferencesWindowController: NSWindowController {
     // General Tab
     private var opacitySlider: NSSlider!
     private var opacityLabel: NSTextField!
+    private var blurCheckbox: NSButton!
 
     // Terminal Tab
     private var fontFamilyPopup: NSPopUpButton!
@@ -100,9 +101,15 @@ class PreferencesWindowController: NSWindowController {
         opacityLabel.alignment = .right
         opacityLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // Background blur checkbox
+        blurCheckbox = NSButton(checkboxWithTitle: "Enable background blur", target: self, action: #selector(blurCheckboxChanged(_:)))
+        blurCheckbox.font = NSFont.systemFont(ofSize: 13)
+        blurCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
         generalView.addSubview(opacityTitleLabel)
         generalView.addSubview(opacitySlider)
         generalView.addSubview(opacityLabel)
+        generalView.addSubview(blurCheckbox)
 
         NSLayoutConstraint.activate([
             opacityTitleLabel.topAnchor.constraint(equalTo: generalView.topAnchor, constant: 30),
@@ -114,7 +121,10 @@ class PreferencesWindowController: NSWindowController {
 
             opacityLabel.topAnchor.constraint(equalTo: opacitySlider.topAnchor),
             opacityLabel.trailingAnchor.constraint(equalTo: generalView.trailingAnchor, constant: -20),
-            opacityLabel.widthAnchor.constraint(equalToConstant: 50)
+            opacityLabel.widthAnchor.constraint(equalToConstant: 50),
+
+            blurCheckbox.topAnchor.constraint(equalTo: opacitySlider.bottomAnchor, constant: 20),
+            blurCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20)
         ])
 
         let generalTabItem = NSTabViewItem(identifier: "general")
@@ -250,6 +260,9 @@ class PreferencesWindowController: NSWindowController {
         opacitySlider.doubleValue = config.window.opacity
         updateOpacityLabel()
 
+        // Load blur setting
+        blurCheckbox.state = config.window.enableBlur ? .on : .off
+
         // Load font family
         let currentFont = config.font.family
         for i in 0..<fontFamilyPopup.numberOfItems {
@@ -270,6 +283,11 @@ class PreferencesWindowController: NSWindowController {
         config.window.opacity = sender.doubleValue
         updateOpacityLabel()
         applyOpacityChange()
+    }
+
+    @objc private func blurCheckboxChanged(_ sender: NSButton) {
+        config.window.enableBlur = sender.state == .on
+        showRestartAlert()
     }
 
     @objc private func fontFamilyChanged(_ sender: NSPopUpButton) {
@@ -296,13 +314,22 @@ class PreferencesWindowController: NSWindowController {
     }
 
     private func applyOpacityChange() {
-        mainWindowController?.window?.alphaValue = CGFloat(config.window.opacity)
+        mainWindowController?.applyRuntimeConfig(config)
     }
 
     private func applyFontChanges() {
         // This would need to be implemented to update existing terminals
         // For now, changes will apply to new terminals
         print("Font changed to \(config.font.family) \(config.font.size)pt")
+    }
+
+    private func showRestartAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Restart Required"
+        alert.informativeText = "Please restart Sidekick for the blur setting to take effect."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     override func windowDidLoad() {

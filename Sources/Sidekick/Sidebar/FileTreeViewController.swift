@@ -281,6 +281,11 @@ extension FileTreeViewController: NSOutlineViewDelegate {
                     self.outlineView.reloadItem(node, reloadChildren: true)
                 }
             }
+        } else {
+            // Item is already loaded, just reload to update icon
+            DispatchQueue.main.async {
+                outlineView.reloadItem(node, reloadChildren: false)
+            }
         }
 
         node.isExpanded = true
@@ -290,6 +295,12 @@ extension FileTreeViewController: NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, shouldCollapseItem item: Any) -> Bool {
         guard let node = item as? FileTreeNode else { return false }
         node.isExpanded = false
+
+        // Reload the item to update its icon (from folder.open to folder)
+        DispatchQueue.main.async {
+            outlineView.reloadItem(node, reloadChildren: false)
+        }
+
         return true
     }
 }

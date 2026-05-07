@@ -13,6 +13,7 @@ class TabBarView: NSView {
     private var activeTabIndex: Int = 0
     private var tabButtons: [NSButton] = []
     private var closeButtons: [NSButton] = []
+    private var activeIndicators: [NSView] = []
 
     private let tabHeight: CGFloat = 32
     private let tabMinWidth: CGFloat = 120
@@ -23,19 +24,52 @@ class TabBarView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setupView()
+        observeThemeChanges()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupView()
+        observeThemeChanges()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func observeThemeChanges() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(themeDidChange),
+            name: .themeDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func themeDidChange() {
+        applyTheme()
+        if !tabs.isEmpty {
+            rebuildTabButtons()
+        }
     }
 
     private func setupView() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
+        applyTheme()
 
         // Add new tab button on the right
         setupNewTabButton()
+    }
+
+    private func applyTheme() {
+        applyBackground(enableBlur: true) // Default to blur enabled
+    }
+
+    func applyBackground(enableBlur: Bool) {
+        let bgColor = Theme.shared.current.windowBackground
+        // Tab bar is always opaque (no blur)
+        layer?.backgroundColor = bgColor.cgColor
+        layer?.isOpaque = true
     }
 
     private func setupNewTabButton() {
@@ -52,8 +86,10 @@ class TabBarView: NSView {
         // Remove existing buttons
         tabButtons.forEach { $0.removeFromSuperview() }
         closeButtons.forEach { $0.removeFromSuperview() }
+        activeIndicators.forEach { $0.removeFromSuperview() }
         tabButtons.removeAll()
         closeButtons.removeAll()
+        activeIndicators.removeAll()
 
         // Calculate tab width
         let availableWidth = bounds.width - 40 // Leave space for new tab button
@@ -73,27 +109,73 @@ class TabBarView: NSView {
 
         // Tab button
         let tabButton = NSButton(frame: tabRect)
-        let dirtyIndicator = tab.isDirty ? "● " : ""
-        let readyIndicator = tab.isAgentReady ? "🟢 " : "" // Green circle when agent is ready
-        tabButton.title = "\(readyIndicator)\(dirtyIndicator)\(tab.title)"
-        tabButton.bezelStyle = .recessed
-        tabButton.font = NSFont.systemFont(ofSize: 12)
+
+        // Build title with attributed string for proper icon/color rendering
+        let attributedTitle = NSMutableAttributedString()
+
+        // Agent state indicator
+        let theme = Theme.shared.current
+        switch tab.agentState {
+        case .idle:
+            break // No indicator
+        case .working:
+            appendAgentIndicator(
+                systemSymbolName: "circle.fill",
+                accessibilityDescription: "Agent Working",
+                color: theme.green,
+                to: attributedTitle
+            )
+        case .ready:
+            appendAgentIndicator(
+                systemSymbolName: "circle.fill",
+                accessibilityDescription: "Agent Waiting",
+                color: theme.yellow,
+                to: attributedTitle
+            )
+        case .done:
+            appendAgentIndicator(
+                systemSymbolName: "checkmark.circle.fill",
+                accessibilityDescription: "Agent Done",
+                color: theme.blue,
+                to: attributedTitle
+            )
+        }
+
+        // Dirty indicator
+        if tab.isDirty {
+            let dirtyText = NSAttributedString(string: "● ", attributes: [
+                .font: NSFont.systemFont(ofSize: 12)
+            ])
+            attributedTitle.append(dirtyText)
+        }
+
+        // Tab title
+        let titleText = NSAttributedString(string: tab.title, attributes: [
+            .font: NSFont.systemFont(ofSize: 12)
+        ])
+        attributedTitle.append(titleText)
+
+        tabButton.attributedTitle = attributedTitle
+        tabButton.bezelStyle = .regularSquare
+        tabButton.isBordered = false
         tabButton.target = self
         tabButton.action = #selector(tabButtonClicked(_:))
         tabButton.tag = index
 
         // Style based on active state
         tabButton.wantsLayer = true
+        tabButton.layer?.cornerRadius = 5
+        tabButton.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner] // Round top corners only
+
         if index == activeTabIndex {
-            // Active tab: brighter background with blue border
-            tabButton.layer?.backgroundColor = NSColor(hex: "#313244")?.cgColor
-            tabButton.contentTintColor = NSColor(hex: "#cdd6f4")
-            tabButton.layer?.borderColor = NSColor(hex: "#89b4fa")?.cgColor
-            tabButton.layer?.borderWidth = 2
+            // Active tab
+            tabButton.layer?.backgroundColor = theme.activeTabBackground.cgColor
+            tabButton.contentTintColor = theme.activeTabText
+            tabButton.layer?.borderWidth = 0
         } else {
-            // Inactive tab: darker, no border
-            tabButton.layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
-            tabButton.contentTintColor = NSColor(hex: "#6c7086")
+            // Inactive tab
+            tabButton.layer?.backgroundColor = theme.controlBackground.cgColor
+            tabButton.contentTintColor = theme.inactiveTabText
             tabButton.layer?.borderWidth = 0
         }
 
@@ -111,7 +193,7 @@ class TabBarView: NSView {
         closeButton.target = self
         closeButton.action = #selector(closeButtonClicked(_:))
         closeButton.tag = index
-        closeButton.contentTintColor = NSColor(hex: "#6c7086")
+        closeButton.contentTintColor = Theme.shared.current.secondaryText
 
         // Hover effect for close button
         let trackingArea = NSTrackingArea(
@@ -127,6 +209,37 @@ class TabBarView: NSView {
 
         tabButtons.append(tabButton)
         closeButtons.append(closeButton)
+
+        if index == activeTabIndex {
+            let indicator = NSView(frame: NSRect(x: x, y: 0, width: width, height: 2))
+            indicator.wantsLayer = true
+            indicator.layer?.backgroundColor = theme.activeTabBorder.cgColor
+            indicator.layer?.cornerRadius = 1
+            addSubview(indicator)
+            activeIndicators.append(indicator)
+        }
+    }
+
+    private func appendAgentIndicator(
+        systemSymbolName: String,
+        accessibilityDescription: String,
+        color: NSColor,
+        to attributedTitle: NSMutableAttributedString
+    ) {
+        guard let image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: accessibilityDescription) else {
+            attributedTitle.append(NSAttributedString(string: "* "))
+            return
+        }
+
+        let config = NSImage.SymbolConfiguration(pointSize: 9, weight: .regular)
+            .applying(.init(paletteColors: [color]))
+        let coloredImage = image.withSymbolConfiguration(config) ?? image
+
+        let attachment = NSTextAttachment()
+        attachment.image = coloredImage
+        attachment.bounds = NSRect(x: 0, y: -2, width: 11, height: 11)
+        attributedTitle.append(NSAttributedString(attachment: attachment))
+        attributedTitle.append(NSAttributedString(string: " "))
     }
 
     @objc private func tabButtonClicked(_ sender: NSButton) {
@@ -140,13 +253,20 @@ class TabBarView: NSView {
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
 
+        // Check if clicking on empty area (not on a tab or close button)
+        let hitTab = tabButtons.first { $0.frame.contains(point) }
+        let hitClose = closeButtons.first { $0.frame.contains(point) }
+
+        if hitTab == nil && hitClose == nil {
+            // Clicking on empty tab bar area - allow window dragging
+            window?.performDrag(with: event)
+            return
+        }
+
         // Check for double-click to create new tab
-        if event.clickCount == 2 {
-            // Double-click on empty area creates new tab
-            let hitTab = tabButtons.first { $0.frame.contains(point) }
-            if hitTab == nil {
-                delegate?.tabBarDidRequestNewTab(self)
-            }
+        if event.clickCount == 2 && hitTab == nil {
+            delegate?.tabBarDidRequestNewTab(self)
+            return
         }
 
         super.mouseDown(with: event)
@@ -156,7 +276,7 @@ class TabBarView: NSView {
         super.draw(dirtyRect)
 
         // Draw separator line at bottom
-        NSColor(hex: "#45475a")?.set()
+        Theme.shared.current.separator.set()
         let separatorRect = NSRect(x: 0, y: 0, width: bounds.width, height: 1)
         separatorRect.fill()
     }

@@ -282,7 +282,34 @@ class GitStatusModel: ObservableObject {
     }
 
     func discardChanges(_ file: GitFileItem) {
-        let command = file.isStaged ? ["checkout", "HEAD", "--", file.path] : ["checkout", "--", file.path]
+        var command: [String]
+
+        // Handle different file states
+        if file.unstagedStatus == .untracked {
+            // For untracked files, just remove them
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                let fullPath = self._repositoryPath + "/" + file.path
+                do {
+                    try FileManager.default.removeItem(atPath: fullPath)
+                    DispatchQueue.main.async {
+                        self.refreshStatus()
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        self.error = "Failed to remove file: \(error.localizedDescription)"
+                    }
+                }
+            }
+            return
+        } else if file.isStaged {
+            // For staged files, restore from HEAD (discards both staged and unstaged changes)
+            command = ["checkout", "HEAD", "--", file.path]
+        } else {
+            // For unstaged files, restore from index (discards unstaged changes only)
+            command = ["checkout", "--", file.path]
+        }
+
         executeGitCommand(command) { [weak self] success in
             if success {
                 self?.refreshStatus()

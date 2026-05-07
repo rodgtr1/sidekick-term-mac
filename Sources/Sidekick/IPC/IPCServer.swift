@@ -28,6 +28,8 @@ enum IPCCommandType {
     case showDiff(path: String, old: String, new: String)
     case agentReady
     case agentBusy
+    case agentDone
+    case agentIdle
 
     static func from(_ command: IPCCommand) -> IPCCommandType? {
         switch command.action {
@@ -44,6 +46,10 @@ enum IPCCommandType {
             return .agentReady
         case "agent_busy":
             return .agentBusy
+        case "agent_done":
+            return .agentDone
+        case "agent_idle":
+            return .agentIdle
         default:
             return nil
         }

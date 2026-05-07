@@ -37,6 +37,11 @@ class ActivityBarView: NSView {
     private var buttons: [NSButton] = []
     private let buttonSize: CGFloat = 40
     private let buttonSpacing: CGFloat = 4
+    var topInset: CGFloat = 8 {
+        didSet {
+            needsLayout = true
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -50,9 +55,15 @@ class ActivityBarView: NSView {
 
     private func setupView() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
-
+        applyBackground(enableBlur: true) // Default to blur enabled
         createActivityButtons()
+    }
+
+    func applyBackground(enableBlur: Bool) {
+        // Activity bar is always opaque (no blur)
+        let bgColor = Theme.shared.current.windowBackground
+        layer?.backgroundColor = bgColor.cgColor
+        layer?.isOpaque = true
     }
 
     private func createActivityButtons() {
@@ -69,7 +80,9 @@ class ActivityBarView: NSView {
     }
 
     private func createActivityButton(for panel: SidebarPanel, at index: Int) -> NSButton {
-        let y = CGFloat(index) * (buttonSize + buttonSpacing) + buttonSpacing
+        // Position from top so icons line up with the terminal content below the tabs.
+        let offsetFromTop = topInset + CGFloat(index) * (buttonSize + buttonSpacing) + buttonSpacing
+        let y = bounds.height - offsetFromTop - buttonSize
         let x = (48 - buttonSize) / 2 // Center in 48px width
 
         let button = NSButton(frame: NSRect(x: x, y: y, width: buttonSize, height: buttonSize))
@@ -101,18 +114,17 @@ class ActivityBarView: NSView {
     }
 
     private func styleButton(_ button: NSButton, isSelected: Bool) {
+        button.layer?.backgroundColor = NSColor.clear.cgColor
+        button.layer?.borderWidth = 0
+        button.layer?.borderColor = NSColor.clear.cgColor
+
         if isSelected {
-            button.layer?.backgroundColor = NSColor(hex: "#313244")?.cgColor
-            button.contentTintColor = NSColor(hex: "#cdd6f4")
-            button.layer?.borderColor = NSColor(hex: "#89b4fa")?.cgColor
-            button.layer?.borderWidth = 2
+            button.contentTintColor = Theme.shared.current.primaryText
         } else {
-            button.layer?.backgroundColor = NSColor.clear.cgColor
-            button.contentTintColor = NSColor(hex: "#6c7086")
-            button.layer?.borderWidth = 0
+            button.contentTintColor = Theme.shared.current.secondaryText
         }
 
-        button.layer?.cornerRadius = 8
+        button.layer?.cornerRadius = 0
     }
 
     @objc private func activityButtonClicked(_ sender: NSButton) {
@@ -147,7 +159,9 @@ class ActivityBarView: NSView {
 
         // Reposition buttons if view size changed
         for (index, button) in buttons.enumerated() {
-            let y = CGFloat(index) * (buttonSize + buttonSpacing) + buttonSpacing
+            // Position from top so icons line up with the terminal content below the tabs.
+            let offsetFromTop = topInset + CGFloat(index) * (buttonSize + buttonSpacing) + buttonSpacing
+            let y = bounds.height - offsetFromTop - buttonSize
             let x = (bounds.width - buttonSize) / 2
             button.frame = NSRect(x: x, y: y, width: buttonSize, height: buttonSize)
         }

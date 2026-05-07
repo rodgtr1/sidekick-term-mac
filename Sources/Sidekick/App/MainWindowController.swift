@@ -7,6 +7,7 @@ class MainWindowController: NSWindowController {
     private var activityBarView: ActivityBarView!
     private var sidebarContainerView: SidebarContainerView!
     private var mainContentView: NSView!
+    private var sidebarWidthConstraint: NSLayoutConstraint!
     private var editorViewController: EditorViewController?
     private var tabs: [TabModel] = []
     private var activeTabIndex: Int = 0
@@ -14,16 +15,18 @@ class MainWindowController: NSWindowController {
     private var tabSplitControllers: [UUID: PaneSplitController] = [:] // Map tab IDs to their split controllers
     private var quickOpenPanel: QuickOpenPanel?
     private var preferencesWindowController: PreferencesWindowController?
+    private var keyEventMonitor: Any?
 
     convenience init() {
         print("🏗️ Creating MainWindowController...")
 
         let config = Config.load()
+        Theme.shared.loadFromConfig(config)
         print("✅ Config loaded")
 
         let window = NSWindow(
             contentRect: NSRect(x: 100, y: 100, width: 1200, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -31,13 +34,18 @@ class MainWindowController: NSWindowController {
 
         window.title = "Sidekick"
         window.setFrameAutosaveName("MainWindow")
-        window.titlebarAppearsTransparent = false
-        window.isOpaque = false  // Allow transparency
-        window.alphaValue = CGFloat(config.window.opacity)  // Apply opacity from config
-        window.backgroundColor = .clear  // Clear background for blur effect
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.alphaValue = config.window.enableBlur ? 1.0 : CGFloat(config.window.opacity)
+        window.hasShadow = true
 
-        window.center()  // Center the window on screen
-        window.makeKeyAndOrderFront(nil)  // Ensure window is visible
+        // Make window movable by background
+        window.isMovableByWindowBackground = true
+
+        window.center()
+        window.makeKeyAndOrderFront(nil)
         print("✅ Window configured")
 
         self.init(window: window)
@@ -55,14 +63,23 @@ class MainWindowController: NSWindowController {
         guard let window = window else { return }
 
         // Create visual effect view for blur as the window's content view
-        let visualEffectView = NSVisualEffectView(frame: window.contentView?.bounds ?? .zero)
-        visualEffectView.blendingMode = .behindWindow
-        visualEffectView.material = .hudWindow
-        visualEffectView.state = .active
-        visualEffectView.autoresizingMask = [.width, .height]
+        if config.window.enableBlur {
+            let visualEffectView = NSVisualEffectView(frame: window.contentView?.bounds ?? .zero)
+            visualEffectView.blendingMode = .behindWindow
+            visualEffectView.material = .underWindowBackground
+            visualEffectView.state = .active
+            visualEffectView.autoresizingMask = [.width, .height]
+            visualEffectView.wantsLayer = true
 
-        // Set the visual effect view as the window's content view
-        window.contentView = visualEffectView
+            // CRITICAL: Keep blur at full opacity so it actually works!
+            visualEffectView.alphaValue = 1.0
+
+            window.contentView = visualEffectView
+        } else {
+            // No blur - just use standard content view with background
+            window.contentView?.wantsLayer = true
+            window.contentView?.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
+        }
 
         setupTabBar()
         setupActivityBar()
@@ -85,6 +102,7 @@ class MainWindowController: NSWindowController {
     private func setupActivityBar() {
         activityBarView = ActivityBarView()
         activityBarView.delegate = self
+        activityBarView.topInset = CGFloat(config.window.padding)
         activityBarView.translatesAutoresizingMaskIntoConstraints = false
         window?.contentView?.addSubview(activityBarView)
     }
@@ -92,6 +110,7 @@ class MainWindowController: NSWindowController {
     private func setupSidebar() {
         sidebarContainerView = SidebarContainerView()
         sidebarContainerView.delegate = self
+        sidebarContainerView.setVisible(false)
         sidebarContainerView.translatesAutoresizingMaskIntoConstraints = false
         window?.contentView?.addSubview(sidebarContainerView)
     }
@@ -99,7 +118,9 @@ class MainWindowController: NSWindowController {
     private func setupMainContent() {
         mainContentView = NSView()
         mainContentView.wantsLayer = true
-        mainContentView.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
+        // Keep main content transparent so blur shows through terminal
+        mainContentView.layer?.backgroundColor = NSColor.clear.cgColor
+        mainContentView.layer?.isOpaque = false
         mainContentView.translatesAutoresizingMaskIntoConstraints = false
         window?.contentView?.addSubview(mainContentView)
     }
@@ -107,22 +128,28 @@ class MainWindowController: NSWindowController {
     private func layoutViews() {
         guard let contentView = window?.contentView else { return }
 
+        sidebarWidthConstraint = sidebarContainerView.widthAnchor.constraint(equalToConstant: 0)
+
         NSLayoutConstraint.activate([
-            tabBarView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            tabBarView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            // Keep tabs below the native titlebar/traffic-light safe area.
+            tabBarView.topAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.topAnchor),
+            tabBarView.leadingAnchor.constraint(equalTo: mainContentView.leadingAnchor),
             tabBarView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             tabBarView.heightAnchor.constraint(equalToConstant: 36),
 
+            // Activity bar starts below tab bar
             activityBarView.topAnchor.constraint(equalTo: tabBarView.bottomAnchor),
             activityBarView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             activityBarView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             activityBarView.widthAnchor.constraint(equalToConstant: 48),
 
+            // Sidebar starts below tab bar, to the right of activity bar
             sidebarContainerView.topAnchor.constraint(equalTo: tabBarView.bottomAnchor),
             sidebarContainerView.leadingAnchor.constraint(equalTo: activityBarView.trailingAnchor),
             sidebarContainerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            sidebarContainerView.widthAnchor.constraint(equalToConstant: 240),
+            sidebarWidthConstraint,
 
+            // Main content starts below tab bar, to the right of sidebar
             mainContentView.topAnchor.constraint(equalTo: tabBarView.bottomAnchor),
             mainContentView.leadingAnchor.constraint(equalTo: sidebarContainerView.trailingAnchor),
             mainContentView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
@@ -133,8 +160,29 @@ class MainWindowController: NSWindowController {
         setupCWDTracking()
     }
 
+    func applyRuntimeConfig(_ newConfig: Config) {
+        config = newConfig
+        window?.alphaValue = newConfig.window.enableBlur ? 1.0 : CGFloat(newConfig.window.opacity)
+        activityBarView?.topInset = CGFloat(newConfig.window.padding)
+
+        for tab in tabs {
+            for pane in tab.panes {
+                pane.terminalViewController?.applyConfig(newConfig)
+            }
+        }
+    }
+
     private func setupKeyboardShortcuts() {
-        // This will be implemented to handle keyboard shortcuts
+        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, event.window === self.window else { return event }
+            return self.handleKeyDown(event) ? nil : event
+        }
+    }
+
+    deinit {
+        if let keyEventMonitor {
+            NSEvent.removeMonitor(keyEventMonitor)
+        }
     }
 
     private func setupCWDTracking() {
@@ -156,6 +204,13 @@ class MainWindowController: NSWindowController {
             self,
             selector: #selector(paneTitleChanged(_:)),
             name: NSNotification.Name("PaneTitleChanged"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(paneAgentStateChanged(_:)),
+            name: NSNotification.Name("PaneAgentStateChanged"),
             object: nil
         )
     }
@@ -193,6 +248,24 @@ class MainWindowController: NSWindowController {
                 if tab.activePane?.id == pane.id {
                     tab.updateTitleFromActivePane()
                     updateTabBar()
+                }
+                break
+            }
+        }
+    }
+
+    @objc private func paneAgentStateChanged(_ notification: Notification) {
+        guard let pane = notification.object as? PaneModel,
+              let state = notification.userInfo?["agentState"] as? AgentState else { return }
+
+        for tab in tabs {
+            if tab.panes.contains(where: { $0.id == pane.id }) {
+                tab.agentState = state
+                updateTabBar()
+
+                if state == .ready || state == .done {
+                    NSSound.beep()
+                    NSApp.requestUserAttention(.informationalRequest)
                 }
                 break
             }
@@ -568,6 +641,14 @@ extension MainWindowController: QuickOpenPanelDelegate {
 
 extension MainWindowController {
     override func keyDown(with event: NSEvent) {
+        if handleKeyDown(event) {
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags
         let keyCode = event.keyCode
 
@@ -580,39 +661,39 @@ extension MainWindowController {
                 // Ctrl+Tab - Next tab
                 cycleTabs(forward: true)
             }
-            return
+            return true
         }
 
         // Cmd+Shift combinations (check these first to avoid conflicts)
         if modifiers.contains([.command, .shift]) {
             switch keyCode {
             case 14: // Cmd+Shift+E (Files)
-                showPanel(.files)
-                return
+                togglePanel(.files)
+                return true
             case 5: // Cmd+Shift+G (Git)
-                showPanel(.git)
-                return
+                togglePanel(.git)
+                return true
             case 3: // Cmd+Shift+F (Search)
-                showPanel(.search)
-                return
+                togglePanel(.search)
+                return true
             case 15: // Cmd+Shift+R (Run)
-                showPanel(.run)
-                return
+                togglePanel(.run)
+                return true
             case 13: // Cmd+Shift+W (Close Pane)
                 closeCurrentPane()
-                return
+                return true
             case 2: // Cmd+Shift+D (Split Right)
                 currentPaneSplitController?.splitPane(direction: .horizontal)
-                return
+                return true
             case 6: // Cmd+Shift+X (Split Down)
                 currentPaneSplitController?.splitPane(direction: .vertical)
-                return
+                return true
             case 17: // Cmd+Shift+T (New Tab)
                 createNewTab()
-                return
+                return true
             case 47: // Cmd+Shift+. (Toggle hidden files)
                 sidebarContainerView.toggleHiddenFiles()
-                return
+                return true
             default:
                 break
             }
@@ -623,43 +704,43 @@ extension MainWindowController {
             switch keyCode {
             case 17: // Cmd+T (New Tab)
                 createNewTab()
-                return
+                return true
             case 13: // Cmd+W (Close Tab)
                 closeTab(index: activeTabIndex)
-                return
+                return true
             case 1: // Cmd+S (Save File)
                 saveCurrentFile()
-                return
+                return true
             case 11: // Cmd+B (Toggle Sidebar)
                 toggleSidebar()
-                return
+                return true
             case 35: // Cmd+P (Quick Open)
                 showQuickOpen()
-                return
+                return true
             case 43: // Cmd+, (Preferences)
                 showPreferences()
-                return
+                return true
             case 2: // Cmd+D (Split Right)
                 currentPaneSplitController?.splitPane(direction: .horizontal)
-                return
+                return true
             case 33: // Cmd+[ (Focus previous pane)
                 currentPaneSplitController?.focusPreviousPane()
-                return
+                return true
             case 30: // Cmd+] (Focus next pane)
                 currentPaneSplitController?.focusNextPane()
-                return
+                return true
             case 18...26: // Cmd+1-9 (Switch tabs)
                 let tabIndex = Int(keyCode) - 18
                 if tabIndex < tabs.count {
                     switchToTab(index: tabIndex)
                 }
-                return
+                return true
             default:
                 break
             }
         }
 
-        super.keyDown(with: event)
+        return false
     }
 
     private func cycleTabs(forward: Bool) {
@@ -682,7 +763,16 @@ extension MainWindowController {
 
     func toggleSidebar() {
         sidebarContainerView.toggleVisibility()
-        updateMainContentConstraints()
+        updateSidebarLayout()
+    }
+
+    private func togglePanel(_ panel: SidebarPanel) {
+        if sidebarContainerView.visible && sidebarContainerView.currentPanel == panel {
+            sidebarContainerView.setVisible(false)
+            updateSidebarLayout()
+        } else {
+            showPanel(panel)
+        }
     }
 
     func showPanel(_ panel: SidebarPanel) {
@@ -690,8 +780,8 @@ extension MainWindowController {
         activityBarView.selectPanel(panel)
 
         if sidebarContainerView.isHidden {
-            sidebarContainerView.toggleVisibility()
-            updateMainContentConstraints()
+            sidebarContainerView.setVisible(true)
+            updateSidebarLayout()
         }
     }
 
@@ -700,10 +790,15 @@ extension MainWindowController {
         currentPaneSplitController?.splitWithBrowser(direction: .horizontal)
     }
 
-    private func updateMainContentConstraints() {
-        // This is simplified - in a real implementation you'd update constraints
-        // For now, just ensure the sidebar state is correct
-        sidebarContainerView.layoutSubtreeIfNeeded()
+    func showKeyboardShortcuts() {
+        // Show keyboard shortcuts help
+        // For now, this is a placeholder - could show a panel with shortcuts
+        print("⌨️ Keyboard shortcuts requested")
+    }
+
+    private func updateSidebarLayout() {
+        sidebarWidthConstraint.constant = sidebarContainerView.visible ? 240 : 0
+        window?.contentView?.layoutSubtreeIfNeeded()
     }
 
 }
@@ -729,7 +824,7 @@ extension MainWindowController: IPCServerDelegate {
         case .agentReady:
             // Mark the active tab as agent ready
             if activeTabIndex < tabs.count {
-                tabs[activeTabIndex].isAgentReady = true
+                tabs[activeTabIndex].agentState = .ready
                 updateTabBar()
 
                 // Notification: Play sound and bounce dock icon
@@ -741,7 +836,26 @@ extension MainWindowController: IPCServerDelegate {
         case .agentBusy:
             // Mark the active tab as agent busy
             if activeTabIndex < tabs.count {
-                tabs[activeTabIndex].isAgentReady = false
+                tabs[activeTabIndex].agentState = .working
+                updateTabBar()
+            }
+            return IPCResponse(ok: true)
+
+        case .agentDone:
+            // Mark the active tab as done
+            if activeTabIndex < tabs.count {
+                tabs[activeTabIndex].agentState = .done
+                updateTabBar()
+
+                NSSound.beep()
+                NSApp.requestUserAttention(.informationalRequest)
+            }
+            return IPCResponse(ok: true)
+
+        case .agentIdle:
+            // Mark the active tab as agent idle
+            if activeTabIndex < tabs.count {
+                tabs[activeTabIndex].agentState = .idle
                 updateTabBar()
             }
             return IPCResponse(ok: true)
