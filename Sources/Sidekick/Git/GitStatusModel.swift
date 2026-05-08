@@ -75,6 +75,12 @@ class GitStatusModel: ObservableObject {
     private let refreshInterval: TimeInterval = 2.0
     private var refreshTimer: Timer?
 
+    private struct GitCommandResult {
+        let terminationStatus: Int32
+        let output: String
+        let errorOutput: String
+    }
+
     init() {}
 
     var repositoryPath: String {
@@ -95,6 +101,7 @@ class GitStatusModel: ObservableObject {
 
     func refreshStatus() {
         guard !_repositoryPath.isEmpty else { return }
+        guard !isLoading else { return }
 
         isLoading = true
         error = nil
@@ -127,24 +134,11 @@ class GitStatusModel: ObservableObject {
     }
 
     private func getCurrentBranch() -> String {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        task.arguments = ["-C", _repositoryPath, "symbolic-ref", "--short", "HEAD"]
-        task.currentDirectoryURL = URL(fileURLWithPath: _repositoryPath)
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe()
-
         do {
-            try task.run()
-            task.waitUntilExit()
+            let result = try runGitCommand(["symbolic-ref", "--short", "HEAD"], allowOptionalLocks: false)
 
-            if task.terminationStatus == 0 {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let output = String(data: data, encoding: .utf8) {
-                    return output.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
+            if result.terminationStatus == 0 {
+                return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
             }
 
             // Try detached HEAD
@@ -155,24 +149,11 @@ class GitStatusModel: ObservableObject {
     }
 
     private func getDetachedHead() -> String {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        task.arguments = ["-C", _repositoryPath, "rev-parse", "--short", "HEAD"]
-        task.currentDirectoryURL = URL(fileURLWithPath: _repositoryPath)
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe()
-
         do {
-            try task.run()
-            task.waitUntilExit()
+            let result = try runGitCommand(["rev-parse", "--short", "HEAD"], allowOptionalLocks: false)
 
-            if task.terminationStatus == 0 {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let output = String(data: data, encoding: .utf8) {
-                    return "(\(output.trimmingCharacters(in: .whitespacesAndNewlines)))"
-                }
+            if result.terminationStatus == 0 {
+                return "(\(result.output.trimmingCharacters(in: .whitespacesAndNewlines)))"
             }
         } catch {
             return "unknown"
@@ -182,24 +163,11 @@ class GitStatusModel: ObservableObject {
     }
 
     private func getGitStatus() -> [GitFileItem] {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        task.arguments = ["-C", _repositoryPath, "status", "--porcelain"]
-        task.currentDirectoryURL = URL(fileURLWithPath: _repositoryPath)
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe()
-
         do {
-            try task.run()
-            task.waitUntilExit()
+            let result = try runGitCommand(["status", "--porcelain"], allowOptionalLocks: false)
 
-            if task.terminationStatus == 0 {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let output = String(data: data, encoding: .utf8) {
-                    return parseGitStatusOutput(output)
-                }
+            if result.terminationStatus == 0 {
+                return parseGitStatusOutput(result.output)
             }
         } catch {
             DispatchQueue.main.async {
@@ -358,19 +326,9 @@ class GitStatusModel: ObservableObject {
 
     private func executeGitCommand(_ arguments: [String], completion: @escaping (Bool) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            task.arguments = ["-C", self._repositoryPath] + arguments
-            task.currentDirectoryURL = URL(fileURLWithPath: self._repositoryPath)
-
-            task.standardOutput = Pipe()
-            task.standardError = Pipe()
-
             do {
-                try task.run()
-                task.waitUntilExit()
-
-                let success = task.terminationStatus == 0
+                let result = try self.runGitCommand(arguments)
+                let success = result.terminationStatus == 0
                 DispatchQueue.main.async {
                     completion(success)
                 }
@@ -385,30 +343,12 @@ class GitStatusModel: ObservableObject {
 
     private func executeGitCommandWithOutput(_ arguments: [String], completion: @escaping (Bool, String?, String?) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            task.arguments = ["-C", self._repositoryPath] + arguments
-            task.currentDirectoryURL = URL(fileURLWithPath: self._repositoryPath)
-
-            let outputPipe = Pipe()
-            let errorPipe = Pipe()
-            task.standardOutput = outputPipe
-            task.standardError = errorPipe
-
             do {
-                try task.run()
-                task.waitUntilExit()
-
-                let success = task.terminationStatus == 0
-
-                let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-
-                let output = String(data: outputData, encoding: .utf8)
-                let errorOutput = String(data: errorData, encoding: .utf8)
+                let result = try self.runGitCommand(arguments)
+                let success = result.terminationStatus == 0
 
                 DispatchQueue.main.async {
-                    completion(success, output, errorOutput)
+                    completion(success, result.output, result.errorOutput)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -417,5 +357,50 @@ class GitStatusModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func runGitCommand(_ arguments: [String], allowOptionalLocks: Bool = true) throws -> GitCommandResult {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        task.arguments = ["-C", _repositoryPath] + arguments
+        task.currentDirectoryURL = URL(fileURLWithPath: _repositoryPath)
+
+        var environment = ProcessInfo.processInfo.environment
+        if !allowOptionalLocks {
+            environment["GIT_OPTIONAL_LOCKS"] = "0"
+        }
+        task.environment = environment
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        task.standardOutput = outputPipe
+        task.standardError = errorPipe
+
+        var outputData = Data()
+        var errorData = Data()
+        let readGroup = DispatchGroup()
+
+        try task.run()
+
+        readGroup.enter()
+        DispatchQueue.global(qos: .utility).async {
+            outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            readGroup.leave()
+        }
+
+        readGroup.enter()
+        DispatchQueue.global(qos: .utility).async {
+            errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            readGroup.leave()
+        }
+
+        task.waitUntilExit()
+        readGroup.wait()
+
+        return GitCommandResult(
+            terminationStatus: task.terminationStatus,
+            output: String(data: outputData, encoding: .utf8) ?? "",
+            errorOutput: String(data: errorData, encoding: .utf8) ?? ""
+        )
     }
 }

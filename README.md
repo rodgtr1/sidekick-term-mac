@@ -15,8 +15,8 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - Custom tab bar with close buttons
 - Tab switching with keyboard shortcuts (Ctrl+Tab, Cmd+1-9)
 - Tab title shows current directory + git branch
-- Visual indicator (🟢) on tab when Claude agent is ready
-- Dock icon bounces when agent becomes ready
+- Visual tab indicators for Claude/Codex agent states
+- Dock icon bounces when an agent waits for input or finishes
 - Active tab highlighted with blue border
 
 ✅ **Split Panes**
@@ -118,8 +118,43 @@ cp -r build/Sidekick.app /Applications/
 # Test IPC connection
 .build/debug/sidekick-ctl ping
 
+# Emit agent status markers for hooks
+.build/debug/sidekick-agent-status busy
+
 # Or if installed system-wide
 sidekick-ctl ping
+```
+
+### Claude/Codex Agent Status Hooks
+
+Sidekick can drive tab status indicators from Claude Code and Codex lifecycle hooks.
+This is more reliable than detecting agent state from terminal text. The helper
+writes an OSC 666 terminal property directly to `/dev/tty`, so hook stdout stays
+clean for the agent.
+
+```bash
+scripts/install-agent-status-hooks
+```
+
+The installer builds `sidekick-agent-status`, installs it to `~/.local/bin`, and
+adds hooks to `~/.claude/settings.json` and `~/.codex/config.toml`. Restart open
+Claude Code or Codex sessions after installing.
+
+Hook status mapping:
+
+```text
+UserPromptSubmit  -> busy
+PermissionRequest -> ready
+Stop              -> done
+```
+
+Manual status commands are also available:
+
+```bash
+sidekick-agent-status busy
+sidekick-agent-status ready
+sidekick-agent-status done
+sidekick-agent-status idle
 ```
 
 ## IPC Commands

@@ -1,6 +1,12 @@
 import Cocoa
 
+protocol PaneSplitControllerDelegate: AnyObject {
+    func paneSplitController(_ controller: PaneSplitController, didActivatePane pane: PaneModel, at index: Int)
+}
+
 class PaneSplitController: NSViewController {
+    weak var delegate: PaneSplitControllerDelegate?
+
     private var rootSplitView: NSSplitView!
     private var panes: [PaneModel] = []
     private var activePaneIndex: Int = 0
@@ -449,6 +455,8 @@ class PaneSplitController: NSViewController {
             print("🎯 Adding active border to pane \(index)")
             addPaneBorder(to: paneView, isActive: true)
         }
+
+        delegate?.paneSplitController(self, didActivatePane: panes[activePaneIndex], at: activePaneIndex)
     }
 
     func focusNextPane() {

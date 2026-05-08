@@ -380,7 +380,12 @@ class MainWindowController: NSWindowController {
         guard let userInfo = notification.userInfo,
               let directory = userInfo["directory"] as? String else { return }
 
-        // Update file tree to show current directory
+        if let pane = notification.object as? PaneModel,
+           let activeTab = tabs[safe: activeTabIndex] {
+            guard activeTab.activePane?.id == pane.id else { return }
+        }
+
+        // Update sidebar panels to show current active pane directory.
         sidebarContainerView.updateFileTree(path: directory)
     }
 
@@ -457,6 +462,7 @@ class MainWindowController: NSWindowController {
 
         // Create pane split controller for this tab
         let paneSplitController = PaneSplitController(config: config)
+        paneSplitController.delegate = self
         currentPaneSplitController = paneSplitController
 
         // Store the mapping of tab to split controller
@@ -481,6 +487,38 @@ class MainWindowController: NSWindowController {
 
     private func updateTabBar() {
         tabBarView.updateTabs(tabs, activeIndex: activeTabIndex)
+    }
+
+    private func syncSidebarToActiveTab() {
+        guard let directory = currentSidebarDirectoryForActiveTab() else { return }
+        sidebarContainerView.updateFileTree(path: directory)
+    }
+
+    private func currentSidebarDirectoryForActiveTab() -> String? {
+        guard let activeTab = tabs[safe: activeTabIndex] else { return nil }
+
+        if let activePaneDirectory = directoryForSidebar(from: activeTab.activePane) {
+            return activePaneDirectory
+        }
+
+        return activeTab.panes.compactMap { directoryForSidebar(from: $0) }.first
+    }
+
+    private func directoryForSidebar(from pane: PaneModel?) -> String? {
+        guard let pane = pane else { return nil }
+
+        if !pane.currentDirectory.isEmpty {
+            return pane.currentDirectory
+        }
+
+        if let terminalVC = pane.terminalViewController {
+            let directory = terminalVC.getCurrentWorkingDirectory()
+            if !directory.isEmpty && directory != "~" {
+                return directory
+            }
+        }
+
+        return nil
     }
 
     private func switchToTab(index: Int) {
@@ -511,6 +549,7 @@ class MainWindowController: NSWindowController {
         }
 
         updateTabBar()
+        syncSidebarToActiveTab()
     }
 
     private func closeTab(index: Int) {
@@ -541,6 +580,7 @@ class MainWindowController: NSWindowController {
         }
 
         updateTabBar()
+        syncSidebarToActiveTab()
     }
 }
 
@@ -555,6 +595,16 @@ extension MainWindowController: TabBarDelegate {
 
     func tabBarDidRequestNewTab(_ tabBar: TabBarView) {
         createNewTab()
+    }
+}
+
+extension MainWindowController: PaneSplitControllerDelegate {
+    func paneSplitController(_ controller: PaneSplitController, didActivatePane pane: PaneModel, at index: Int) {
+        guard let activeTab = tabs[safe: activeTabIndex],
+              tabSplitControllers[activeTab.id] === controller else { return }
+
+        activeTab.activePaneIndex = index
+        syncSidebarToActiveTab()
     }
 }
 

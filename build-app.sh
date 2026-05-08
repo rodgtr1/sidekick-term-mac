@@ -64,6 +64,11 @@ echo "📋 Adding sidekick-ctl CLI..."
 cp ".build/release/sidekick-ctl" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-ctl"
 chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-ctl"
 
+# Create sidekick-agent-status CLI tool in bundle
+echo "📋 Adding sidekick-agent-status CLI..."
+cp ".build/release/sidekick-agent-status" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status"
+chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status"
+
 echo "✅ App bundle created at: ${BUILD_DIR}/${BUNDLE_NAME}"
 echo ""
 echo "📱 To install:"
@@ -76,3 +81,4 @@ echo "   /Applications/${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
 echo ""
 echo "🛠️  To add CLI tools to PATH:"
 echo "   ln -sf /Applications/${BUNDLE_NAME}/Contents/MacOS/sidekick-ctl /usr/local/bin/sidekick-ctl"
+echo "   ln -sf /Applications/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status /usr/local/bin/sidekick-agent-status"

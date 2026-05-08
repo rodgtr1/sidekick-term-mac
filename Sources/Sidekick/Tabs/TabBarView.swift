@@ -14,26 +14,32 @@ class TabBarView: NSView {
     private var tabButtons: [NSButton] = []
     private var closeButtons: [NSButton] = []
     private var activeIndicators: [NSView] = []
+    private var pulseTimer: Timer?
+    private var workingPulseIsBright = false
 
     private let tabHeight: CGFloat = 32
     private let tabMinWidth: CGFloat = 120
     private let tabMaxWidth: CGFloat = 200
     private let closeButtonSize: CGFloat = 16
     private let tabSpacing: CGFloat = 1
+    private let tabHorizontalPadding: CGFloat = 12
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setupView()
         observeThemeChanges()
+        startPulseTimer()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupView()
         observeThemeChanges()
+        startPulseTimer()
     }
 
     deinit {
+        pulseTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -76,6 +82,21 @@ class TabBarView: NSView {
         // This will be positioned dynamically based on tab count
     }
 
+    private func startPulseTimer() {
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+
+            let hasWorkingTab = self.tabs.contains { $0.agentState == .working }
+            guard hasWorkingTab else {
+                self.workingPulseIsBright = false
+                return
+            }
+
+            self.workingPulseIsBright.toggle()
+            self.rebuildTabButtons()
+        }
+    }
+
     func updateTabs(_ tabs: [TabModel], activeIndex: Int) {
         self.tabs = tabs
         self.activeTabIndex = activeIndex
@@ -109,9 +130,13 @@ class TabBarView: NSView {
 
         // Tab button
         let tabButton = NSButton(frame: tabRect)
+        tabButton.cell = TabButtonCell(textLeadingPadding: tabHorizontalPadding, textTrailingPadding: closeButtonSize + 18)
 
         // Build title with attributed string for proper icon/color rendering
         let attributedTitle = NSMutableAttributedString()
+        let titleParagraphStyle = NSMutableParagraphStyle()
+        titleParagraphStyle.lineBreakMode = .byTruncatingMiddle
+        titleParagraphStyle.alignment = .center
 
         // Agent state indicator
         let theme = Theme.shared.current
@@ -122,19 +147,19 @@ class TabBarView: NSView {
             appendAgentIndicator(
                 systemSymbolName: "circle.fill",
                 accessibilityDescription: "Agent Working",
-                color: theme.green,
+                color: workingAgentIndicatorColor,
                 to: attributedTitle
             )
         case .ready:
             appendAgentIndicator(
                 systemSymbolName: "circle.fill",
                 accessibilityDescription: "Agent Waiting",
-                color: theme.yellow,
+                color: theme.green,
                 to: attributedTitle
             )
         case .done:
             appendAgentIndicator(
-                systemSymbolName: "checkmark.circle.fill",
+                systemSymbolName: "circle.fill",
                 accessibilityDescription: "Agent Done",
                 color: theme.blue,
                 to: attributedTitle
@@ -151,13 +176,18 @@ class TabBarView: NSView {
 
         // Tab title
         let titleText = NSAttributedString(string: tab.title, attributes: [
-            .font: NSFont.systemFont(ofSize: 12)
+            .font: NSFont.systemFont(ofSize: 12),
+            .paragraphStyle: titleParagraphStyle
         ])
         attributedTitle.append(titleText)
 
         tabButton.attributedTitle = attributedTitle
+        tabButton.toolTip = tab.title
         tabButton.bezelStyle = .regularSquare
         tabButton.isBordered = false
+        tabButton.cell?.lineBreakMode = .byTruncatingMiddle
+        tabButton.cell?.truncatesLastVisibleLine = true
+        tabButton.cell?.wraps = false
         tabButton.target = self
         tabButton.action = #selector(tabButtonClicked(_:))
         tabButton.tag = index
@@ -242,6 +272,14 @@ class TabBarView: NSView {
         attributedTitle.append(NSAttributedString(string: " "))
     }
 
+    private var workingAgentIndicatorColor: NSColor {
+        if workingPulseIsBright {
+            return NSColor(hex: "#f9e2af") ?? Theme.shared.current.yellow
+        }
+
+        return NSColor(hex: "#c9a96a") ?? Theme.shared.current.yellow.blended(withFraction: 0.3, of: .black) ?? Theme.shared.current.yellow
+    }
+
     @objc private func tabButtonClicked(_ sender: NSButton) {
         delegate?.tabBar(self, didSelectTab: sender.tag)
     }
@@ -280,5 +318,36 @@ class TabBarView: NSView {
         if !tabs.isEmpty {
             rebuildTabButtons()
         }
+    }
+}
+
+private final class TabButtonCell: NSButtonCell {
+    private let textLeadingPadding: CGFloat
+    private let textTrailingPadding: CGFloat
+
+    init(textLeadingPadding: CGFloat, textTrailingPadding: CGFloat) {
+        self.textLeadingPadding = textLeadingPadding
+        self.textTrailingPadding = textTrailingPadding
+        super.init(textCell: "")
+        lineBreakMode = .byTruncatingMiddle
+        truncatesLastVisibleLine = true
+        wraps = false
+    }
+
+    required init(coder: NSCoder) {
+        self.textLeadingPadding = 12
+        self.textTrailingPadding = 34
+        super.init(coder: coder)
+        lineBreakMode = .byTruncatingMiddle
+        truncatesLastVisibleLine = true
+        wraps = false
+    }
+
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        var titleRect = super.titleRect(forBounds: rect)
+        titleRect.origin.x = rect.minX + textLeadingPadding
+        titleRect.size.width = max(0, rect.width - textLeadingPadding - textTrailingPadding)
+        titleRect.size.height = rect.height
+        return titleRect
     }
 }

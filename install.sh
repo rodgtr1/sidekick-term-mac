@@ -44,6 +44,7 @@ read -p "📦 Install CLI tools to /usr/local/bin? (y/n): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-ctl" /usr/local/bin/sidekick-ctl
+    sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-agent-status" /usr/local/bin/sidekick-agent-status
     echo "✅ CLI tools installed"
 fi
 
@@ -54,3 +55,4 @@ echo "To run:"
 echo "  - Launch from Applications folder"
 echo "  - Or: open /Applications/${APP_NAME}"
 echo "  - CLI: sidekick-ctl ping"
+echo "  - Agent hooks: sidekick-agent-status busy"

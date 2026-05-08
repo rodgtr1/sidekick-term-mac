@@ -24,6 +24,8 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
 }
 
 class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate {
+    private static let agentStatusTermprop = "vte.ext.sidekick.agent"
+
     weak var delegate: TerminalViewControllerDelegate?
     private var terminalView: LocalProcessTerminalView!
     private var config: Config
@@ -32,6 +34,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var shellPID: pid_t = 0
     private var initialDirectory: String?
     private var recentOutput = ""
+    private var agentStatusSequenceBuffer = ""
     private var lastDetectedAgentState: AgentState = .idle
     private var agentDoneTimer: Timer?
 
@@ -331,6 +334,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func detectAgentState(from output: String) {
+        if consumeAgentStatusSequences(from: output) {
+            return
+        }
+
         recentOutput += output
         if recentOutput.count > 8_000 {
             recentOutput = String(recentOutput.suffix(8_000))
@@ -349,6 +356,62 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         } else if lastDetectedAgentState == .working {
             scheduleDoneAfterQuietPeriod()
         }
+    }
+
+    private func consumeAgentStatusSequences(from output: String) -> Bool {
+        agentStatusSequenceBuffer += output
+        if agentStatusSequenceBuffer.count > 2_000 {
+            agentStatusSequenceBuffer = String(agentStatusSequenceBuffer.suffix(2_000))
+        }
+
+        let escapedTermprop = NSRegularExpression.escapedPattern(for: Self.agentStatusTermprop)
+        let pattern = "\u{001B}\\]666;\(escapedTermprop)=([A-Za-z_-]+)(?:\u{001B}\\\\|\u{0007})"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return false
+        }
+
+        let searchRange = NSRange(agentStatusSequenceBuffer.startIndex..<agentStatusSequenceBuffer.endIndex, in: agentStatusSequenceBuffer)
+        let matches = regex.matches(in: agentStatusSequenceBuffer, range: searchRange)
+        guard !matches.isEmpty else {
+            return false
+        }
+
+        var consumedUpperBound = agentStatusSequenceBuffer.startIndex
+        for match in matches {
+            if let matchRange = Range(match.range, in: agentStatusSequenceBuffer) {
+                consumedUpperBound = matchRange.upperBound
+            }
+            guard let statusRange = Range(match.range(at: 1), in: agentStatusSequenceBuffer),
+                  let state = agentState(fromStatus: String(agentStatusSequenceBuffer[statusRange])) else {
+                continue
+            }
+            applyExplicitAgentState(state)
+        }
+
+        agentStatusSequenceBuffer = String(agentStatusSequenceBuffer[consumedUpperBound...])
+        return true
+    }
+
+    private func agentState(fromStatus status: String) -> AgentState? {
+        switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "busy", "working", "running":
+            return .working
+        case "ready", "prompt", "waiting", "needs-user", "needs_user":
+            return .ready
+        case "done", "finished", "complete":
+            return .done
+        case "idle", "clear", "reset":
+            return .idle
+        default:
+            return nil
+        }
+    }
+
+    private func applyExplicitAgentState(_ state: AgentState) {
+        recentOutput = ""
+        agentDoneTimer?.invalidate()
+        agentDoneTimer = nil
+        notifyDetectedAgentState(state)
     }
 
     private func normalizeTerminalOutput(_ output: String) -> String {

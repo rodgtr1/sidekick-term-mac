@@ -194,7 +194,7 @@ extension PaneModel: TerminalViewControllerDelegate {
         // Notify about CWD change
         NotificationCenter.default.post(
             name: NSNotification.Name("TerminalCWDChanged"),
-            object: nil,
+            object: self,
             userInfo: ["directory": directory, "branch": branch as Any]
         )
     }
