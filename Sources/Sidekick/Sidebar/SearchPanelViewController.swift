@@ -34,7 +34,7 @@ class SearchPanelViewController: NSViewController {
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
     }
 
     override func viewDidLoad() {
@@ -63,7 +63,7 @@ class SearchPanelViewController: NSViewController {
         tableView = NSTableView()
         tableView.headerView = nil
         tableView.rowSizeStyle = .small
-        tableView.backgroundColor = NSColor.clear
+        tableView.backgroundColor = AppTheme.sidebarBackground
         tableView.selectionHighlightStyle = .none
         tableView.target = self
         tableView.doubleAction = #selector(tableViewDoubleClick(_:))
@@ -79,7 +79,10 @@ class SearchPanelViewController: NSViewController {
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
-        scrollView.backgroundColor = NSColor.clear
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = AppTheme.sidebarBackground
+        scrollView.contentView.drawsBackground = true
+        scrollView.contentView.backgroundColor = AppTheme.sidebarBackground
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(searchField)

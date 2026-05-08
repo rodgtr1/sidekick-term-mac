@@ -74,9 +74,7 @@ blink = true
 [window]
 # Inner padding around the terminal content (pixels)
 padding = 8
-# Window opacity: 0.0 (fully transparent) to 1.0 (fully opaque)
-# When blur is enabled, this controls the visual effect view opacity
-# When blur is disabled, this controls the window alpha
+# Terminal background opacity: 0.0 (fully transparent) to 1.0 (fully opaque)
 opacity = 0.9
 # Enable macOS background blur/vibrancy effect
 enable_blur = true

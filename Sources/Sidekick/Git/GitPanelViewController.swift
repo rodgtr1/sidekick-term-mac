@@ -28,7 +28,7 @@ class GitPanelViewController: NSViewController {
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
     }
 
     override func viewDidLoad() {
@@ -48,7 +48,7 @@ class GitPanelViewController: NSViewController {
     private func setupHeader() {
         headerView = NSView()
         headerView.wantsLayer = true
-        headerView.layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
+        headerView.layer?.backgroundColor = AppTheme.headerBackground.cgColor
         headerView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(headerView)
 
@@ -97,17 +97,21 @@ class GitPanelViewController: NSViewController {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = AppTheme.sidebarBackground
+        scrollView.contentView.drawsBackground = true
+        scrollView.contentView.backgroundColor = AppTheme.sidebarBackground
 
         tableView = NSTableView()
         tableView.dataSource = self
         tableView.delegate = self
         tableView.headerView = nil
+        tableView.backgroundColor = AppTheme.sidebarBackground
         tableView.usesAlternatingRowBackgroundColors = false
         if #available(macOS 12.0, *) {
-            tableView.style = .sourceList
-        } else {
-            tableView.selectionHighlightStyle = .sourceList
+            tableView.style = .plain
         }
+        tableView.selectionHighlightStyle = .regular
         tableView.allowsMultipleSelection = true
 
         // Create columns
@@ -193,7 +197,7 @@ class GitPanelViewController: NSViewController {
         // Commit message area
         let commitContainer = NSView()
         commitContainer.wantsLayer = true
-        commitContainer.layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
+        commitContainer.layer?.backgroundColor = AppTheme.headerBackground.cgColor
         commitContainer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(commitContainer)
 
@@ -214,7 +218,7 @@ class GitPanelViewController: NSViewController {
         commitMessageTextView.isEditable = true
         commitMessageTextView.isRichText = false
         commitMessageTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        commitMessageTextView.backgroundColor = NSColor(hex: "#1e1e2e") ?? .textBackgroundColor
+        commitMessageTextView.backgroundColor = AppTheme.windowBackground
         commitMessageTextView.textColor = NSColor(hex: "#cdd6f4") ?? .textColor
         commitMessageTextView.insertionPointColor = NSColor(hex: "#f5e0dc") ?? .textColor
 

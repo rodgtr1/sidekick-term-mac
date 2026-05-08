@@ -40,7 +40,7 @@ class RunPanelViewController: NSViewController {
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
     }
 
     override func viewDidLoad() {
@@ -62,7 +62,7 @@ class RunPanelViewController: NSViewController {
         tableView = NSTableView()
         tableView.headerView = nil
         tableView.rowSizeStyle = .medium
-        tableView.backgroundColor = NSColor.clear
+        tableView.backgroundColor = AppTheme.sidebarBackground
         tableView.selectionHighlightStyle = .none
         tableView.allowsEmptySelection = true
         tableView.allowsMultipleSelection = false
@@ -78,7 +78,10 @@ class RunPanelViewController: NSViewController {
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
-        scrollView.backgroundColor = NSColor.clear
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = AppTheme.sidebarBackground
+        scrollView.contentView.drawsBackground = true
+        scrollView.contentView.backgroundColor = AppTheme.sidebarBackground
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(statusLabel)
@@ -312,7 +315,7 @@ class TaskSectionHeaderView: NSTableCellView {
 
     private func setupUI() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
+        layer?.backgroundColor = AppTheme.headerBackground.cgColor
 
         titleLabel = NSTextField(labelWithString: "")
         titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)

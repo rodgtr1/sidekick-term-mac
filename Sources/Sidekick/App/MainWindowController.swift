@@ -1,8 +1,122 @@
 import Cocoa
 import SwiftTerm
 
+@_silgen_name("CGSDefaultConnectionForThread")
+private func CGSDefaultConnectionForThread() -> UnsafeMutableRawPointer?
+
+@_silgen_name("CGSSetWindowBackgroundBlurRadius")
+private func CGSSetWindowBackgroundBlurRadius(
+    _ connection: UnsafeMutableRawPointer?,
+    _ windowNumber: Int,
+    _ radius: Int32
+) -> Int32
+
+private final class MainWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown,
+           event.clickCount == 2,
+           isInTitlebarDoubleClickRegion(event.locationInWindow) {
+            performConfiguredTitlebarDoubleClickAction()
+            return
+        }
+
+        super.sendEvent(event)
+    }
+
+    private func isInTitlebarDoubleClickRegion(_ location: NSPoint) -> Bool {
+        guard let contentView = contentView else { return false }
+
+        if isPointOverStandardWindowButton(location) {
+            return false
+        }
+
+        let titlebarHeight = contentView.safeAreaInsets.top
+        guard titlebarHeight > 0 else { return false }
+
+        let titlebarMinY = contentView.frame.maxY - titlebarHeight
+        return location.y >= titlebarMinY && location.y <= contentView.frame.maxY
+    }
+
+    private func isPointOverStandardWindowButton(_ location: NSPoint) -> Bool {
+        let buttonTypes: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+
+        return buttonTypes.contains { buttonType in
+            guard let button = standardWindowButton(buttonType), !button.isHidden else {
+                return false
+            }
+
+            let buttonFrame = button.convert(button.bounds, to: nil).insetBy(dx: -8, dy: -8)
+            return buttonFrame.contains(location)
+        }
+    }
+}
+
+extension NSWindow {
+    func performConfiguredTitlebarDoubleClickAction() {
+        if let action = UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick")?.lowercased() {
+            switch action {
+            case "minimize":
+                if styleMask.contains(.miniaturizable) {
+                    performMiniaturize(nil)
+                }
+            case "none":
+                break
+            default:
+                if styleMask.contains(.resizable) {
+                    performZoom(nil)
+                }
+            }
+            return
+        }
+
+        if UserDefaults.standard.object(forKey: "AppleMiniaturizeOnDoubleClick") != nil,
+           UserDefaults.standard.bool(forKey: "AppleMiniaturizeOnDoubleClick"),
+           styleMask.contains(.miniaturizable) {
+            performMiniaturize(nil)
+            return
+        }
+
+        if styleMask.contains(.resizable) {
+            performZoom(nil)
+        }
+    }
+}
+
+private final class TitlebarBackgroundView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupView()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            window?.performConfiguredTitlebarDoubleClickAction()
+            return
+        }
+
+        window?.performDrag(with: event)
+    }
+
+    func applyTheme() {
+        layer?.backgroundColor = Theme.shared.current.windowBackground.cgColor
+        layer?.isOpaque = true
+    }
+
+    private func setupView() {
+        wantsLayer = true
+        applyTheme()
+    }
+}
+
 class MainWindowController: NSWindowController {
     private var config: Config = Config.load()
+    private var titlebarBackgroundView: TitlebarBackgroundView!
+    private var tabBarSpacerView: TitlebarBackgroundView!
     private var tabBarView: TabBarView!
     private var activityBarView: ActivityBarView!
     private var sidebarContainerView: SidebarContainerView!
@@ -24,7 +138,7 @@ class MainWindowController: NSWindowController {
         Theme.shared.loadFromConfig(config)
         print("✅ Config loaded")
 
-        let window = NSWindow(
+        let window = MainWindow(
             contentRect: NSRect(x: 100, y: 100, width: 1200, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
@@ -38,7 +152,7 @@ class MainWindowController: NSWindowController {
         window.titleVisibility = .hidden
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.alphaValue = config.window.enableBlur ? 1.0 : CGFloat(config.window.opacity)
+        window.alphaValue = 1.0
         window.hasShadow = true
 
         // Make window movable by background
@@ -62,25 +176,12 @@ class MainWindowController: NSWindowController {
     private func setupUI() {
         guard let window = window else { return }
 
-        // Create visual effect view for blur as the window's content view
-        if config.window.enableBlur {
-            let visualEffectView = NSVisualEffectView(frame: window.contentView?.bounds ?? .zero)
-            visualEffectView.blendingMode = .behindWindow
-            visualEffectView.material = .underWindowBackground
-            visualEffectView.state = .active
-            visualEffectView.autoresizingMask = [.width, .height]
-            visualEffectView.wantsLayer = true
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        configureWindowBackgroundEffect()
 
-            // CRITICAL: Keep blur at full opacity so it actually works!
-            visualEffectView.alphaValue = 1.0
-
-            window.contentView = visualEffectView
-        } else {
-            // No blur - just use standard content view with background
-            window.contentView?.wantsLayer = true
-            window.contentView?.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
-        }
-
+        setupTitlebarBackground()
+        setupTabBarSpacer()
         setupTabBar()
         setupActivityBar()
         setupSidebar()
@@ -90,6 +191,25 @@ class MainWindowController: NSWindowController {
 
         // Create initial tab after all views are set up
         createNewTab()
+    }
+
+    private func setupTitlebarBackground() {
+        titlebarBackgroundView = TitlebarBackgroundView()
+        titlebarBackgroundView.translatesAutoresizingMaskIntoConstraints = false
+        window?.contentView?.addSubview(titlebarBackgroundView)
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(themeDidChange),
+            name: .themeDidChange,
+            object: nil
+        )
+    }
+
+    private func setupTabBarSpacer() {
+        tabBarSpacerView = TitlebarBackgroundView()
+        tabBarSpacerView.translatesAutoresizingMaskIntoConstraints = false
+        window?.contentView?.addSubview(tabBarSpacerView)
     }
 
     private func setupTabBar() {
@@ -131,6 +251,18 @@ class MainWindowController: NSWindowController {
         sidebarWidthConstraint = sidebarContainerView.widthAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
+            // Fill the transparent native titlebar area with the app theme.
+            titlebarBackgroundView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            titlebarBackgroundView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            titlebarBackgroundView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            titlebarBackgroundView.bottomAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.topAnchor),
+
+            // Fill the left spacer next to the tab strip so the whole chrome band matches.
+            tabBarSpacerView.topAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.topAnchor),
+            tabBarSpacerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            tabBarSpacerView.trailingAnchor.constraint(equalTo: tabBarView.leadingAnchor),
+            tabBarSpacerView.bottomAnchor.constraint(equalTo: tabBarView.bottomAnchor),
+
             // Keep tabs below the native titlebar/traffic-light safe area.
             tabBarView.topAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.topAnchor),
             tabBarView.leadingAnchor.constraint(equalTo: mainContentView.leadingAnchor),
@@ -160,9 +292,15 @@ class MainWindowController: NSWindowController {
         setupCWDTracking()
     }
 
+    @objc private func themeDidChange() {
+        titlebarBackgroundView?.applyTheme()
+        tabBarSpacerView?.applyTheme()
+    }
+
     func applyRuntimeConfig(_ newConfig: Config) {
         config = newConfig
-        window?.alphaValue = newConfig.window.enableBlur ? 1.0 : CGFloat(newConfig.window.opacity)
+        window?.alphaValue = 1.0
+        configureWindowBackgroundEffect()
         activityBarView?.topInset = CGFloat(newConfig.window.padding)
 
         for tab in tabs {
@@ -170,6 +308,29 @@ class MainWindowController: NSWindowController {
                 pane.terminalViewController?.applyConfig(newConfig)
             }
         }
+    }
+
+    private func configureWindowBackgroundEffect() {
+        guard let window else { return }
+
+        if config.window.enableBlur {
+            window.isOpaque = false
+            window.backgroundColor = .white.withAlphaComponent(0.001)
+            setBackgroundBlurRadius(20)
+        } else {
+            setBackgroundBlurRadius(0)
+            window.isOpaque = true
+            window.backgroundColor = NSColor(hex: "#1e1e2e") ?? .windowBackgroundColor
+        }
+    }
+
+    private func setBackgroundBlurRadius(_ radius: Int32) {
+        guard let window else { return }
+        _ = CGSSetWindowBackgroundBlurRadius(
+            CGSDefaultConnectionForThread(),
+            window.windowNumber,
+            radius
+        )
     }
 
     private func setupKeyboardShortcuts() {

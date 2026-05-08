@@ -144,7 +144,7 @@ class TabBarView: NSView {
         // Dirty indicator
         if tab.isDirty {
             let dirtyText = NSAttributedString(string: "● ", attributes: [
-                .font: NSFont.systemFont(ofSize: 12)
+                .font: NSFont.systemFont(ofSize: 9)
             ])
             attributedTitle.append(dirtyText)
         }
@@ -231,13 +231,13 @@ class TabBarView: NSView {
             return
         }
 
-        let config = NSImage.SymbolConfiguration(pointSize: 9, weight: .regular)
+        let config = NSImage.SymbolConfiguration(pointSize: 7, weight: .regular)
             .applying(.init(paletteColors: [color]))
         let coloredImage = image.withSymbolConfiguration(config) ?? image
 
         let attachment = NSTextAttachment()
         attachment.image = coloredImage
-        attachment.bounds = NSRect(x: 0, y: -2, width: 11, height: 11)
+        attachment.bounds = NSRect(x: 0, y: -1, width: 8, height: 8)
         attributedTitle.append(NSAttributedString(attachment: attachment))
         attributedTitle.append(NSAttributedString(string: " "))
     }
@@ -258,14 +258,13 @@ class TabBarView: NSView {
         let hitClose = closeButtons.first { $0.frame.contains(point) }
 
         if hitTab == nil && hitClose == nil {
+            if event.clickCount == 2 {
+                window?.performConfiguredTitlebarDoubleClickAction()
+                return
+            }
+
             // Clicking on empty tab bar area - allow window dragging
             window?.performDrag(with: event)
-            return
-        }
-
-        // Check for double-click to create new tab
-        if event.clickCount == 2 && hitTab == nil {
-            delegate?.tabBarDidRequestNewTab(self)
             return
         }
 
@@ -274,11 +273,6 @@ class TabBarView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-
-        // Draw separator line at bottom
-        Theme.shared.current.separator.set()
-        let separatorRect = NSRect(x: 0, y: 0, width: bounds.width, height: 1)
-        separatorRect.fill()
     }
 
     override func layout() {

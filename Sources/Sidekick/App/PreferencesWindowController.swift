@@ -47,6 +47,7 @@ class PreferencesWindowController: NSWindowController {
         guard let window = window else { return }
 
         window.title = "Preferences"
+        window.delegate = self
         window.titlebarAppearsTransparent = false
         window.center()
         window.isMovableByWindowBackground = true
@@ -283,10 +284,12 @@ class PreferencesWindowController: NSWindowController {
         config.window.opacity = sender.doubleValue
         updateOpacityLabel()
         applyOpacityChange()
+        config.save()
     }
 
     @objc private func blurCheckboxChanged(_ sender: NSButton) {
         config.window.enableBlur = sender.state == .on
+        config.save()
         showRestartAlert()
     }
 
@@ -294,6 +297,7 @@ class PreferencesWindowController: NSWindowController {
         if let selectedTitle = sender.selectedItem?.title {
             config.font.family = selectedTitle
             applyFontChanges()
+            config.save()
         }
     }
 
@@ -301,6 +305,7 @@ class PreferencesWindowController: NSWindowController {
         config.font.size = Int(sender.doubleValue)
         updateFontSizeLabel()
         applyFontChanges()
+        config.save()
     }
 
     private func updateOpacityLabel() {
@@ -334,7 +339,6 @@ class PreferencesWindowController: NSWindowController {
 
     override func windowDidLoad() {
         super.windowDidLoad()
-        window?.delegate = self
     }
 }
 

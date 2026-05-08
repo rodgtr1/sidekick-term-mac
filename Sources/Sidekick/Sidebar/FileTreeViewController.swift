@@ -17,6 +17,8 @@ class FileTreeViewController: NSViewController {
 
     override func loadView() {
         view = NSView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
     }
 
     override func viewDidLoad() {
@@ -33,19 +35,23 @@ class FileTreeViewController: NSViewController {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = AppTheme.sidebarBackground
+        scrollView.contentView.drawsBackground = true
+        scrollView.contentView.backgroundColor = AppTheme.sidebarBackground
 
         outlineView = NSOutlineView()
         outlineView.headerView = nil
+        outlineView.backgroundColor = AppTheme.sidebarBackground
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.target = self
         outlineView.doubleAction = #selector(doubleClickAction(_:))
         outlineView.usesAlternatingRowBackgroundColors = false
         if #available(macOS 12.0, *) {
-            outlineView.style = .sourceList
-        } else {
-            outlineView.selectionHighlightStyle = .sourceList
+            outlineView.style = .plain
         }
+        outlineView.selectionHighlightStyle = .regular
 
         // Create column
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("FileColumn"))
@@ -202,6 +208,10 @@ extension FileTreeViewController: NSOutlineViewDataSource {
 }
 
 extension FileTreeViewController: NSOutlineViewDelegate {
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        return FileTreeRowView()
+    }
+
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let node = item as? FileTreeNode else { return nil }
 
@@ -302,5 +312,15 @@ extension FileTreeViewController: NSOutlineViewDelegate {
         }
 
         return true
+    }
+}
+
+private final class FileTreeRowView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard selectionHighlightStyle != .none else { return }
+
+        let selectionRect = bounds.insetBy(dx: 0, dy: 1)
+        AppTheme.selection.setFill()
+        selectionRect.fill()
     }
 }

@@ -450,12 +450,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let baseColor = NSColor(hex: "#1e1e2e")!
 
         if config.window.enableBlur {
-            let alpha = CGFloat(config.window.opacity)
+            let alpha = CGFloat(max(0.0, min(1.0, config.window.opacity)))
             print("🎨 Setting terminal background alpha to \(alpha)")
             let backgroundColor = baseColor.withAlphaComponent(alpha)
             view.layer?.backgroundColor = backgroundColor.cgColor
             view.layer?.isOpaque = false
-            terminalView.nativeBackgroundColor = backgroundColor
+            terminalView.nativeBackgroundColor = .clear
             terminalView.layer?.backgroundColor = NSColor.clear.cgColor
             terminalView.layer?.isOpaque = false
             terminalView.alphaValue = 1.0
