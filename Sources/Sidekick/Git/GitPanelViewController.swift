@@ -3,11 +3,13 @@ import Combine
 
 protocol GitPanelDelegate: AnyObject {
     func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String)
+    func gitPanel(_ panel: GitPanelViewController, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
 }
 
 class GitPanelViewController: NSViewController {
     private var gitStatusModel: GitStatusModel!
     private var cancellables = Set<AnyCancellable>()
+    private let gitService = GitService()
 
     weak var delegate: GitPanelDelegate?
 
@@ -134,7 +136,7 @@ class GitPanelViewController: NSViewController {
         actionsColumn.maxWidth = 80
         tableView.addTableColumn(actionsColumn)
 
-        // Add double-click action for diff viewing
+        tableView.action = #selector(tableViewClicked(_:))
         tableView.doubleAction = #selector(tableViewDoubleClicked(_:))
         tableView.target = self
 
@@ -576,14 +578,45 @@ extension GitPanelViewController: NSTableViewDelegate {
     }
 
     @objc private func tableViewDoubleClicked(_ sender: NSTableView) {
+        openUncommittedChangesForClickedRow(sender)
+    }
+
+    @objc private func tableViewClicked(_ sender: NSTableView) {
+        openUncommittedChangesForClickedRow(sender)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36 {
+            openUncommittedChangesForSelectedRow()
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+
+    private func openUncommittedChangesForSelectedRow() {
+        let row = tableView.selectedRow
+        guard row >= 0 else { return }
+        openUncommittedChanges(row: row)
+    }
+
+    private func openUncommittedChangesForClickedRow(_ sender: NSTableView) {
         let row = sender.clickedRow
         guard row >= 0 && row < gitStatusModel.files.count else { return }
+        openUncommittedChanges(row: row)
+    }
 
+    private func openUncommittedChanges(row: Int) {
+        guard row >= 0 && row < gitStatusModel.files.count else { return }
         let file = gitStatusModel.files[row]
-        let fullPath = gitStatusModel.repositoryPath + "/" + file.filename
+        let fullPath = gitStatusModel.repositoryPath + "/" + file.path
+        let repositoryPath = gitService.repositoryRoot(from: fullPath) ?? gitStatusModel.repositoryPath
 
-        // Notify delegate to open diff view
-        delegate?.gitPanel(self, didRequestDiffFor: fullPath)
+        delegate?.gitPanel(
+            self,
+            didRequestUncommittedChangesFor: repositoryPath,
+            focusedFilePath: fullPath
+        )
     }
 }
 

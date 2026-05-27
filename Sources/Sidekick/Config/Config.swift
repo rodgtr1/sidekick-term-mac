@@ -105,6 +105,10 @@ default_cwd = "~"
 context_lines = 3
 
 [editor]
+# File tree open mode: terminal | builtin
+# terminal opens files in $EDITOR or nvim inside the active terminal.
+# builtin opens files in Sidekick's editor pane with syntax highlighting.
+file_open_mode = "terminal"
 # Wrap long lines in the editor (true = word wrap, false = horizontal scroll)
 word_wrap = true
 
@@ -125,8 +129,19 @@ word_wrap = true
         let fileURL = URL(fileURLWithPath: expandedPath)
 
         do {
+            // Reload config from disk to preserve manual edits (like tasks)
+            var configToSave = self
+            if FileManager.default.fileExists(atPath: expandedPath),
+               let data = try? Data(contentsOf: fileURL),
+               let tomlString = String(data: data, encoding: .utf8),
+               let toml = try? TOMLTable(string: tomlString),
+               let diskConfig = try? TOMLDecoder().decode(Config.self, from: toml) {
+                // Preserve tasks from the file on disk
+                configToSave.tasks = diskConfig.tasks
+            }
+
             let encoder = TOMLEncoder()
-            let toml = try encoder.encode(self)
+            let toml = try encoder.encode(configToSave)
             let tomlString = toml.description
 
             // Create directory if needed
@@ -260,14 +275,23 @@ public struct DiffConfig: Codable {
 
 // MARK: - Editor Configuration
 public struct EditorConfig: Codable {
+    public var fileOpenMode: String
     public var wordWrap: Bool
 
     enum CodingKeys: String, CodingKey {
+        case fileOpenMode = "file_open_mode"
         case wordWrap = "word_wrap"
     }
 
     public init() {
+        self.fileOpenMode = "terminal"
         self.wordWrap = true
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.fileOpenMode = try container.decodeIfPresent(String.self, forKey: .fileOpenMode) ?? "terminal"
+        self.wordWrap = try container.decodeIfPresent(Bool.self, forKey: .wordWrap) ?? true
     }
 }
 

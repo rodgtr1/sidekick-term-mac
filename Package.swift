@@ -42,5 +42,10 @@ let package = Package(
                 .unsafeFlags(["-swift-version", "5"])
             ]
         ),
+        .testTarget(
+            name: "SidekickTests",
+            dependencies: ["Sidekick"],
+            path: "Tests/SidekickTests"
+        ),
     ]
 )

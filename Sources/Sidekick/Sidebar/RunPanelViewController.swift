@@ -51,6 +51,11 @@ class RunPanelViewController: NSViewController {
         loadTasks()
     }
 
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        resizeTaskColumnToVisibleWidth()
+    }
+
     private func setupUI() {
         // Status label
         statusLabel = NSTextField(labelWithString: "Loading tasks...")
@@ -66,10 +71,12 @@ class RunPanelViewController: NSViewController {
         tableView.selectionHighlightStyle = .none
         tableView.allowsEmptySelection = true
         tableView.allowsMultipleSelection = false
+        tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
 
         // Column for tasks
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("TaskColumn"))
         column.width = 300
+        column.minWidth = 120
         column.resizingMask = .autoresizingMask
         tableView.addTableColumn(column)
 
@@ -106,6 +113,17 @@ class RunPanelViewController: NSViewController {
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+    }
+
+    private func resizeTaskColumnToVisibleWidth() {
+        guard let column = tableView.tableColumns.first else { return }
+
+        let scrollerWidth = scrollView.hasVerticalScroller ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: scrollView.scrollerStyle) : 0
+        let visibleWidth = max(scrollView.contentView.bounds.width - scrollerWidth, column.minWidth)
+
+        if abs(column.width - visibleWidth) > 0.5 {
+            column.width = visibleWidth
+        }
     }
 
     private func loadTasks() {
@@ -343,6 +361,12 @@ protocol TaskCellViewDelegate: AnyObject {
 }
 
 // MARK: - Task Cell View
+private class TaskCellLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return nil
+    }
+}
+
 class TaskCellView: NSTableCellView {
     private var nameLabel: NSTextField!
     private var commandLabel: NSTextField!
@@ -365,18 +389,30 @@ class TaskCellView: NSTableCellView {
         setupUI()
     }
 
+    override func mouseDown(with event: NSEvent) {
+        let localPoint = convert(event.locationInWindow, from: nil)
+        let clickedView = hitTest(localPoint)
+
+        if clickedView === pasteButton || clickedView === runButton || clickedView === llmButton {
+            super.mouseDown(with: event)
+            return
+        }
+
+        taskDelegate?.taskCell(self, didRequestRun: currentCommand)
+    }
+
     private func setupUI() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
 
         // Name label
-        nameLabel = NSTextField(labelWithString: "")
+        nameLabel = TaskCellLabel(labelWithString: "")
         nameLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         nameLabel.textColor = NSColor(hex: "#cdd6f4")
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // Command label
-        commandLabel = NSTextField(labelWithString: "")
+        commandLabel = TaskCellLabel(labelWithString: "")
         commandLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         commandLabel.textColor = NSColor(hex: "#6c7086")
         commandLabel.translatesAutoresizingMaskIntoConstraints = false

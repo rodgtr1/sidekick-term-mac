@@ -7,8 +7,8 @@ protocol ActivityBarDelegate: AnyObject {
 
 enum SidebarPanel: String, CaseIterable {
     case files = "Files"
-    case git = "Git"
     case search = "Search"
+    case git = "Git"
     case run = "Run"
 
     var icon: String {

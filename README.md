@@ -165,10 +165,10 @@ Sidekick supports IPC commands via Unix socket at `~/.config/sidekick/sidekick.s
 # Notify that an agent is busy (shows 🟢 on tab)
 echo '{"action":"agent_busy"}' | nc -U ~/.config/sidekick/sidekick.sock
 
-# Notify that an agent is waiting for input (shows 🟡 on tab, bounces dock icon, plays sound)
+# Notify that an agent is waiting for input (shows 🟡 on tab, bounces dock icon)
 echo '{"action":"agent_ready"}' | nc -U ~/.config/sidekick/sidekick.sock
 
-# Notify that an agent finished the last run (shows 🔵 on tab, bounces dock icon, plays sound)
+# Notify that an agent finished the last run (shows 🔵 on tab, bounces dock icon)
 echo '{"action":"agent_done"}' | nc -U ~/.config/sidekick/sidekick.sock
 
 # Create a new tab

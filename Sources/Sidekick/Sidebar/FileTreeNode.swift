@@ -59,41 +59,12 @@ class FileTreeNode {
     func hasChildren(showHidden: Bool = false) -> Bool {
         guard isDirectory else { return false }
 
-        // If already loaded, check actual children
         if isLoaded {
             return !children.isEmpty
         }
 
-        // Do a quick peek to see if directory has content
-        if !hasCheckedForChildren {
-            do {
-                let contents = try FileManager.default.contentsOfDirectory(
-                    at: url,
-                    includingPropertiesForKeys: [.isHiddenKey],
-                    options: [.skipsPackageDescendants, .skipsSubdirectoryDescendants]
-                )
-
-                // Check if there are any visible items
-                for item in contents {
-                    let name = item.lastPathComponent
-                    if !showHidden && name.hasPrefix(".") {
-                        continue
-                    }
-                    // Found at least one visible item
-                    hasCheckedForChildren = true
-                    return true
-                }
-
-                hasCheckedForChildren = true
-                return false
-            } catch {
-                // If we can't read the directory, assume it might have children
-                // (could be permission issue)
-                return true
-            }
-        }
-
-        // Default to true for directories if we haven't checked yet
+        // Avoid synchronous directory scans on the main thread while AppKit asks
+        // whether rows are expandable. The actual children load on expansion.
         return true
     }
 

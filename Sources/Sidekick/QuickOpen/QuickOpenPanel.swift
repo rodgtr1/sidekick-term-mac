@@ -217,8 +217,12 @@ class QuickOpenPanel: NSPanel {
         let task = Process()
 
         // Try fd first (faster)
-        if FileManager.default.fileExists(atPath: "/usr/local/bin/fd") {
-            task.executableURL = URL(fileURLWithPath: "/usr/local/bin/fd")
+        if let fdURL = ProcessRunner.executableURL(named: "fd", commonPaths: [
+            "/opt/homebrew/bin/fd",
+            "/usr/local/bin/fd",
+            "/opt/local/bin/fd"
+        ]) {
+            task.executableURL = fdURL
             task.arguments = [
                 "--type", "f",
                 "--max-results", String(maxResults),

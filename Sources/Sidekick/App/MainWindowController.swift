@@ -130,6 +130,7 @@ class MainWindowController: NSWindowController {
     private var quickOpenPanel: QuickOpenPanel?
     private var preferencesWindowController: PreferencesWindowController?
     private var keyEventMonitor: Any?
+    private let keyboardCommandRouter = KeyboardCommandRouter()
 
     convenience init() {
         print("🏗️ Creating MainWindowController...")
@@ -430,7 +431,6 @@ class MainWindowController: NSWindowController {
                 updateTabBar()
 
                 if state == .ready || state == .done {
-                    NSSound.beep()
                     NSApp.requestUserAttention(.informationalRequest)
                 }
                 break
@@ -438,7 +438,9 @@ class MainWindowController: NSWindowController {
         }
     }
 
-    func createNewTab() {
+    func createNewTab(workingDirectory: String? = nil) {
+        let startDirectory = workingDirectory ?? currentWorkingDirectoryForNewTerminal()
+
         // Hide current tab's split controller if exists
         if let currentController = currentPaneSplitController {
             currentController.view.isHidden = true
@@ -457,7 +459,7 @@ class MainWindowController: NSWindowController {
 
         // Initialize the first pane with a terminal
         if let firstPane = tab.panes.first {
-            firstPane.createTerminalViewController(config: config)
+            firstPane.createTerminalViewController(config: config, initialDirectory: startDirectory)
         }
 
         // Create pane split controller for this tab
@@ -507,18 +509,21 @@ class MainWindowController: NSWindowController {
     private func directoryForSidebar(from pane: PaneModel?) -> String? {
         guard let pane = pane else { return nil }
 
-        if !pane.currentDirectory.isEmpty {
-            return pane.currentDirectory
-        }
-
-        if let terminalVC = pane.terminalViewController {
-            let directory = terminalVC.getCurrentWorkingDirectory()
-            if !directory.isEmpty && directory != "~" {
-                return directory
-            }
+        if let directory = pane.resolvedWorkingDirectory() {
+            return directory
         }
 
         return nil
+    }
+
+    private func currentWorkingDirectoryForNewTerminal() -> String? {
+        guard let activeTab = tabs[safe: activeTabIndex] else { return nil }
+
+        if let activePaneDirectory = activeTab.activePane?.resolvedWorkingDirectory() {
+            return activePaneDirectory
+        }
+
+        return activeTab.panes.compactMap { $0.resolvedWorkingDirectory() }.first
     }
 
     private func switchToTab(index: Int) {
@@ -599,12 +604,45 @@ extension MainWindowController: TabBarDelegate {
 }
 
 extension MainWindowController: PaneSplitControllerDelegate {
+    func paneSplitController(_ controller: PaneSplitController, didAddPane pane: PaneModel, at index: Int) {
+        guard let activeTab = tabs[safe: activeTabIndex],
+              tabSplitControllers[activeTab.id] === controller else { return }
+
+        if !activeTab.panes.contains(where: { $0.id == pane.id }) {
+            activeTab.panes.append(pane)
+        }
+        activeTab.activePaneIndex = index
+        updateTabBar()
+    }
+
     func paneSplitController(_ controller: PaneSplitController, didActivatePane pane: PaneModel, at index: Int) {
         guard let activeTab = tabs[safe: activeTabIndex],
               tabSplitControllers[activeTab.id] === controller else { return }
 
         activeTab.activePaneIndex = index
-        syncSidebarToActiveTab()
+        if let directory = pane.resolvedWorkingDirectory() {
+            sidebarContainerView.updateFileTree(path: directory)
+        }
+    }
+
+    func paneSplitController(_ controller: PaneSplitController, didClosePane pane: PaneModel, at index: Int) {
+        guard let activeTab = tabs[safe: activeTabIndex],
+              tabSplitControllers[activeTab.id] === controller else { return }
+
+        if index < activeTab.panes.count, activeTab.panes[index].id == pane.id {
+            activeTab.panes.remove(at: index)
+        } else if let paneIndex = activeTab.panes.firstIndex(of: pane) {
+            activeTab.panes.remove(at: paneIndex)
+        }
+
+        if activeTab.activePaneIndex >= activeTab.panes.count {
+            activeTab.activePaneIndex = max(activeTab.panes.count - 1, 0)
+        } else if activeTab.activePaneIndex > index {
+            activeTab.activePaneIndex -= 1
+        }
+
+        activeTab.updateTitleFromActivePane()
+        updateTabBar()
     }
 }
 
@@ -621,8 +659,12 @@ extension MainWindowController: ActivityBarDelegate {
 extension MainWindowController: SidebarContainerDelegate {
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL) {
         print("📂 Sidebar requested to open file: \(url.path)")
-        // Open file in nvim in the terminal instead of built-in editor
-        openFileInTerminalEditor(url)
+
+        if config.editor?.fileOpenMode == "builtin" {
+            openFileInEditor(url)
+        } else {
+            openFileInTerminalEditor(url)
+        }
     }
 
     private func openFileInTerminalEditor(_ url: URL) {
@@ -635,9 +677,13 @@ extension MainWindowController: SidebarContainerDelegate {
         openDiffViewer(for: filePath)
     }
 
-    func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int) {
+    func sidebarContainer(_ container: SidebarContainerView, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?) {
+        openUncommittedChangesInNewTab(repositoryPath: repositoryPath, focusedFilePath: focusedFilePath)
+    }
+
+    func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String?) {
         let url = URL(fileURLWithPath: filePath)
-        openFileInEditor(url, atLine: line)
+        openFileInEditor(url, atLine: line, highlighting: searchTerm)
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestRunTask command: String) {
@@ -649,39 +695,18 @@ extension MainWindowController: SidebarContainerDelegate {
     }
 
     private func openFileInEditor(_ url: URL) {
-        // Don't try to open directories as files
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-
-        guard exists && !isDirectory.boolValue else {
-            print("Attempted to open directory or non-existent file: \(url.path)")
-            return
-        }
-
-        // Create a new editor pane in the current tab
-        guard let currentTab = tabs[safe: activeTabIndex] else { return }
-
-        // Create a new pane for the editor
-        let editorPane = PaneModel()
-        editorPane.createEditorViewController(for: url)
-
-        // Add the editor pane to the current tab
-        currentTab.addPane(editorPane, splitDirection: .horizontal)
-
-        // Set the new pane as active (it's the last pane added)
-        currentTab.activePaneIndex = currentTab.panes.count - 1
-
-        // Update the split view with the new pane
-        currentPaneSplitController?.rebuildSplitView(for: currentTab)
-
-        // Focus the editor so cursor is active immediately
-        currentPaneSplitController?.setActivePane(index: currentTab.activePaneIndex)
-
-        updateTabBar()
+        openEditorPane(for: url)
     }
 
     private func openFileInEditor(_ url: URL, atLine line: Int) {
-        // Don't try to open directories as files
+        openEditorPane(for: url, line: line)
+    }
+
+    private func openFileInEditor(_ url: URL, atLine line: Int, highlighting searchTerm: String?) {
+        openEditorPane(for: url, line: line, searchTerm: searchTerm)
+    }
+
+    private func openEditorPane(for url: URL, line: Int? = nil, searchTerm: String? = nil) {
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
 
@@ -690,48 +715,82 @@ extension MainWindowController: SidebarContainerDelegate {
             return
         }
 
-        // Create a new editor pane in the current tab
         guard let currentTab = tabs[safe: activeTabIndex] else { return }
 
-        // Create a new pane for the editor
-        let editorPane = PaneModel()
-        editorPane.createEditorViewController(for: url)
-
-        // Add the editor pane to the current tab
+        let editorPane = PaneFactory.editorPane(for: url, line: line, searchTerm: searchTerm)
         currentTab.addPane(editorPane, splitDirection: .horizontal)
-
-        // Set the new pane as active (it's the last pane added)
         currentTab.activePaneIndex = currentTab.panes.count - 1
-
-        // Update the split view with the new pane
         currentPaneSplitController?.rebuildSplitView(for: currentTab)
-
-        // Navigate to the specific line
-        if let editorVC = editorPane.editorViewController {
-            editorVC.navigateToLine(line)
-        }
-
-        // Focus the editor so cursor is active immediately
         currentPaneSplitController?.setActivePane(index: currentTab.activePaneIndex)
 
         updateTabBar()
     }
 
     private func openDiffViewer(for filePath: String) {
-        // Create a new diff viewer pane in the current tab
-        guard let currentTab = tabs[safe: activeTabIndex] else { return }
+        openDiffInNewTab(for: filePath)
+    }
 
-        // Create a new pane for the diff viewer
-        let diffPane = PaneModel()
-        diffPane.createDiffViewController(for: filePath)
+    private func openDiffInNewTab(for filePath: String) {
+        openSinglePaneTab(pane: PaneFactory.diffPane(for: filePath))
+    }
 
-        // Add the diff pane to the current tab
-        currentTab.addPane(diffPane, splitDirection: .horizontal)
+    private func openUncommittedChangesInNewTab(repositoryPath: String, focusedFilePath: String?) {
+        if let existingIndex = tabs.firstIndex(where: { tab in
+            tab.panes.count == 1 &&
+            tab.panes.first?.paneType == .uncommittedChanges &&
+            tab.panes.first?.currentDirectory == repositoryPath
+        }) {
+            switchToTab(index: existingIndex)
+            tabs[existingIndex].panes.first?.uncommittedChangesViewController?.reload(focusedFilePath: focusedFilePath)
+            return
+        }
 
-        // Update the split view with the new pane
-        currentPaneSplitController?.rebuildSplitView(for: currentTab)
+        let pane = PaneFactory.uncommittedChangesPane(
+            repositoryPath: repositoryPath,
+            focusedFilePath: focusedFilePath,
+            onOpenFile: { [weak self] filePath in
+                self?.openFileInEditor(URL(fileURLWithPath: filePath))
+            }
+        )
+        openSinglePaneTab(pane: pane)
+    }
+
+    private func openSinglePaneTab(pane: PaneModel) {
+        if let currentController = currentPaneSplitController {
+            currentController.view.isHidden = true
+        }
+
+        if activeTabIndex < tabs.count {
+            tabs[activeTabIndex].isActive = false
+        }
+
+        let tab = TabModel()
+        tab.panes = [pane]
+        tab.activePaneIndex = 0
+        tab.isActive = true
+        tab.updateTitleFromActivePane()
+
+        tabs.append(tab)
+        activeTabIndex = tabs.count - 1
+
+        let paneSplitController = PaneSplitController(config: config)
+        paneSplitController.delegate = self
+        currentPaneSplitController = paneSplitController
+        tabSplitControllers[tab.id] = paneSplitController
+
+        mainContentView.addSubview(paneSplitController.view)
+        paneSplitController.view.translatesAutoresizingMaskIntoConstraints = false
+        paneSplitController.rebuildSplitView(for: tab)
+
+        NSLayoutConstraint.activate([
+            paneSplitController.view.topAnchor.constraint(equalTo: mainContentView.topAnchor),
+            paneSplitController.view.leadingAnchor.constraint(equalTo: mainContentView.leadingAnchor),
+            paneSplitController.view.trailingAnchor.constraint(equalTo: mainContentView.trailingAnchor),
+            paneSplitController.view.bottomAnchor.constraint(equalTo: mainContentView.bottomAnchor)
+        ])
 
         updateTabBar()
+        syncSidebarToActiveTab()
     }
 
     func showQuickOpen() {
@@ -789,11 +848,24 @@ extension MainWindowController: SidebarContainerDelegate {
     }
 
     func saveCurrentFile() {
-        // Save the current file if there's an active editor pane
-        if let activePane = currentPaneSplitController?.activePane,
-           activePane.paneType == .editor,
-           let editor = activePane.editorViewController {
-            _ = editor.saveFile()
+        guard let activeTab = tabs[safe: activeTabIndex] else { return }
+
+        let editorPane =
+            activeTab.panes.first { $0.editorViewController?.isEditorFocused == true } ??
+            activeTab.activePane.flatMap { $0.paneType == .editor ? $0 : nil } ??
+            currentPaneSplitController?.activePane.flatMap { $0.paneType == .editor ? $0 : nil }
+
+        guard let pane = editorPane,
+              let editor = pane.editorViewController else {
+            print("💾 No active editor pane to save")
+            return
+        }
+
+        if editor.saveFile() {
+            pane.updateTitleForEditor(fileName: editor.fileName)
+            activeTab.isDirty = activeTab.panes.contains { $0.editorViewController?.isModified == true }
+            activeTab.updateTitleFromActivePane()
+            updateTabBar()
         }
     }
 
@@ -860,98 +932,45 @@ extension MainWindowController {
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
-        let modifiers = event.modifierFlags
-        let keyCode = event.keyCode
-
-        // Ctrl+Tab / Ctrl+Shift+Tab - Cycle through tabs
-        if modifiers.contains(.control) && keyCode == 48 { // Tab key
-            if modifiers.contains(.shift) {
-                // Ctrl+Shift+Tab - Previous tab
-                cycleTabs(forward: false)
-            } else {
-                // Ctrl+Tab - Next tab
-                cycleTabs(forward: true)
-            }
-            return true
+        guard let command = keyboardCommandRouter.command(for: event, tabCount: tabs.count) else {
+            return false
         }
 
-        // Cmd+Shift combinations (check these first to avoid conflicts)
-        if modifiers.contains([.command, .shift]) {
-            switch keyCode {
-            case 14: // Cmd+Shift+E (Files)
-                togglePanel(.files)
-                return true
-            case 5: // Cmd+Shift+G (Git)
-                togglePanel(.git)
-                return true
-            case 3: // Cmd+Shift+F (Search)
-                togglePanel(.search)
-                return true
-            case 15: // Cmd+Shift+R (Run)
-                togglePanel(.run)
-                return true
-            case 13: // Cmd+Shift+W (Close Pane)
-                closeCurrentPane()
-                return true
-            case 2: // Cmd+Shift+D (Split Right)
-                currentPaneSplitController?.splitPane(direction: .horizontal)
-                return true
-            case 6: // Cmd+Shift+X (Split Down)
-                currentPaneSplitController?.splitPane(direction: .vertical)
-                return true
-            case 17: // Cmd+Shift+T (New Tab)
-                createNewTab()
-                return true
-            case 47: // Cmd+Shift+. (Toggle hidden files)
-                sidebarContainerView.toggleHiddenFiles()
-                return true
-            default:
-                break
-            }
-        }
+        performKeyboardCommand(command)
+        return true
+    }
 
-        // Cmd key combinations
-        if modifiers.contains(.command) && !modifiers.contains(.shift) {
-            switch keyCode {
-            case 17: // Cmd+T (New Tab)
-                createNewTab()
-                return true
-            case 13: // Cmd+W (Close Tab)
-                closeTab(index: activeTabIndex)
-                return true
-            case 1: // Cmd+S (Save File)
-                saveCurrentFile()
-                return true
-            case 11: // Cmd+B (Toggle Sidebar)
-                toggleSidebar()
-                return true
-            case 35: // Cmd+P (Quick Open)
-                showQuickOpen()
-                return true
-            case 43: // Cmd+, (Preferences)
-                showPreferences()
-                return true
-            case 2: // Cmd+D (Split Right)
-                currentPaneSplitController?.splitPane(direction: .horizontal)
-                return true
-            case 33: // Cmd+[ (Focus previous pane)
-                currentPaneSplitController?.focusPreviousPane()
-                return true
-            case 30: // Cmd+] (Focus next pane)
-                currentPaneSplitController?.focusNextPane()
-                return true
-            case 18...26: // Cmd+1-9 (Switch tabs)
-                let tabIndex = Int(keyCode) - 18
-                if tabIndex < tabs.count {
-                    switchToTab(index: tabIndex)
-                }
-                return true
-            default:
-                break
-            }
+    private func performKeyboardCommand(_ command: KeyboardCommand) {
+        switch command {
+        case .cycleTabs(let forward):
+            cycleTabs(forward: forward)
+        case .showPanel(let panel):
+            togglePanel(panel)
+        case .closeCurrentPane:
+            closeCurrentPane()
+        case .splitPane(let direction):
+            currentPaneSplitController?.splitPane(direction: direction)
+        case .newTab:
+            createNewTab()
+        case .toggleHiddenFiles:
+            sidebarContainerView.toggleHiddenFiles()
+        case .closeTab:
+            closeTab(index: activeTabIndex)
+        case .saveFile:
+            saveCurrentFile()
+        case .toggleSidebar:
+            toggleSidebar()
+        case .quickOpen:
+            showQuickOpen()
+        case .preferences:
+            showPreferences()
+        case .splitWithBrowser:
+            splitWithBrowser()
+        case .focusPane(let forward):
+            forward ? currentPaneSplitController?.focusNextPane() : currentPaneSplitController?.focusPreviousPane()
+        case .selectTab(let index):
+            switchToTab(index: index)
         }
-
-        return false
     }
 
     private func cycleTabs(forward: Bool) {
@@ -969,7 +988,9 @@ extension MainWindowController {
     }
 
     private func closeCurrentPane() {
-        currentPaneSplitController?.closeActivePane()
+        if currentPaneSplitController?.closeActivePane() != true {
+            window?.performClose(nil)
+        }
     }
 
     func toggleSidebar() {
@@ -1022,7 +1043,6 @@ extension MainWindowController: IPCServerDelegate {
             return IPCResponse(ok: true)
 
         case .newTab(let cwd):
-            // Create new tab with optional working directory
             createNewTab(workingDirectory: cwd)
             return IPCResponse(ok: true)
 
@@ -1038,8 +1058,7 @@ extension MainWindowController: IPCServerDelegate {
                 tabs[activeTabIndex].agentState = .ready
                 updateTabBar()
 
-                // Notification: Play sound and bounce dock icon
-                NSSound.beep()
+                // Notification: Bounce dock icon once
                 NSApp.requestUserAttention(.informationalRequest) // Bounce dock icon once
             }
             return IPCResponse(ok: true)
@@ -1058,7 +1077,6 @@ extension MainWindowController: IPCServerDelegate {
                 tabs[activeTabIndex].agentState = .done
                 updateTabBar()
 
-                NSSound.beep()
                 NSApp.requestUserAttention(.informationalRequest)
             }
             return IPCResponse(ok: true)
@@ -1073,23 +1091,6 @@ extension MainWindowController: IPCServerDelegate {
         }
     }
 
-    private func createNewTab(workingDirectory: String? = nil) {
-        let newTab = TabModel()
-        tabs.append(newTab)
-
-        // Switch to the new tab
-        activeTabIndex = tabs.count - 1
-        switchToTab(index: activeTabIndex)
-
-        updateTabBar()
-
-        // If a working directory was specified, change to it in the new terminal
-        if let cwd = workingDirectory,
-           let terminalPane = newTab.panes.first(where: { $0.terminalViewController != nil }),
-           let terminalVC = terminalPane.terminalViewController {
-            terminalVC.send(text: "cd \"\(cwd)\"\n")
-        }
-    }
 }
 
 extension NSColor {

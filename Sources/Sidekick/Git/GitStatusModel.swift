@@ -74,14 +74,12 @@ class GitStatusModel: ObservableObject {
     private var _repositoryPath: String = ""
     private let refreshInterval: TimeInterval = 2.0
     private var refreshTimer: Timer?
+    private let gitService: GitService
+    private var refreshGeneration: Int = 0
 
-    private struct GitCommandResult {
-        let terminationStatus: Int32
-        let output: String
-        let errorOutput: String
+    init(gitService: GitService = GitService()) {
+        self.gitService = gitService
     }
-
-    init() {}
 
     var repositoryPath: String {
         return _repositoryPath
@@ -92,27 +90,43 @@ class GitStatusModel: ObservableObject {
     }
 
     func setRepositoryPath(_ path: String) {
-        guard path != _repositoryPath else { return }
+        guard let repositoryRoot = gitService.repositoryRoot(from: path) else {
+            stopAutoRefresh()
+            refreshGeneration += 1
+            _repositoryPath = ""
+            currentBranch = ""
+            files = []
+            isClean = true
+            isLoading = false
+            error = nil
+            return
+        }
 
-        _repositoryPath = path
-        refreshStatus()
+        _repositoryPath = repositoryRoot
+        refreshStatus(force: true)
         startAutoRefresh()
     }
 
-    func refreshStatus() {
+    func refreshStatus(force: Bool = false) {
         guard !_repositoryPath.isEmpty else { return }
-        guard !isLoading else { return }
+        guard force || !isLoading else { return }
 
         isLoading = true
         error = nil
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        let repositoryPath = _repositoryPath
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            let branch = self.getCurrentBranch()
-            let statusItems = self.getGitStatus()
+            let branch = self.getCurrentBranch(repositoryRoot: repositoryPath)
+            let statusItems = self.getGitStatus(repositoryRoot: repositoryPath)
 
             DispatchQueue.main.async {
+                guard self.refreshGeneration == generation,
+                      self._repositoryPath == repositoryPath else { return }
+
                 self.currentBranch = branch
                 self.files = statusItems
                 self.isClean = statusItems.isEmpty
@@ -133,42 +147,19 @@ class GitStatusModel: ObservableObject {
         refreshTimer = nil
     }
 
-    private func getCurrentBranch() -> String {
+    private func getCurrentBranch(repositoryRoot: String) -> String {
         do {
-            let result = try runGitCommand(["symbolic-ref", "--short", "HEAD"], allowOptionalLocks: false)
-
-            if result.terminationStatus == 0 {
-                return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-
-            // Try detached HEAD
-            return getDetachedHead()
+            return try gitService.currentBranch(repositoryRoot: repositoryRoot)
         } catch {
             return "unknown"
         }
     }
 
-    private func getDetachedHead() -> String {
+    private func getGitStatus(repositoryRoot: String) -> [GitFileItem] {
         do {
-            let result = try runGitCommand(["rev-parse", "--short", "HEAD"], allowOptionalLocks: false)
-
-            if result.terminationStatus == 0 {
-                return "(\(result.output.trimmingCharacters(in: .whitespacesAndNewlines)))"
-            }
-        } catch {
-            return "unknown"
-        }
-
-        return "unknown"
-    }
-
-    private func getGitStatus() -> [GitFileItem] {
-        do {
-            let result = try runGitCommand(["status", "--porcelain"], allowOptionalLocks: false)
-
-            if result.terminationStatus == 0 {
-                return parseGitStatusOutput(result.output)
-            }
+            return try gitService.status(repositoryRoot: repositoryRoot)
+                .map { GitFileItem(path: $0.path, stagedChar: $0.stagedStatus, unstagedChar: $0.unstagedStatus) }
+                .sorted { $0.filename < $1.filename }
         } catch {
             DispatchQueue.main.async {
                 self.error = "Failed to get git status: \(error.localizedDescription)"
@@ -176,24 +167,6 @@ class GitStatusModel: ObservableObject {
         }
 
         return []
-    }
-
-    private func parseGitStatusOutput(_ output: String) -> [GitFileItem] {
-        let lines = output.split(separator: "\n")
-        var items: [GitFileItem] = []
-
-        for line in lines {
-            guard line.count >= 3 else { continue }
-
-            let stagedChar = line[line.startIndex]
-            let unstagedChar = line[line.index(line.startIndex, offsetBy: 1)]
-            let path = String(line.dropFirst(3))
-
-            let item = GitFileItem(path: path, stagedChar: stagedChar, unstagedChar: unstagedChar)
-            items.append(item)
-        }
-
-        return items.sorted { $0.filename < $1.filename }
     }
 
     // MARK: - Git Operations
@@ -327,8 +300,8 @@ class GitStatusModel: ObservableObject {
     private func executeGitCommand(_ arguments: [String], completion: @escaping (Bool) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let result = try self.runGitCommand(arguments)
-                let success = result.terminationStatus == 0
+                let result = try self.gitService.run(repositoryRoot: self._repositoryPath, arguments: arguments)
+                let success = result.succeeded
                 DispatchQueue.main.async {
                     completion(success)
                 }
@@ -344,11 +317,11 @@ class GitStatusModel: ObservableObject {
     private func executeGitCommandWithOutput(_ arguments: [String], completion: @escaping (Bool, String?, String?) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let result = try self.runGitCommand(arguments)
-                let success = result.terminationStatus == 0
+                let result = try self.gitService.run(repositoryRoot: self._repositoryPath, arguments: arguments)
+                let success = result.succeeded
 
                 DispatchQueue.main.async {
-                    completion(success, result.output, result.errorOutput)
+                    completion(success, result.stdout, result.stderr)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -357,50 +330,5 @@ class GitStatusModel: ObservableObject {
                 }
             }
         }
-    }
-
-    private func runGitCommand(_ arguments: [String], allowOptionalLocks: Bool = true) throws -> GitCommandResult {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        task.arguments = ["-C", _repositoryPath] + arguments
-        task.currentDirectoryURL = URL(fileURLWithPath: _repositoryPath)
-
-        var environment = ProcessInfo.processInfo.environment
-        if !allowOptionalLocks {
-            environment["GIT_OPTIONAL_LOCKS"] = "0"
-        }
-        task.environment = environment
-
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        task.standardOutput = outputPipe
-        task.standardError = errorPipe
-
-        var outputData = Data()
-        var errorData = Data()
-        let readGroup = DispatchGroup()
-
-        try task.run()
-
-        readGroup.enter()
-        DispatchQueue.global(qos: .utility).async {
-            outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            readGroup.leave()
-        }
-
-        readGroup.enter()
-        DispatchQueue.global(qos: .utility).async {
-            errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            readGroup.leave()
-        }
-
-        task.waitUntilExit()
-        readGroup.wait()
-
-        return GitCommandResult(
-            terminationStatus: task.terminationStatus,
-            output: String(data: outputData, encoding: .utf8) ?? "",
-            errorOutput: String(data: errorData, encoding: .utf8) ?? ""
-        )
     }
 }

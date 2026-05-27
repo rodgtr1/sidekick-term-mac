@@ -1,7 +1,9 @@
 import Cocoa
 
 protocol PaneSplitControllerDelegate: AnyObject {
+    func paneSplitController(_ controller: PaneSplitController, didAddPane pane: PaneModel, at index: Int)
     func paneSplitController(_ controller: PaneSplitController, didActivatePane pane: PaneModel, at index: Int)
+    func paneSplitController(_ controller: PaneSplitController, didClosePane pane: PaneModel, at index: Int)
 }
 
 class PaneSplitController: NSViewController {
@@ -14,8 +16,10 @@ class PaneSplitController: NSViewController {
 
     // Track which container view wraps each pane
     private var paneContainers: [PaneModel: NSView] = [:]
+    private var paneCloseButtons: [PaneModel: PaneCloseButton] = [:]
     // Track all split views we've created (for delegate management)
     private var allSplitViews: Set<NSSplitView> = []
+    private var clickEventMonitor: Any?
 
     init(config: Config) {
         self.config = config
@@ -29,6 +33,21 @@ class PaneSplitController: NSViewController {
     override func loadView() {
         view = NSView()
         setupSplitView()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        guard clickEventMonitor == nil else { return }
+        clickEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            self?.activatePane(containing: event)
+            return event
+        }
+    }
+
+    deinit {
+        if let clickEventMonitor {
+            NSEvent.removeMonitor(clickEventMonitor)
+        }
     }
 
     private func setupSplitView() {
@@ -84,6 +103,20 @@ class PaneSplitController: NSViewController {
             paneView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
 
+        let closeButton = PaneCloseButton()
+        closeButton.pane = pane
+        closeButton.target = self
+        closeButton.action = #selector(closePaneButtonClicked(_:))
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(closeButton)
+
+        NSLayoutConstraint.activate([
+            closeButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            closeButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            closeButton.widthAnchor.constraint(equalToConstant: 22),
+            closeButton.heightAnchor.constraint(equalToConstant: 22)
+        ])
+
         // Set click handler to make this pane active when clicked
         container.onMouseDown = { [weak self] in
             guard let self = self else { return }
@@ -94,12 +127,46 @@ class PaneSplitController: NSViewController {
         }
 
         paneContainers[pane] = container
+        paneCloseButtons[pane] = closeButton
+        updatePaneCloseButtons()
         return container
+    }
+
+    @objc private func closePaneButtonClicked(_ sender: PaneCloseButton) {
+        guard let pane = sender.pane,
+              let index = panes.firstIndex(of: pane) else { return }
+
+        setActivePane(index: index)
+        closePane(index: index)
+    }
+
+    private func updatePaneCloseButtons() {
+        let shouldShow = panes.count > 1
+        for (pane, button) in paneCloseButtons {
+            button.isHidden = !shouldShow || paneContainers[pane] == nil
+        }
     }
 
     private func findParentSplitView(for pane: PaneModel) -> NSSplitView? {
         guard let container = paneContainers[pane] else { return nil }
         return findSplitView(containing: container, in: rootSplitView)
+    }
+
+    private func activatePane(containing event: NSEvent) {
+        guard event.window === view.window,
+              let contentView = view.window?.contentView else { return }
+
+        let pointInContent = contentView.convert(event.locationInWindow, from: nil)
+
+        for (pane, container) in paneContainers {
+            let pointInContainer = container.convert(pointInContent, from: contentView)
+            guard container.bounds.contains(pointInContainer),
+                  let index = panes.firstIndex(of: pane),
+                  index != activePaneIndex else { continue }
+
+            setActivePane(index: index)
+            return
+        }
     }
 
     private func findSplitView(containing view: NSView, in splitView: NSSplitView) -> NSSplitView? {
@@ -133,13 +200,14 @@ class PaneSplitController: NSViewController {
 
         print("🔧 Parent split isVertical: \(parentSplit.isVertical), arrangedSubviews: \(parentSplit.arrangedSubviews.count)")
 
-        // Get the current directory from the active pane to use for the new terminal
-        let currentDirectory = activePane.currentDirectory.isEmpty ? nil : activePane.currentDirectory
+        // Get the current directory from the active pane to use for the new terminal.
+        let currentDirectory = activePane.resolvedWorkingDirectory()
         print("🔧 Starting new pane in directory: \(currentDirectory ?? "home")")
 
         let newPane = PaneModel()
         newPane.createTerminalViewController(config: config, initialDirectory: currentDirectory)
         panes.append(newPane)
+        delegate?.paneSplitController(self, didAddPane: newPane, at: panes.count - 1)
 
         guard let newPaneView = newPane.view else {
             print("⚠️ New pane has no view!")
@@ -190,19 +258,14 @@ class PaneSplitController: NSViewController {
             print("🔧 Total pane count: \(panes.count)")
 
             // Set 50/50 split after layout
-            DispatchQueue.main.async { [weak self, weak nestedSplit, weak parentSplit] in
-                guard let self = self, let split = nestedSplit else { return }
-                split.layoutSubtreeIfNeeded()
-                let totalSize = split.isVertical ? split.bounds.width : split.bounds.height
-                let dividerPosition = totalSize / 2.0
-                print("🔧 Setting nested divider position to: \(dividerPosition) (totalSize: \(totalSize))")
-                split.setPosition(dividerPosition, ofDividerAt: 0)
-                split.layoutSubtreeIfNeeded()
+            DispatchQueue.main.async { [weak nestedSplit, weak parentSplit] in
+                guard let split = nestedSplit else { return }
+                SplitLayoutManager.setEvenSplit(in: split)
 
                 // Also redistribute the parent split to ensure it maintains proper spacing
                 if let parent = parentSplit {
                     print("🔧 Redistributing parent split after nested split creation")
-                    self.distributeEvenly(in: parent)
+                    SplitLayoutManager.distributeEvenly(in: parent)
                 }
             }
         } else {
@@ -222,55 +285,14 @@ class PaneSplitController: NSViewController {
             print("🔧 Parent now has \(parentSplit.arrangedSubviews.count) subviews")
 
             // Redistribute space evenly after layout
-            DispatchQueue.main.async { [weak self, weak parentSplit] in
-                guard let self = self, let split = parentSplit else { return }
-                split.layoutSubtreeIfNeeded()
-                self.distributeEvenly(in: split)
+            DispatchQueue.main.async { [weak parentSplit] in
+                guard let split = parentSplit else { return }
+                SplitLayoutManager.distributeEvenly(in: split)
             }
         }
 
         setActivePane(index: panes.count - 1)
-    }
-
-    private func distributeEvenly(in splitView: NSSplitView) {
-        let count = splitView.arrangedSubviews.count
-        guard count > 1 else {
-            print("📏 distributeEvenly: only \(count) subview, skipping")
-            return
-        }
-
-        print("📏 distributeEvenly: \(count) subviews, isVertical: \(splitView.isVertical)")
-
-        // Set all subviews to have equal holding priority
-        for i in 0..<count {
-            splitView.setHoldingPriority(.defaultLow, forSubviewAt: i)
-        }
-
-        // Force layout first
-        splitView.layoutSubtreeIfNeeded()
-
-        // Get the total size after layout
-        let totalSize = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
-        let sizePerPane = totalSize / CGFloat(count)
-
-        print("📏 totalSize: \(totalSize), sizePerPane: \(sizePerPane)")
-
-        // Set divider positions
-        for i in 0..<(count - 1) {
-            let position = sizePerPane * CGFloat(i + 1)
-            print("📏 Setting divider \(i) to position: \(position)")
-            splitView.setPosition(position, ofDividerAt: i)
-        }
-
-        // Adjust subviews to apply the positions
-        splitView.adjustSubviews()
-
-        // Verify the positions stuck
-        for i in 0..<(count - 1) {
-            let subview = splitView.arrangedSubviews[i]
-            let size = splitView.isVertical ? subview.frame.width : subview.frame.height
-            print("📏 After adjustment, subview \(i) size: \(size)")
-        }
+        updatePaneCloseButtons()
     }
 
     func splitWithBrowser(direction: SplitDirection) {
@@ -292,6 +314,7 @@ class PaneSplitController: NSViewController {
         let newPane = PaneModel()
         newPane.createBrowserViewController()
         panes.append(newPane)
+        delegate?.paneSplitController(self, didAddPane: newPane, at: panes.count - 1)
         print("🌐 Browser pane created and added, total panes now: \(panes.count)")
 
         guard let newPaneView = newPane.view else {
@@ -324,17 +347,14 @@ class PaneSplitController: NSViewController {
             nestedSplit.addArrangedSubview(activePaneContainer)
             nestedSplit.addArrangedSubview(newContainer)
 
-            DispatchQueue.main.async { [weak self, weak nestedSplit, weak parentSplit] in
-                guard let self = self, let split = nestedSplit else { return }
-                split.layoutSubtreeIfNeeded()
-                let totalSize = split.isVertical ? split.bounds.width : split.bounds.height
-                split.setPosition(totalSize / 2.0, ofDividerAt: 0)
-                split.layoutSubtreeIfNeeded()
+            DispatchQueue.main.async { [weak nestedSplit, weak parentSplit] in
+                guard let split = nestedSplit else { return }
+                SplitLayoutManager.setEvenSplit(in: split)
 
                 // Also redistribute the parent split to ensure it maintains proper spacing
                 if let parent = parentSplit {
                     print("🌐 Redistributing parent split after nested browser split creation")
-                    self.distributeEvenly(in: parent)
+                    SplitLayoutManager.distributeEvenly(in: parent)
                 }
             }
         } else {
@@ -348,14 +368,14 @@ class PaneSplitController: NSViewController {
 
             parentSplit.insertArrangedSubview(newContainer, at: containerIndex + 1)
 
-            DispatchQueue.main.async { [weak self, weak parentSplit] in
-                guard let self = self, let split = parentSplit else { return }
-                split.layoutSubtreeIfNeeded()
-                self.distributeEvenly(in: split)
+            DispatchQueue.main.async { [weak parentSplit] in
+                guard let split = parentSplit else { return }
+                SplitLayoutManager.distributeEvenly(in: split)
             }
         }
 
         setActivePane(index: panes.count - 1)
+        updatePaneCloseButtons()
     }
 
     func closePane(index: Int) {
@@ -374,10 +394,13 @@ class PaneSplitController: NSViewController {
 
         // Clean up tracking
         paneContainers.removeValue(forKey: pane)
+        paneCloseButtons.removeValue(forKey: pane)
         panes.remove(at: index)
+        delegate?.paneSplitController(self, didClosePane: pane, at: index)
 
         // Clean up nested split views if needed
         cleanupEmptySplitViews()
+        updatePaneCloseButtons()
 
         // Adjust active pane index
         if activePaneIndex >= panes.count {
@@ -427,8 +450,11 @@ class PaneSplitController: NSViewController {
         }
     }
 
-    func closeActivePane() {
+    @discardableResult
+    func closeActivePane() -> Bool {
+        guard panes.count > 1 else { return false }
         closePane(index: activePaneIndex)
+        return true
     }
 
     func setActivePane(index: Int) {
@@ -545,6 +571,7 @@ class PaneSplitController: NSViewController {
         allSplitViews.removeAll()
         allSplitViews.insert(rootSplitView)
         paneContainers.removeAll()
+        paneCloseButtons.removeAll()
 
         // Update panes reference
         self.panes = tab.panes
@@ -563,11 +590,12 @@ class PaneSplitController: NSViewController {
         }
 
         print("🔧 Split view now has \(rootSplitView.arrangedSubviews.count) arranged subviews")
+        updatePaneCloseButtons()
 
         // Distribute evenly
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.distributeEvenly(in: self.rootSplitView)
+            SplitLayoutManager.distributeEvenly(in: self.rootSplitView)
         }
 
         // Focus the active pane
@@ -584,10 +612,11 @@ class PaneSplitController: NSViewController {
             rootSplitView.addArrangedSubview(container)
             setActivePane(index: panes.count - 1)
             addPaneBorder(to: paneView, isActive: false)
+            updatePaneCloseButtons()
 
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                self.distributeEvenly(in: self.rootSplitView)
+                SplitLayoutManager.distributeEvenly(in: self.rootSplitView)
             }
         }
     }
@@ -624,6 +653,28 @@ class ClickableContainerView: NSView {
         print("🖱️ ClickableContainerView mouseDown called")
         onMouseDown?()
         super.mouseDown(with: event)
+    }
+}
+
+final class PaneCloseButton: NSButton {
+    weak var pane: PaneModel?
+
+    init() {
+        super.init(frame: .zero)
+        title = ""
+        image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close Pane")
+        imagePosition = .imageOnly
+        bezelStyle = .rounded
+        isBordered = false
+        contentTintColor = NSColor(hex: "#cdd6f4") ?? .labelColor
+        toolTip = "Close Pane"
+        wantsLayer = true
+        layer?.backgroundColor = (NSColor(hex: "#313244") ?? .controlBackgroundColor).withAlphaComponent(0.9).cgColor
+        layer?.cornerRadius = 5
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }
 

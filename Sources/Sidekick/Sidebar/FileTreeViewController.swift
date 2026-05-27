@@ -1,4 +1,13 @@
 import Cocoa
+import CoreServices
+
+private let fileTreeEventCallback: FSEventStreamCallback = { _, clientInfo, _, _, _, _ in
+    guard let clientInfo = clientInfo else { return }
+    let controller = Unmanaged<FileTreeViewController>.fromOpaque(clientInfo).takeUnretainedValue()
+    DispatchQueue.main.async {
+        controller.scheduleRefreshFromFileEvent()
+    }
+}
 
 protocol FileTreeDelegate: AnyObject {
     func fileTree(_ fileTree: FileTreeViewController, didSelectFile url: URL)
@@ -14,6 +23,9 @@ class FileTreeViewController: NSViewController {
     private var currentPath: String = ""
     private var showHidden: Bool = false
     private var gitIgnoreChecker: GitIgnoreChecker?
+    private var eventStream: FSEventStreamRef?
+    private var refreshWorkItem: DispatchWorkItem?
+    private var lastRefreshFromFileEvent: Date?
 
     override func loadView() {
         view = NSView()
@@ -47,6 +59,7 @@ class FileTreeViewController: NSViewController {
         outlineView.delegate = self
         outlineView.target = self
         outlineView.doubleAction = #selector(doubleClickAction(_:))
+        setupContextMenu()
         outlineView.usesAlternatingRowBackgroundColors = false
         if #available(macOS 12.0, *) {
             outlineView.style = .plain
@@ -72,19 +85,30 @@ class FileTreeViewController: NSViewController {
         ])
     }
 
-    func loadFileTree(for path: String) {
-        print("🌳 loadFileTree called with path: \(path)")
-        // Find git root if we're in a git project
-        let gitRoot = findGitRoot(from: path)
-        let displayPath = gitRoot ?? path
-        print("🌳 displayPath: \(displayPath), gitRoot: \(gitRoot ?? "none")")
+    private func setupContextMenu() {
+        let menu = NSMenu()
+        menu.delegate = self
+        outlineView.menu = menu
+    }
 
-        guard displayPath != currentPath else {
+    func loadFileTree(for path: String, force: Bool = false) {
+        print("🌳 loadFileTree called with path: \(path)")
+        let expandedPaths = force ? expandedDirectoryPaths() : []
+
+        let workspace = WorkspaceResolver.context(for: path)
+        let displayPath = workspace.displayRoot
+        print("🌳 displayPath: \(displayPath), gitRoot: \(workspace.repositoryRoot ?? "none")")
+        let pathChanged = displayPath != currentPath
+
+        guard force || displayPath != currentPath else {
             print("🌳 Skipping - already loaded: \(displayPath)")
             return
         }
 
         currentPath = displayPath
+        if pathChanged {
+            startWatching(path: displayPath)
+        }
         let url = URL(fileURLWithPath: displayPath)
         print("🌳 Creating root node for: \(url.path)")
 
@@ -98,11 +122,16 @@ class FileTreeViewController: NSViewController {
                 print("🔄 GitIgnore data loaded, refreshing tree")
                 // Reload the root node to apply git ignore filtering
                 self.rootNode?.isLoaded = false
-                self.rootNode?.loadChildren(showHidden: self.showHidden, gitIgnoreChecker: self.gitIgnoreChecker) { [weak self] in
-                    DispatchQueue.main.async {
-                        guard let self = self else { return }
-                        self.outlineView.reloadData()
-                        self.outlineView.expandItem(self.rootNode)
+                guard let rootNode = self.rootNode else { return }
+                let showHidden = self.showHidden
+                let gitIgnoreChecker = self.gitIgnoreChecker
+                DispatchQueue.global(qos: .userInitiated).async { [weak self, weak rootNode] in
+                    rootNode?.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) {
+                        DispatchQueue.main.async {
+                            guard let self = self else { return }
+                            self.outlineView.reloadData()
+                            self.outlineView.expandItem(self.rootNode)
+                        }
                     }
                 }
             }
@@ -113,43 +142,167 @@ class FileTreeViewController: NSViewController {
         rootNode = FileTreeNode(url: url)
         // Load the root's children synchronously so they're available immediately
         rootNode?.isExpanded = true
-        rootNode?.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) { [weak self] in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                print("📁 Root node loaded with \(self.rootNode?.children.count ?? 0) children")
-                self.outlineView.reloadData()
-                self.outlineView.expandItem(self.rootNode)
+        guard let rootNodeToLoad = rootNode else { return }
+        let currentShowHidden = showHidden
+        let currentGitIgnoreChecker = gitIgnoreChecker
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak rootNodeToLoad] in
+            rootNodeToLoad?.loadChildren(showHidden: currentShowHidden, gitIgnoreChecker: currentGitIgnoreChecker) {
+                if let rootNodeToLoad = rootNodeToLoad {
+                    self?.loadExpandedDescendants(
+                        from: rootNodeToLoad,
+                        expandedPaths: expandedPaths,
+                        showHidden: currentShowHidden,
+                        gitIgnoreChecker: currentGitIgnoreChecker
+                    )
+                }
+
+                DispatchQueue.main.async {
+                    guard let self = self, self.rootNode === rootNodeToLoad else { return }
+                    print("📁 Root node loaded with \(self.rootNode?.children.count ?? 0) children")
+                    self.outlineView.reloadData()
+                    if let rootNode = self.rootNode {
+                        self.expandLoadedItems(from: rootNode)
+                    }
+                }
             }
         }
-    }
-
-    // Find the git repository root by walking up the directory tree
-    private func findGitRoot(from path: String) -> String? {
-        var currentURL = URL(fileURLWithPath: path)
-
-        // Walk up the directory tree looking for .git
-        while currentURL.path != "/" {
-            let gitURL = currentURL.appendingPathComponent(".git")
-            if FileManager.default.fileExists(atPath: gitURL.path) {
-                return currentURL.path
-            }
-            currentURL = currentURL.deletingLastPathComponent()
-        }
-
-        return nil
     }
 
     func toggleHiddenFiles() {
         showHidden.toggle()
         if let rootPath = rootNode?.url.path {
-            loadFileTree(for: rootPath)
+            loadFileTree(for: rootPath, force: true)
         }
     }
 
     func refresh() {
         if let rootPath = rootNode?.url.path {
-            loadFileTree(for: rootPath)
+            loadFileTree(for: rootPath, force: true)
         }
+    }
+
+    private func startWatching(path: String) {
+        stopWatching()
+
+        guard shouldWatchPath(path) else { return }
+
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+
+        let pathsToWatch = [path] as CFArray
+        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer)
+
+        guard let stream = FSEventStreamCreate(
+            kCFAllocatorDefault,
+            fileTreeEventCallback,
+            &context,
+            pathsToWatch,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.5,
+            flags
+        ) else {
+            print("⚠️ Failed to watch file tree path: \(path)")
+            return
+        }
+
+        eventStream = stream
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
+        FSEventStreamStart(stream)
+    }
+
+    private func stopWatching() {
+        refreshWorkItem?.cancel()
+        refreshWorkItem = nil
+
+        guard let stream = eventStream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        eventStream = nil
+    }
+
+    private func expandedDirectoryPaths() -> Set<String> {
+        guard let rootNode = rootNode else { return [] }
+
+        var paths = Set<String>()
+        collectExpandedDirectoryPaths(from: rootNode, into: &paths)
+        return paths
+    }
+
+    private func collectExpandedDirectoryPaths(from node: FileTreeNode, into paths: inout Set<String>) {
+        guard node.isDirectory else { return }
+
+        if node === rootNode || outlineView.isItemExpanded(node) || node.isExpanded {
+            paths.insert(node.url.path)
+        }
+
+        for child in node.children {
+            collectExpandedDirectoryPaths(from: child, into: &paths)
+        }
+    }
+
+    private func loadExpandedDescendants(
+        from node: FileTreeNode,
+        expandedPaths: Set<String>,
+        showHidden: Bool,
+        gitIgnoreChecker: GitIgnoreChecker?
+    ) {
+        guard node.isDirectory else { return }
+
+        for child in node.children where child.isDirectory && expandedPaths.contains(child.url.path) {
+            child.isExpanded = true
+            child.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
+            loadExpandedDescendants(
+                from: child,
+                expandedPaths: expandedPaths,
+                showHidden: showHidden,
+                gitIgnoreChecker: gitIgnoreChecker
+            )
+        }
+    }
+
+    private func expandLoadedItems(from node: FileTreeNode) {
+        guard node.isDirectory else { return }
+
+        if node === rootNode || node.isExpanded {
+            outlineView.expandItem(node)
+        }
+
+        for child in node.children {
+            expandLoadedItems(from: child)
+        }
+    }
+
+    fileprivate func scheduleRefreshFromFileEvent() {
+        let now = Date()
+        if let lastRefreshFromFileEvent,
+           now.timeIntervalSince(lastRefreshFromFileEvent) < 2.0 {
+            return
+        }
+        lastRefreshFromFileEvent = now
+        refreshWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.refresh()
+        }
+
+        refreshWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: workItem)
+    }
+
+    private func shouldWatchPath(_ path: String) -> Bool {
+        let standardizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        let homePath = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return standardizedPath != homePath && standardizedPath != "/"
+    }
+
+    deinit {
+        stopWatching()
     }
 
     @objc private func doubleClickAction(_ sender: Any) {
@@ -169,6 +322,31 @@ class FileTreeViewController: NSViewController {
             // Only open files, not directories
             delegate?.fileTree(self, didOpenFile: node.url)
         }
+    }
+
+    @objc private func openInFinder(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+}
+
+extension FileTreeViewController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        let row = outlineView.clickedRow
+        guard row >= 0, let node = outlineView.item(atRow: row) as? FileTreeNode else { return }
+
+        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+
+        let openInFinderItem = NSMenuItem(
+            title: "Open in Finder",
+            action: #selector(openInFinder(_:)),
+            keyEquivalent: ""
+        )
+        openInFinderItem.target = self
+        openInFinderItem.representedObject = node.url
+        menu.addItem(openInFinderItem)
     }
 }
 
@@ -285,10 +463,15 @@ extension FileTreeViewController: NSOutlineViewDelegate {
         guard let node = item as? FileTreeNode else { return false }
 
         if node.isDirectory && !node.isLoaded {
-            node.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) { [weak self, weak node] in
-                guard let self = self, let node = node else { return }
-                DispatchQueue.main.async {
-                    self.outlineView.reloadItem(node, reloadChildren: true)
+            let currentShowHidden = showHidden
+            let currentGitIgnoreChecker = gitIgnoreChecker
+            DispatchQueue.global(qos: .userInitiated).async { [weak self, weak node] in
+                node?.loadChildren(showHidden: currentShowHidden, gitIgnoreChecker: currentGitIgnoreChecker) {
+                    DispatchQueue.main.async {
+                        guard let self = self, let node = node else { return }
+                        self.outlineView.reloadItem(node, reloadChildren: true)
+                        self.outlineView.expandItem(node)
+                    }
                 }
             }
         } else {

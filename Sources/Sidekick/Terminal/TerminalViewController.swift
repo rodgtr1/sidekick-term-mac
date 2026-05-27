@@ -32,6 +32,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var cwdTimer: Timer?
     private var currentCWD: String = "~"
     private var shellPID: pid_t = 0
+    private var isUpdatingCWD = false
     private var initialDirectory: String?
     private var recentOutput = ""
     private var agentStatusSequenceBuffer = ""
@@ -122,16 +123,23 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let shellIdiom = "-" + NSString(string: shell).lastPathComponent
         let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
 
-        // Use initialDirectory if provided, otherwise use home directory
-        let startDirectory = initialDirectory ?? homeDirectory
+        // Use initialDirectory if provided, otherwise use home directory.
+        // Validate before handing it to SwiftTerm so a stale tracked cwd falls back cleanly.
+        let requestedDirectory = initialDirectory ?? homeDirectory
+        var isDirectory: ObjCBool = false
+        let startDirectory: String
+        if FileManager.default.fileExists(atPath: requestedDirectory, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            startDirectory = requestedDirectory
+        } else {
+            startDirectory = homeDirectory
+        }
 
-        // Change to the starting directory before starting shell
-        // This sets the working directory for the child process
-        FileManager.default.changeCurrentDirectoryPath(startDirectory)
+        currentCWD = startDirectory
 
         // Start the shell process - let SwiftTerm handle environment setup
         // SwiftTerm will automatically set TERM, HOME, PWD and other required variables
-        terminalView.startProcess(executable: shell, execName: shellIdiom)
+        terminalView.startProcess(executable: shell, execName: shellIdiom, currentDirectory: startDirectory)
 
         // Find the shell PID after a brief delay to allow process to start
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -169,10 +177,22 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     private func updateCWD() {
         guard shellPID > 0 else { return }
+        guard !isUpdatingCWD else { return }
 
-        if let cwd = CWDDetector.getCWD(for: shellPID) {
-            currentCWD = cwd
-            updateTitle()
+        isUpdatingCWD = true
+        let pid = shellPID
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let cwd = CWDDetector.getCWD(for: pid)
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.isUpdatingCWD = false
+
+                if let cwd = cwd {
+                    self.currentCWD = cwd
+                    self.updateTitle()
+                }
+            }
         }
     }
 
@@ -261,36 +281,42 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func findShellPID() {
-        // Find the child process of the terminal
-        let task = Process()
-        task.launchPath = "/bin/ps"
-        task.arguments = ["-x", "-o", "pid,ppid,comm"]
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let task = Process()
+            task.launchPath = "/bin/ps"
+            task.arguments = ["-x", "-o", "pid,ppid,comm"]
 
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe()
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = Pipe()
 
-        do {
-            try task.run()
-            task.waitUntilExit()
+            do {
+                try task.run()
+                task.waitUntilExit()
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                let lines = output.split(separator: "\n")
-                let myPid = ProcessInfo.processInfo.processIdentifier
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let output = String(data: data, encoding: .utf8) {
+                    let lines = output.split(separator: "\n")
+                    let myPid = ProcessInfo.processInfo.processIdentifier
+                    var detectedPID: pid_t = 0
 
-                for line in lines {
-                    let components = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
-                    if components.count >= 3,
-                       let pid = pid_t(components[0]),
-                       let ppid = pid_t(components[1]),
-                       ppid == myPid {
-                        shellPID = pid
-                        break
+                    for line in lines {
+                        let components = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
+                        if components.count >= 3,
+                           let pid = pid_t(components[0]),
+                           let ppid = pid_t(components[1]),
+                           ppid == myPid {
+                            detectedPID = pid
+                            break
+                        }
+                    }
+
+                    DispatchQueue.main.async { [weak self] in
+                        self?.shellPID = detectedPID
                     }
                 }
-            }
-        } catch {}
+            } catch {}
+        }
     }
 
     // MARK: - LocalProcessTerminalViewDelegate Methods

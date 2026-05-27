@@ -3,7 +3,8 @@ import Cocoa
 protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL)
     func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String)
-    func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String?)
     func sidebarContainer(_ container: SidebarContainerView, didRequestRunTask command: String)
     func sidebarContainer(_ container: SidebarContainerView, didRequestPasteCommand command: String)
 }
@@ -137,6 +138,10 @@ class SidebarContainerView: NSView {
                 newView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
             ])
         }
+
+        if panel == .search {
+            (panelControllers[.search] as? SearchPanelViewController)?.focusSearchField()
+        }
     }
 
     func toggleVisibility() {
@@ -200,11 +205,19 @@ extension SidebarContainerView: GitPanelDelegate {
     func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String) {
         delegate?.sidebarContainer(self, didRequestDiffFor: filePath)
     }
+
+    func gitPanel(_ panel: GitPanelViewController, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?) {
+        delegate?.sidebarContainer(
+            self,
+            didRequestUncommittedChangesFor: repositoryPath,
+            focusedFilePath: focusedFilePath
+        )
+    }
 }
 
 extension SidebarContainerView: SearchPanelDelegate {
-    func searchPanel(_ panel: SearchPanelViewController, didRequestOpenFile filePath: String, atLine line: Int) {
-        delegate?.sidebarContainer(self, didRequestOpenFile: filePath, atLine: line)
+    func searchPanel(_ panel: SearchPanelViewController, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String) {
+        delegate?.sidebarContainer(self, didRequestOpenFile: filePath, atLine: line, highlighting: searchTerm)
     }
 }
 

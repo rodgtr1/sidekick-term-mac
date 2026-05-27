@@ -10,6 +10,7 @@ class DiffViewController: NSViewController {
     private var diffContent: String = ""
     private var hunks: [DiffHunk] = []
     private var isInteractiveMode: Bool = false
+    private let gitService = GitService()
 
     struct DiffHunk {
         let range: NSRange
@@ -124,147 +125,22 @@ class DiffViewController: NSViewController {
     private func loadGitDiff(for filePath: String, completion: @escaping (Result<String, Error>) -> Void) {
         print("📝 loadGitDiff: filePath = \(filePath)")
 
-        // Find git root directory
-        let gitRoot = findGitRoot(from: filePath) ?? URL(fileURLWithPath: filePath).deletingLastPathComponent().path
-        print("📝 loadGitDiff: gitRoot = \(gitRoot)")
+        DispatchQueue.global(qos: .userInitiated).async { [gitService] in
+            let gitRoot = gitService.repositoryRoot(from: filePath) ?? URL(fileURLWithPath: filePath).deletingLastPathComponent().path
+            print("📝 loadGitDiff: gitRoot = \(gitRoot)")
 
-        // Calculate relative path from git root
-        let fileURL = URL(fileURLWithPath: filePath)
-        let gitRootURL = URL(fileURLWithPath: gitRoot)
-        let relativePath = fileURL.path.replacingOccurrences(of: gitRootURL.path + "/", with: "")
-        print("📝 loadGitDiff: relativePath = \(relativePath)")
+            let workspace = WorkspaceContext(workingDirectory: gitRoot, repositoryRoot: gitRoot)
+            let relativePath = workspace.relativePath(for: filePath)
+            print("📝 loadGitDiff: relativePath = \(relativePath)")
 
-        // Check git status to determine file state
-        checkFileStatus(relativePath: relativePath, gitRoot: gitRoot) { [weak self] status in
-            guard let self = self else { return }
-
-            switch status {
-            case .untracked:
-                // For untracked files, show the entire file as additions
-                self.loadUntrackedFile(filePath: filePath, completion: completion)
-            case .modified, .staged:
-                // For modified or staged files, show git diff
-                self.loadGitDiffForTrackedFile(relativePath: relativePath, gitRoot: gitRoot, completion: completion)
-            case .unchanged:
-                completion(.success("No changes"))
+            do {
+                let diff = try gitService.diff(relativePath: relativePath, repositoryRoot: gitRoot)
+                print("📝 loadGitDiff: git diff output length = \(diff.count)")
+                completion(.success(diff))
+            } catch {
+                completion(.failure(error))
             }
         }
-    }
-
-    private enum FileStatus {
-        case untracked
-        case modified
-        case staged
-        case unchanged
-    }
-
-    private func checkFileStatus(relativePath: String, gitRoot: String, completion: @escaping (FileStatus) -> Void) {
-        let task = Process()
-        task.launchPath = "/usr/bin/git"
-        task.arguments = ["status", "--porcelain", relativePath]
-        task.currentDirectoryPath = gitRoot
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-
-        task.terminationHandler = { process in
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
-                print("📝 git status output: '\(output)'")
-                if output.isEmpty {
-                    completion(.unchanged)
-                } else if output.hasPrefix("??") {
-                    completion(.untracked)
-                } else if output.hasPrefix("M ") || output.hasPrefix(" M") {
-                    completion(.modified)
-                } else if output.hasPrefix("A ") {
-                    completion(.staged)
-                } else {
-                    completion(.modified)
-                }
-            } else {
-                completion(.unchanged)
-            }
-        }
-
-        do {
-            try task.run()
-        } catch {
-            completion(.unchanged)
-        }
-    }
-
-    private func loadGitDiffForTrackedFile(relativePath: String, gitRoot: String, completion: @escaping (Result<String, Error>) -> Void) {
-        let task = Process()
-        task.launchPath = "/usr/bin/git"
-        // For unstaged changes, just use "git diff" without HEAD
-        task.arguments = ["diff", relativePath]
-        task.currentDirectoryPath = gitRoot
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = pipe
-
-        task.terminationHandler = { process in
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                print("📝 loadGitDiff: git diff output length = \(output.count)")
-                if output.isEmpty {
-                    completion(.success("No changes"))
-                } else {
-                    completion(.success(output))
-                }
-            } else {
-                completion(.failure(NSError(domain: "DiffError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to read git diff output"])))
-            }
-        }
-
-        do {
-            try task.run()
-        } catch {
-            completion(.failure(error))
-        }
-    }
-
-    private func loadUntrackedFile(filePath: String, completion: @escaping (Result<String, Error>) -> Void) {
-        // For untracked files, show the entire file content as new additions
-        do {
-            let content = try String(contentsOfFile: filePath, encoding: .utf8)
-            // Format as a diff with all lines as additions
-            let lines = content.components(separatedBy: .newlines)
-            var diffOutput = "diff --git a/\(URL(fileURLWithPath: filePath).lastPathComponent) b/\(URL(fileURLWithPath: filePath).lastPathComponent)\n"
-            diffOutput += "new file\n"
-            diffOutput += "--- /dev/null\n"
-            diffOutput += "+++ b/\(URL(fileURLWithPath: filePath).lastPathComponent)\n"
-            diffOutput += "@@ -0,0 +1,\(lines.count) @@\n"
-            for line in lines {
-                diffOutput += "+\(line)\n"
-            }
-            completion(.success(diffOutput))
-        } catch {
-            completion(.failure(error))
-        }
-    }
-
-    private func findGitRoot(from path: String) -> String? {
-        var currentPath = URL(fileURLWithPath: path)
-
-        // If path is a file, start from its directory
-        var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: currentPath.path, isDirectory: &isDir), !isDir.boolValue {
-            currentPath = currentPath.deletingLastPathComponent()
-        }
-
-        // Walk up the directory tree looking for .git
-        while currentPath.path != "/" {
-            let gitPath = currentPath.appendingPathComponent(".git")
-            if FileManager.default.fileExists(atPath: gitPath.path) {
-                return currentPath.path
-            }
-            currentPath = currentPath.deletingLastPathComponent()
-        }
-
-        return nil
     }
 
     private func displayDiff(_ content: String) {

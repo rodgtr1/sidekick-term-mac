@@ -42,6 +42,8 @@ class BrowserPanelViewController: NSViewController {
 
         preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.preferences = preferences
+        configuration.websiteDataStore = .default()
+        configuration.userContentController = makeUserContentController()
 
         // Enable developer extras for debugging (optional)
         if #available(macOS 13.3, *) {
@@ -56,13 +58,107 @@ class BrowserPanelViewController: NSViewController {
         // Allow back/forward gestures
         webView.allowsBackForwardNavigationGestures = true
 
-        // Set background color
-        webView.setValue(false, forKey: "drawsBackground")
+        // Keep page drawing opaque so sites render like they do in Safari/Chrome.
+        webView.setValue(true, forKey: "drawsBackground")
         if #available(macOS 12.0, *) {
-            webView.underPageBackgroundColor = NSColor(hex: "#1e1e2e") ?? .controlBackgroundColor
+            webView.underPageBackgroundColor = .white
         }
 
         view.addSubview(webView)
+    }
+
+    private func makeUserContentController() -> WKUserContentController {
+        let controller = WKUserContentController()
+        let source = """
+        (() => {
+            const localHosts = new Set(['localhost', '127.0.0.1', '::1']);
+            if (!localHosts.has(window.location.hostname)) {
+                return;
+            }
+
+            const style = document.createElement('style');
+            style.textContent = `
+                vite-error-overlay,
+                nextjs-portal,
+                astro-error-overlay,
+                astro-dev-toolbar,
+                iframe#webpack-dev-server-client-overlay,
+                div#webpack-dev-server-client-overlay,
+                iframe[data-react-error-overlay],
+                div[data-react-error-overlay],
+                iframe[title="webpack-dev-server-client-overlay"],
+                iframe[style*="2147483647"],
+                [data-nextjs-dialog-overlay],
+                [data-nextjs-toast],
+                [data-nextjs-dev-overlay],
+                [data-react-error-overlay] {
+                    display: none !important;
+                    visibility: hidden !important;
+                    pointer-events: none !important;
+                }
+            `;
+
+            const overlayText = [
+                'Uncaught runtime errors:',
+                'Unexpected token',
+                'Failed to compile',
+                'Compiled with problems'
+            ];
+
+            const looksLikeDevOverlay = (element) => {
+                if (!(element instanceof HTMLElement)) {
+                    return false;
+                }
+
+                const id = element.id || '';
+                const className = typeof element.className === 'string' ? element.className : '';
+                const role = element.getAttribute('role') || '';
+                const text = element.innerText || element.textContent || '';
+                const style = window.getComputedStyle(element);
+                const zIndex = Number.parseInt(style.zIndex, 10);
+
+                if (id.includes('webpack-dev-server-client-overlay')) { return true; }
+                if (className.includes('react-error-overlay')) { return true; }
+                if (element.tagName.toLowerCase() === 'vite-error-overlay') { return true; }
+                if (role === 'dialog' && overlayText.some((value) => text.includes(value))) { return true; }
+
+                const isFullScreenFixed =
+                    style.position === 'fixed' &&
+                    element.offsetWidth >= window.innerWidth * 0.8 &&
+                    element.offsetHeight >= window.innerHeight * 0.4 &&
+                    Number.isFinite(zIndex) &&
+                    zIndex >= 10000;
+
+                return isFullScreenFixed && overlayText.some((value) => text.includes(value));
+            };
+
+            const removeDevOverlays = () => {
+                document.querySelectorAll('body *').forEach((element) => {
+                    if (looksLikeDevOverlay(element)) {
+                        element.remove();
+                    }
+                });
+            };
+
+            const installStyle = () => {
+                const target = document.head || document.documentElement;
+                if (target && !style.isConnected) {
+                    target.appendChild(style);
+                }
+                removeDevOverlays();
+            };
+
+            installStyle();
+            document.addEventListener('DOMContentLoaded', installStyle, { once: true });
+            new MutationObserver(removeDevOverlays).observe(document.documentElement, {
+                childList: true,
+                subtree: true
+            });
+        })();
+        """
+        let script = WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        controller.addUserScript(script)
+        return controller
     }
 
     private func setupNavigationBar() {
@@ -288,7 +384,7 @@ class BrowserPanelViewController: NSViewController {
     }
 
     @objc private func reloadButtonClicked() {
-        webView.reload()
+        webView.reloadFromOrigin()
     }
 
     @objc private func openInSystemBrowser() {
@@ -302,7 +398,53 @@ class BrowserPanelViewController: NSViewController {
         guard !input.isEmpty else { return }
 
         let url = processURLInput(input)
-        webView.load(URLRequest(url: url))
+        loadURL(url)
+    }
+
+    private func loadURL(_ url: URL) {
+        let request = cacheBypassingRequest(for: url)
+
+        guard isLocalDevelopmentURL(url) else {
+            webView.load(request)
+            return
+        }
+
+        clearWebsiteData(for: url) { [weak self] in
+            self?.webView.load(request)
+        }
+    }
+
+    private func cacheBypassingRequest(for url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        return request
+    }
+
+    private func isLocalDevelopmentURL(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return host == "localhost" || host == "127.0.0.1" || host == "::1"
+    }
+
+    private func clearWebsiteData(for url: URL, completion: @escaping () -> Void) {
+        let dataStore = WKWebsiteDataStore.default()
+        let types = WKWebsiteDataStore.allWebsiteDataTypes()
+
+        dataStore.fetchDataRecords(ofTypes: types) { records in
+            let matchingRecords = records.filter { record in
+                record.displayName == "localhost" ||
+                record.displayName == "127.0.0.1" ||
+                record.displayName == "::1"
+            }
+
+            guard !matchingRecords.isEmpty else {
+                DispatchQueue.main.async(execute: completion)
+                return
+            }
+
+            dataStore.removeData(ofTypes: types, for: matchingRecords) {
+                DispatchQueue.main.async(execute: completion)
+            }
+        }
     }
 
     private func processURLInput(_ input: String) -> URL {

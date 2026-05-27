@@ -19,6 +19,7 @@ class PaneModel: Identifiable, Hashable {
     var terminalViewController: TerminalViewController?
     var editorViewController: EditorViewController?
     var diffViewController: DiffViewController?
+    var uncommittedChangesViewController: UncommittedChangesViewController?
     var browserViewController: BrowserPanelViewController?
     var view: NSView?
     var paneType: PaneType = .terminal
@@ -27,6 +28,7 @@ class PaneModel: Identifiable, Hashable {
         case terminal
         case editor
         case diff
+        case uncommittedChanges
         case browser
     }
 
@@ -49,6 +51,7 @@ class PaneModel: Identifiable, Hashable {
         print("🪟 PaneModel creating editor for: \(url.path)")
         let editorVC = EditorViewController()
         self.editorViewController = editorVC
+        self.currentDirectory = url.deletingLastPathComponent().path
 
         // Ensure view is loaded by accessing it
         print("🪟 Accessing editor view...")
@@ -92,6 +95,7 @@ class PaneModel: Identifiable, Hashable {
     func createDiffViewController(for filePath: String) {
         let diffVC = DiffViewController()
         self.diffViewController = diffVC
+        self.currentDirectory = URL(fileURLWithPath: filePath).deletingLastPathComponent().path
 
         // Ensure view is loaded by accessing it
         _ = diffVC.view
@@ -105,6 +109,26 @@ class PaneModel: Identifiable, Hashable {
         // Update title based on filename
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent
         updateTitleForDiff(fileName: fileName)
+    }
+
+    func createUncommittedChangesViewController(
+        repositoryPath: String,
+        focusedFilePath: String? = nil,
+        onOpenFile: ((String) -> Void)? = nil
+    ) {
+        let changesVC = UncommittedChangesViewController(
+            repositoryPath: repositoryPath,
+            focusedFilePath: focusedFilePath
+        )
+        changesVC.onOpenFile = onOpenFile
+        self.uncommittedChangesViewController = changesVC
+        self.currentDirectory = repositoryPath
+
+        _ = changesVC.view
+
+        self.view = changesVC.view
+        self.paneType = .uncommittedChanges
+        self.title = "Uncommitted Changes"
     }
 
     func createBrowserViewController() {
@@ -121,7 +145,7 @@ class PaneModel: Identifiable, Hashable {
         title = "Browser"
     }
 
-    private func updateTitleForEditor(fileName: String) {
+    func updateTitleForEditor(fileName: String) {
         title = fileName
     }
 
@@ -154,6 +178,20 @@ class PaneModel: Identifiable, Hashable {
         )
     }
 
+    func resolvedWorkingDirectory() -> String? {
+        if !currentDirectory.isEmpty {
+            return currentDirectory
+        }
+
+        if let directory = terminalViewController?.getCurrentWorkingDirectory(),
+           !directory.isEmpty,
+           directory != "~" {
+            return directory
+        }
+
+        return nil
+    }
+
     func focus() {
         isFocused = true
 
@@ -161,13 +199,13 @@ class PaneModel: Identifiable, Hashable {
         case .terminal:
             terminalViewController?.focusTerminal()
         case .editor:
-            if let textView = editorViewController?.view.subviews.first(where: { $0 is NSScrollView })?.subviews.first(where: { $0 is NSTextView }) as? NSTextView {
-                editorViewController?.view.window?.makeFirstResponder(textView)
-            }
+            editorViewController?.focusEditor()
         case .diff:
             if let textView = diffViewController?.view.subviews.first(where: { $0 is NSScrollView })?.subviews.first(where: { $0 is NSTextView }) as? NSTextView {
                 diffViewController?.view.window?.makeFirstResponder(textView)
             }
+        case .uncommittedChanges:
+            uncommittedChangesViewController?.view.window?.makeFirstResponder(uncommittedChangesViewController?.view)
         case .browser:
             // Focus on the browser view
             browserViewController?.view.window?.makeFirstResponder(browserViewController?.view)
@@ -182,6 +220,7 @@ class PaneModel: Identifiable, Hashable {
         terminalViewController = nil
         editorViewController = nil
         diffViewController = nil
+        uncommittedChangesViewController = nil
         browserViewController = nil
         view = nil
     }

@@ -20,6 +20,17 @@ class LineNumberRulerView: NSRulerView {
         reservedThicknessForAccessoryView = 0
     }
 
+    func attach(to textView: NSTextView) {
+        self.textView = textView
+        clientView = textView
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(textDidChange),
+            name: NSText.didChangeNotification,
+            object: textView
+        )
+    }
+
     override func awakeFromNib() {
         super.awakeFromNib()
         if let textView = clientView as? NSTextView {

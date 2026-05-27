@@ -6,6 +6,7 @@ class EditorViewController: NSViewController {
     private var lineNumberRuler: LineNumberRulerView!
     private var syntaxHighlighter: SyntaxHighlighter!
     private var currentURL: URL?
+    private var activeSearchTerm: String?
 
     var isModified: Bool = false {
         didSet {
@@ -18,6 +19,10 @@ class EditorViewController: NSViewController {
                 userInfo: ["isModified": isModified]
             )
         }
+    }
+
+    var isEditorFocused: Bool {
+        return textView.window?.firstResponder === textView
     }
 
     override func loadView() {
@@ -44,8 +49,19 @@ class EditorViewController: NSViewController {
         scrollView.autohidesScrollers = false
         scrollView.borderType = .noBorder
 
-        textView = NSTextView()
+        let textContainer = NSTextContainer()
+        textContainer.widthTracksTextView = true
+        textContainer.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+
+        let layoutManager = NSLayoutManager()
+        layoutManager.addTextContainer(textContainer)
+
+        let textStorage = NSTextStorage()
+        textStorage.addLayoutManager(layoutManager)
+
+        textView = NSTextView(frame: scrollView.contentView.bounds, textContainer: textContainer)
         textView.isEditable = true
+        textView.isSelectable = true
         textView.isRichText = false
         textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         textView.backgroundColor = NSColor(hex: "#1e1e2e") ?? .textBackgroundColor
@@ -55,6 +71,9 @@ class EditorViewController: NSViewController {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.autoresizingMask = [.width]
 
         // Configure word wrap based on config (default to true if not set)
         textView.isVerticallyResizable = true
@@ -63,6 +82,7 @@ class EditorViewController: NSViewController {
             // Word wrap enabled: text wraps to view width
             textView.isHorizontallyResizable = false
             textView.textContainer?.widthTracksTextView = true
+            textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         } else {
             // Word wrap disabled: allow horizontal scrolling
             textView.isHorizontallyResizable = true
@@ -74,6 +94,7 @@ class EditorViewController: NSViewController {
 
         // Add line number ruler
         lineNumberRuler = LineNumberRulerView(scrollView: scrollView, orientation: .verticalRuler)
+        lineNumberRuler.attach(to: textView)
         scrollView.verticalRulerView = lineNumberRuler
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = true
@@ -108,6 +129,7 @@ class EditorViewController: NSViewController {
 
     @objc private func updateSyntaxHighlighting() {
         syntaxHighlighter.highlightSyntax()
+        applySearchHighlights()
     }
 
     func openFile(_ url: URL) {
@@ -135,6 +157,7 @@ class EditorViewController: NSViewController {
             if let highlighter = syntaxHighlighter {
                 highlighter.fileExtension = url.pathExtension.lowercased()
                 highlighter.highlightSyntax()
+                applySearchHighlights()
             }
         } catch {
             showError("Failed to open file: \\(error.localizedDescription)")
@@ -234,6 +257,45 @@ class EditorViewController: NSViewController {
             // Focus the text view
             textView.window?.makeFirstResponder(textView)
         }
+    }
+
+    func highlightOccurrences(of searchTerm: String) {
+        activeSearchTerm = searchTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+        applySearchHighlights()
+    }
+
+    private func applySearchHighlights() {
+        guard let textView,
+              let textStorage = textView.textStorage else { return }
+
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        textStorage.removeAttribute(.backgroundColor, range: fullRange)
+
+        guard let searchTerm = activeSearchTerm,
+              !searchTerm.isEmpty else { return }
+
+        let content = textView.string as NSString
+        var searchRange = NSRange(location: 0, length: content.length)
+        let highlightColor = NSColor(hex: "#f9e2af")?.withAlphaComponent(0.35) ?? NSColor.systemYellow.withAlphaComponent(0.35)
+
+        while searchRange.location < content.length {
+            let foundRange = content.range(
+                of: searchTerm,
+                options: [.caseInsensitive, .diacriticInsensitive],
+                range: searchRange
+            )
+
+            guard foundRange.location != NSNotFound else { break }
+
+            textStorage.addAttribute(.backgroundColor, value: highlightColor, range: foundRange)
+
+            let nextLocation = foundRange.location + max(foundRange.length, 1)
+            searchRange = NSRange(location: nextLocation, length: content.length - nextLocation)
+        }
+    }
+
+    func focusEditor() {
+        textView.window?.makeFirstResponder(textView)
     }
 
     deinit {

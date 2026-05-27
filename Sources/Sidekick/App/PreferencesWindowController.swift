@@ -12,6 +12,7 @@ class PreferencesWindowController: NSWindowController {
     private var opacitySlider: NSSlider!
     private var opacityLabel: NSTextField!
     private var blurCheckbox: NSButton!
+    private var rawConfigButton: NSButton!
 
     // Terminal Tab
     private var fontFamilyPopup: NSPopUpButton!
@@ -20,6 +21,10 @@ class PreferencesWindowController: NSWindowController {
 
     // Appearance Tab
     private var themePopup: NSPopUpButton!
+
+    // Editor Tab
+    private var fileOpenModePopup: NSPopUpButton!
+    private var wordWrapCheckbox: NSButton!
 
     init(config: Config, mainWindowController: MainWindowController? = nil) {
         self.config = config
@@ -65,6 +70,7 @@ class PreferencesWindowController: NSWindowController {
         setupTabView()
         setupGeneralTab()
         setupTerminalTab()
+        setupEditorTab()
         setupAppearanceTab()
         layoutViews()
     }
@@ -107,10 +113,21 @@ class PreferencesWindowController: NSWindowController {
         blurCheckbox.font = NSFont.systemFont(ofSize: 13)
         blurCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
+        let rawConfigLabel = NSTextField(labelWithString: "Raw Config File:")
+        rawConfigLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        rawConfigLabel.textColor = AppTheme.primaryText
+        rawConfigLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        rawConfigButton = NSButton(title: "View/Edit Raw Config...", target: self, action: #selector(rawConfigButtonClicked(_:)))
+        rawConfigButton.bezelStyle = .rounded
+        rawConfigButton.translatesAutoresizingMaskIntoConstraints = false
+
         generalView.addSubview(opacityTitleLabel)
         generalView.addSubview(opacitySlider)
         generalView.addSubview(opacityLabel)
         generalView.addSubview(blurCheckbox)
+        generalView.addSubview(rawConfigLabel)
+        generalView.addSubview(rawConfigButton)
 
         NSLayoutConstraint.activate([
             opacityTitleLabel.topAnchor.constraint(equalTo: generalView.topAnchor, constant: 30),
@@ -125,7 +142,13 @@ class PreferencesWindowController: NSWindowController {
             opacityLabel.widthAnchor.constraint(equalToConstant: 50),
 
             blurCheckbox.topAnchor.constraint(equalTo: opacitySlider.bottomAnchor, constant: 20),
-            blurCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20)
+            blurCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
+
+            rawConfigLabel.topAnchor.constraint(equalTo: blurCheckbox.bottomAnchor, constant: 30),
+            rawConfigLabel.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
+
+            rawConfigButton.topAnchor.constraint(equalTo: rawConfigLabel.bottomAnchor, constant: 10),
+            rawConfigButton.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20)
         ])
 
         let generalTabItem = NSTabViewItem(identifier: "general")
@@ -247,6 +270,48 @@ class PreferencesWindowController: NSWindowController {
         tabView.addTabViewItem(appearanceTabItem)
     }
 
+    private func setupEditorTab() {
+        let editorView = NSView()
+        editorView.wantsLayer = true
+        editorView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+
+        let fileOpenModeLabel = NSTextField(labelWithString: "File Tree Opens:")
+        fileOpenModeLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        fileOpenModeLabel.textColor = AppTheme.primaryText
+        fileOpenModeLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        fileOpenModePopup = NSPopUpButton()
+        fileOpenModePopup.addItems(withTitles: ["Terminal Editor", "Built-in Editor"])
+        fileOpenModePopup.target = self
+        fileOpenModePopup.action = #selector(fileOpenModeChanged(_:))
+        fileOpenModePopup.translatesAutoresizingMaskIntoConstraints = false
+
+        wordWrapCheckbox = NSButton(checkboxWithTitle: "Wrap long lines", target: self, action: #selector(wordWrapChanged(_:)))
+        wordWrapCheckbox.font = NSFont.systemFont(ofSize: 13)
+        wordWrapCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
+        editorView.addSubview(fileOpenModeLabel)
+        editorView.addSubview(fileOpenModePopup)
+        editorView.addSubview(wordWrapCheckbox)
+
+        NSLayoutConstraint.activate([
+            fileOpenModeLabel.topAnchor.constraint(equalTo: editorView.topAnchor, constant: 30),
+            fileOpenModeLabel.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
+
+            fileOpenModePopup.topAnchor.constraint(equalTo: fileOpenModeLabel.bottomAnchor, constant: 10),
+            fileOpenModePopup.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
+            fileOpenModePopup.widthAnchor.constraint(equalToConstant: 200),
+
+            wordWrapCheckbox.topAnchor.constraint(equalTo: fileOpenModePopup.bottomAnchor, constant: 24),
+            wordWrapCheckbox.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20)
+        ])
+
+        let editorTabItem = NSTabViewItem(identifier: "editor")
+        editorTabItem.label = "Editor"
+        editorTabItem.view = editorView
+        tabView.addTabViewItem(editorTabItem)
+    }
+
     private func layoutViews() {
         NSLayoutConstraint.activate([
             tabView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
@@ -276,6 +341,10 @@ class PreferencesWindowController: NSWindowController {
         // Load font size
         fontSizeSlider.doubleValue = Double(config.font.size)
         updateFontSizeLabel()
+
+        let editorConfig = config.editor ?? EditorConfig()
+        fileOpenModePopup.selectItem(at: editorConfig.fileOpenMode == "builtin" ? 1 : 0)
+        wordWrapCheckbox.state = editorConfig.wordWrap ? .on : .off
     }
 
     // MARK: - Actions
@@ -306,6 +375,31 @@ class PreferencesWindowController: NSWindowController {
         updateFontSizeLabel()
         applyFontChanges()
         config.save()
+    }
+
+    @objc private func fileOpenModeChanged(_ sender: NSPopUpButton) {
+        ensureEditorConfig()
+        config.editor?.fileOpenMode = sender.indexOfSelectedItem == 1 ? "builtin" : "terminal"
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
+    }
+
+    @objc private func wordWrapChanged(_ sender: NSButton) {
+        ensureEditorConfig()
+        config.editor?.wordWrap = sender.state == .on
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
+    }
+
+    @objc private func rawConfigButtonClicked(_ sender: NSButton) {
+        config.save()
+        mainWindowController?.openConfigFile()
+    }
+
+    private func ensureEditorConfig() {
+        if config.editor == nil {
+            config.editor = EditorConfig()
+        }
     }
 
     private func updateOpacityLabel() {

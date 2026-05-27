@@ -2,7 +2,7 @@ import Cocoa
 import Combine
 
 protocol SearchPanelDelegate: AnyObject {
-    func searchPanel(_ panel: SearchPanelViewController, didRequestOpenFile filePath: String, atLine line: Int)
+    func searchPanel(_ panel: SearchPanelViewController, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String)
 }
 
 struct SearchMatch {
@@ -14,10 +14,26 @@ struct SearchMatch {
     let matchedText: String
 }
 
+struct SearchFileResult {
+    let filePath: String
+    let fileName: String
+    let matches: [SearchMatch]
+
+    var firstMatch: SearchMatch {
+        matches[0]
+    }
+}
+
 class SearchPanelViewController: NSViewController {
+    private enum SearchBackend {
+        case ripgrep(URL)
+        case grep(URL)
+    }
+
     private var cancellables = Set<AnyCancellable>()
     private var searchTask: Process?
     private var debounceWorkItem: DispatchWorkItem?
+    private var searchTimeoutWorkItem: DispatchWorkItem?
 
     weak var delegate: SearchPanelDelegate?
 
@@ -29,6 +45,7 @@ class SearchPanelViewController: NSViewController {
 
     // Data
     private var searchMatches: [SearchMatch] = []
+    private var searchFileResults: [SearchFileResult] = []
     private var currentWorkingDirectory: String = FileManager.default.currentDirectoryPath
 
     override func loadView() {
@@ -123,10 +140,12 @@ class SearchPanelViewController: NSViewController {
         debounceWorkItem?.cancel()
 
         // Cancel current search
+        searchTimeoutWorkItem?.cancel()
         searchTask?.terminate()
 
         if searchText.isEmpty {
             searchMatches = []
+            searchFileResults = []
             statusLabel.stringValue = "Type to search files"
             tableView.reloadData()
             return
@@ -141,23 +160,61 @@ class SearchPanelViewController: NSViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
     }
 
+    func focusSearchField() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.view.window?.makeFirstResponder(self.searchField)
+            self.searchField.currentEditor()?.selectedRange = NSRange(location: self.searchField.stringValue.count, length: 0)
+        }
+    }
+
     private func performSearch(_ searchText: String) {
         statusLabel.stringValue = "Searching..."
 
-        // Create ripgrep process
+        guard let backend = searchBackend() else {
+            statusLabel.stringValue = "Search failed: grep not found"
+            return
+        }
+
+        if case .grep = backend, isBroadSearchRoot(currentWorkingDirectory) {
+            statusLabel.stringValue = "Install ripgrep to search this folder"
+            searchMatches = []
+            searchFileResults = []
+            tableView.reloadData()
+            return
+        }
+
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/local/bin/rg")
-        task.arguments = [
-            "--json",
-            "--no-heading",
-            "--line-number",
-            "--column",
-            "--max-count", "10", // Limit matches per file
-            "--max-filesize", "2M", // Skip large files
-            "--type-not", "binary",
-            searchText,
-            currentWorkingDirectory
-        ]
+        switch backend {
+        case .ripgrep(let url):
+            task.executableURL = url
+            task.arguments = [
+                "--json",
+                "--no-heading",
+                "--line-number",
+                "--column",
+                "--max-count", "10", // Limit matches per file
+                "--max-filesize", "2M", // Skip large files
+                "--type-not", "binary",
+                searchText,
+                currentWorkingDirectory
+            ]
+        case .grep(let url):
+            task.executableURL = url
+            task.arguments = [
+                "-R",
+                "-n",
+                "-I",
+                "-m", "1000",
+                "--exclude-dir=.git",
+                "--exclude-dir=node_modules",
+                "--exclude-dir=.build",
+                "--exclude-dir=target",
+                "--exclude-dir=Library",
+                searchText,
+                currentWorkingDirectory
+            ]
+        }
 
         let pipe = Pipe()
         task.standardOutput = pipe
@@ -168,21 +225,68 @@ class SearchPanelViewController: NSViewController {
 
         do {
             try task.run()
+            let timeoutWorkItem = DispatchWorkItem { [weak task] in
+                task?.terminate()
+            }
+            searchTimeoutWorkItem = timeoutWorkItem
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8, execute: timeoutWorkItem)
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
+            DispatchQueue.global(qos: .userInitiated).async { [weak self, task] in
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                task.waitUntilExit()
 
-            DispatchQueue.main.async { [weak self] in
-                self?.parseSearchResults(data)
+                DispatchQueue.main.async {
+                    guard let self = self, self.searchTask === task else { return }
+                    self.searchTimeoutWorkItem?.cancel()
+                    self.searchTimeoutWorkItem = nil
+
+                    if task.terminationStatus != 0 && data.isEmpty {
+                        self.statusLabel.stringValue = "Search stopped"
+                        return
+                    }
+
+                    switch backend {
+                    case .ripgrep:
+                        self.parseRipgrepResults(data)
+                    case .grep:
+                        self.parseGrepResults(data, searchText: searchText)
+                    }
+                }
             }
         } catch {
             DispatchQueue.main.async { [weak self] in
-                self?.statusLabel.stringValue = "Search failed: ripgrep not found"
+                self?.statusLabel.stringValue = "Search failed: \(error.localizedDescription)"
             }
         }
     }
 
-    private func parseSearchResults(_ data: Data) {
+    private func searchBackend() -> SearchBackend? {
+        if let rgURL = ProcessRunner.executableURL(named: "rg", commonPaths: [
+            "/opt/homebrew/bin/rg",
+            "/usr/local/bin/rg",
+            "/opt/local/bin/rg",
+            "/usr/bin/rg"
+        ]) {
+            return .ripgrep(rgURL)
+        }
+
+        if let grepURL = ProcessRunner.executableURL(named: "grep", commonPaths: [
+            "/usr/bin/grep",
+            "/bin/grep"
+        ]) {
+            return .grep(grepURL)
+        }
+
+        return nil
+    }
+
+    private func isBroadSearchRoot(_ path: String) -> Bool {
+        let standardizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        let homePath = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return standardizedPath == homePath || standardizedPath == "/"
+    }
+
+    private func parseRipgrepResults(_ data: Data) {
         guard let output = String(data: data, encoding: .utf8) else {
             statusLabel.stringValue = "No results"
             return
@@ -222,17 +326,84 @@ class SearchPanelViewController: NSViewController {
             }
         }
 
+        updateSearchResults(matches)
+    }
+
+    private func parseGrepResults(_ data: Data, searchText: String) {
+        guard let output = String(data: data, encoding: .utf8) else {
+            statusLabel.stringValue = "No results"
+            return
+        }
+
+        let lines = output.components(separatedBy: .newlines)
+        let matches = lines.compactMap { line -> SearchMatch? in
+            guard !line.isEmpty else { return nil }
+
+            let parts = line.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3,
+                  let lineNumber = Int(parts[1]) else { return nil }
+
+            let filePath = String(parts[0])
+            let text = String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let fileName = URL(fileURLWithPath: filePath).lastPathComponent
+
+            return SearchMatch(
+                filePath: filePath,
+                fileName: fileName,
+                line: lineNumber,
+                column: 0,
+                text: text,
+                matchedText: searchText
+            )
+        }
+
+        updateSearchResults(Array(matches.prefix(1000)))
+    }
+
+    private func updateSearchResults(_ matches: [SearchMatch]) {
         searchMatches = matches
-        statusLabel.stringValue = matches.isEmpty ? "No results" : "\(matches.count) matches"
+        searchFileResults = groupedFileResults(from: matches)
+        statusLabel.stringValue = resultSummary(fileCount: searchFileResults.count, matchCount: matches.count)
         tableView.reloadData()
+    }
+
+    private func groupedFileResults(from matches: [SearchMatch]) -> [SearchFileResult] {
+        let grouped = Dictionary(grouping: matches) { $0.filePath }
+
+        return grouped.map { filePath, matches in
+            let sortedMatches = matches.sorted { lhs, rhs in
+                if lhs.line == rhs.line {
+                    return lhs.column < rhs.column
+                }
+                return lhs.line < rhs.line
+            }
+
+            return SearchFileResult(
+                filePath: filePath,
+                fileName: URL(fileURLWithPath: filePath).lastPathComponent,
+                matches: sortedMatches
+            )
+        }
+        .sorted { lhs, rhs in
+            lhs.filePath.localizedStandardCompare(rhs.filePath) == .orderedAscending
+        }
+    }
+
+    private func resultSummary(fileCount: Int, matchCount: Int) -> String {
+        guard matchCount > 0 else { return "No results" }
+
+        let fileWord = fileCount == 1 ? "file" : "files"
+        let matchWord = matchCount == 1 ? "match" : "matches"
+        return "\(fileCount) \(fileWord), \(matchCount) \(matchWord)"
     }
 
     @objc private func tableViewDoubleClick(_ sender: NSTableView) {
         let selectedRow = sender.selectedRow
-        guard selectedRow >= 0 && selectedRow < searchMatches.count else { return }
+        guard selectedRow >= 0 && selectedRow < searchFileResults.count else { return }
 
-        let match = searchMatches[selectedRow]
-        delegate?.searchPanel(self, didRequestOpenFile: match.filePath, atLine: match.line)
+        let result = searchFileResults[selectedRow]
+        let match = result.firstMatch
+        delegate?.searchPanel(self, didRequestOpenFile: result.filePath, atLine: match.line, highlighting: match.matchedText)
     }
 
     func updateWorkingDirectory(_ directory: String) {
@@ -249,24 +420,24 @@ class SearchPanelViewController: NSViewController {
 // MARK: - NSTableViewDataSource
 extension SearchPanelViewController: NSTableViewDataSource {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        return searchMatches.count
+        return searchFileResults.count
     }
 }
 
 // MARK: - NSTableViewDelegate
 extension SearchPanelViewController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < searchMatches.count else { return nil }
+        guard row < searchFileResults.count else { return nil }
 
-        let match = searchMatches[row]
+        let result = searchFileResults[row]
         let cellView = SearchResultCellView()
-        cellView.configure(with: match)
+        cellView.configure(with: result)
 
         return cellView
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        return 44
+        return 64
     }
 }
 
@@ -294,11 +465,13 @@ class SearchResultCellView: NSTableCellView {
         fileLabel = NSTextField(labelWithString: "")
         fileLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         fileLabel.textColor = NSColor(hex: "#cdd6f4")
+        fileLabel.lineBreakMode = .byTruncatingTail
         fileLabel.translatesAutoresizingMaskIntoConstraints = false
 
         pathLabel = NSTextField(labelWithString: "")
         pathLabel.font = NSFont.systemFont(ofSize: 10)
         pathLabel.textColor = NSColor(hex: "#6c7086")
+        pathLabel.lineBreakMode = .byTruncatingMiddle
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
 
         lineLabel = NSTextField(labelWithString: "")
@@ -319,29 +492,31 @@ class SearchResultCellView: NSTableCellView {
         addSubview(textLabel)
 
         NSLayoutConstraint.activate([
-            fileLabel.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            fileLabel.topAnchor.constraint(equalTo: topAnchor, constant: 7),
             fileLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             fileLabel.trailingAnchor.constraint(equalTo: lineLabel.leadingAnchor, constant: -8),
 
-            lineLabel.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            lineLabel.firstBaselineAnchor.constraint(equalTo: fileLabel.firstBaselineAnchor),
             lineLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             lineLabel.widthAnchor.constraint(equalToConstant: 40),
 
-            pathLabel.topAnchor.constraint(equalTo: fileLabel.bottomAnchor, constant: 1),
+            pathLabel.topAnchor.constraint(equalTo: fileLabel.bottomAnchor, constant: 3),
             pathLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             pathLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
 
-            textLabel.topAnchor.constraint(equalTo: pathLabel.bottomAnchor, constant: 2),
+            textLabel.topAnchor.constraint(equalTo: pathLabel.bottomAnchor, constant: 4),
             textLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             textLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            textLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -4)
+            textLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -6)
         ])
     }
 
-    func configure(with match: SearchMatch) {
-        fileLabel.stringValue = match.fileName
-        pathLabel.stringValue = match.filePath
-        lineLabel.stringValue = "\(match.line)"
-        textLabel.stringValue = match.text
+    func configure(with result: SearchFileResult) {
+        let firstMatch = result.firstMatch
+
+        fileLabel.stringValue = result.fileName
+        pathLabel.stringValue = result.filePath
+        lineLabel.stringValue = "\(result.matches.count)"
+        textLabel.stringValue = firstMatch.text
     }
 }
