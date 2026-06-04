@@ -87,8 +87,11 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         terminalView = agentAwareTerminalView
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         terminalView.font = font
+        terminalView.useBrightColors = config.font.boldIsBright
 
-        // Install Catppuccin Mocha color palette
+        // Keep the first 16 ANSI colors themed, but leave 256-color indexes on
+        // the standard xterm cube so CLI theme pickers render selected colors faithfully.
+        terminalView.terminal.ansi256PaletteStrategy = .xterm
         terminalView.installColors(ColorPalette.catppuccinMocha)
 
         // Set terminal foreground and background colors
