@@ -32,20 +32,24 @@ class FileTreeNode {
 
     var isGitIgnored: Bool = false
 
-    init(url: URL, parent: FileTreeNode? = nil) {
+    init(url: URL, parent: FileTreeNode? = nil, isDirectory: Bool? = nil) {
         self.url = url
         self.name = url.lastPathComponent
         self.parent = parent
 
-        var isDir: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-        self.isDirectory = exists && isDir.boolValue
+        if let isDirectory = isDirectory {
+            self.isDirectory = isDirectory
+        } else {
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+            self.isDirectory = exists && isDir.boolValue
+        }
 
         // Check if hidden (starts with .)
         self.isHidden = name.hasPrefix(".")
 
         // For directories, we'll lazy load children
-        if isDirectory {
+        if self.isDirectory {
             self.isLoaded = false
             // Quick check if directory has any content to show disclosure triangle
             self.hasCheckedForChildren = false
@@ -86,16 +90,22 @@ class FileTreeNode {
 
             var newChildren: [FileTreeNode] = []
 
-            for childURL in contents.sorted(by: { url1, url2 in
-                // Directories first, then alphabetical
-                let isDir1 = (try? url1.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                let isDir2 = (try? url2.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            // Read the (already-fetched) resource values once per entry
+            // instead of stat-ing inside the sort comparator and again in
+            // each child node's initializer.
+            let entries: [(url: URL, isDirectory: Bool)] = contents
+                .map { childURL in
+                    let isDir = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                    return (childURL, isDir)
+                }
+                .sorted { lhs, rhs in
+                    // Directories first, then alphabetical
+                    if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+                    return lhs.url.lastPathComponent.localizedCaseInsensitiveCompare(rhs.url.lastPathComponent) == .orderedAscending
+                }
 
-                if isDir1 && !isDir2 { return true }
-                if !isDir1 && isDir2 { return false }
-                return url1.lastPathComponent.localizedCaseInsensitiveCompare(url2.lastPathComponent) == .orderedAscending
-            }) {
-                let child = FileTreeNode(url: childURL, parent: self)
+            for entry in entries {
+                let child = FileTreeNode(url: entry.url, parent: self, isDirectory: entry.isDirectory)
 
                 // Skip hidden files if not showing hidden
                 if child.isHidden && !showHidden {
@@ -104,7 +114,7 @@ class FileTreeNode {
 
                 // Check git ignore status
                 if let checker = gitIgnoreChecker {
-                    child.isGitIgnored = checker.isIgnored(path: childURL.path)
+                    child.isGitIgnored = checker.isIgnored(path: entry.url.path)
                     if child.isGitIgnored && !showHidden {
                         continue
                     }

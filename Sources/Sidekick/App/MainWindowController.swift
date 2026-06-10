@@ -1,5 +1,6 @@
 import Cocoa
 import SwiftTerm
+import UserNotifications
 
 @_silgen_name("CGSDefaultConnectionForThread")
 private func CGSDefaultConnectionForThread() -> UnsafeMutableRawPointer?
@@ -129,6 +130,7 @@ class MainWindowController: NSWindowController {
     private var tabSplitControllers: [UUID: PaneSplitController] = [:] // Map tab IDs to their split controllers
     private var quickOpenPanel: QuickOpenPanel?
     private var preferencesWindowController: PreferencesWindowController?
+    fileprivate var commandPalette: CommandPalettePanel?
     private var keyEventMonitor: Any?
     private let keyboardCommandRouter = KeyboardCommandRouter()
 
@@ -303,6 +305,7 @@ class MainWindowController: NSWindowController {
         window?.alphaValue = 1.0
         configureWindowBackgroundEffect()
         activityBarView?.topInset = CGFloat(newConfig.window.padding)
+        sidebarContainerView?.setShowHiddenFiles(newConfig.editor?.showHiddenFiles ?? false)
 
         for tab in tabs {
             for pane in tab.panes {
@@ -371,6 +374,27 @@ class MainWindowController: NSWindowController {
 
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(paneCommandStatusChanged(_:)),
+            name: NSNotification.Name("PaneCommandStatusChanged"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(paneOpenURLRequested(_:)),
+            name: NSNotification.Name("PaneOpenURLRequested"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(paneOpenFileRequested(_:)),
+            name: NSNotification.Name("PaneOpenFileRequested"),
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(paneAgentStateChanged(_:)),
             name: NSNotification.Name("PaneAgentStateChanged"),
             object: nil
@@ -418,6 +442,70 @@ class MainWindowController: NSWindowController {
                 }
                 break
             }
+        }
+    }
+
+    @objc private func paneOpenFileRequested(_ notification: Notification) {
+        guard let path = notification.userInfo?["path"] as? String else { return }
+        let line = notification.userInfo?["line"] as? Int
+        openFileInEditor(URL(fileURLWithPath: path), atLine: line ?? 1, highlighting: nil)
+    }
+
+    @objc private func paneOpenURLRequested(_ notification: Notification) {
+        guard let url = notification.userInfo?["url"] as? URL else { return }
+
+        // Reuse an existing browser pane in the active tab if there is one.
+        if let browserPane = tabs[safe: activeTabIndex]?.panes.first(where: { $0.paneType == .browser }),
+           let browserVC = browserPane.browserViewController {
+            browserVC.navigate(to: url)
+            return
+        }
+
+        currentPaneSplitController?.splitWithBrowser(direction: .horizontal, initialURL: url)
+    }
+
+    @objc private func paneCommandStatusChanged(_ notification: Notification) {
+        guard let pane = notification.object as? PaneModel else { return }
+        let status = notification.userInfo?["status"] as? TerminalCommandStatus
+
+        for tab in tabs {
+            if tab.panes.contains(where: { $0.id == pane.id }) {
+                notifyIfLongCommandFinished(status, tabTitle: tab.title)
+
+                // Only surface status from the pane the tab is showing as active.
+                guard tab.activePane?.id == pane.id else { break }
+                tab.lastCommandFailed = status.map { !$0.succeeded } ?? false
+                tab.lastCommandTooltip = status.map { "Last command: \($0.summary)" }
+                updateTabBar()
+                break
+            }
+        }
+    }
+
+    /// Commands that ran longer than this notify the user when they finish
+    /// while Sidekick is in the background.
+    private static let longCommandThreshold: TimeInterval = 30
+
+    private func notifyIfLongCommandFinished(_ status: TerminalCommandStatus?, tabTitle: String) {
+        guard let status = status,
+              let duration = status.duration,
+              duration >= Self.longCommandThreshold,
+              !NSApp.isActive else { return }
+
+        NSApp.requestUserAttention(.informationalRequest)
+
+        // UNUserNotificationCenter requires a real bundle; skip when running
+        // the bare debug binary.
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = status.succeeded ? "Command finished" : "Command failed"
+            content.body = "\(tabTitle) — \(status.summary)"
+            content.sound = status.succeeded ? nil : .default
+            let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+            center.add(request)
         }
     }
 
@@ -657,6 +745,23 @@ extension MainWindowController: ActivityBarDelegate {
 }
 
 extension MainWindowController: SidebarContainerDelegate {
+    func sidebarContainerTabs(_ container: SidebarContainerView) -> [TabModel] {
+        tabs
+    }
+
+    func sidebarContainer(_ container: SidebarContainerView, didRequestSwitchToTab index: Int) {
+        switchToTab(index: index)
+    }
+
+    func sidebarContainer(_ container: SidebarContainerView, didRequestConnectCommand command: String) {
+        createNewTab()
+        // Give the new shell a moment to start before typing the command.
+        let terminal = tabs[safe: activeTabIndex]?.activePane?.terminalViewController
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            terminal?.send(text: command + "\n")
+        }
+    }
+
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL) {
         print("📂 Sidebar requested to open file: \(url.path)")
 
@@ -820,6 +925,74 @@ extension MainWindowController: SidebarContainerDelegate {
         quickOpenPanel?.show(relativeTo: window, workingDirectory: currentWorkingDirectory)
     }
 
+    func showCommandPalette() {
+        guard let window = window else { return }
+
+        if commandPalette == nil {
+            commandPalette = CommandPalettePanel()
+        }
+
+        let actions: [PaletteAction] = [
+            PaletteAction(title: "New Tab", subtitle: "⌘T", symbolName: "plus.rectangle") { [weak self] in
+                self?.createNewTab()
+            },
+            PaletteAction(title: "Close Tab", subtitle: "⌘W", symbolName: "xmark.rectangle") { [weak self] in
+                guard let self = self else { return }
+                self.closeTab(index: self.activeTabIndex)
+            },
+            PaletteAction(title: "Split Pane Horizontally", subtitle: "⌘D", symbolName: "rectangle.split.2x1") { [weak self] in
+                self?.currentPaneSplitController?.splitPane(direction: .horizontal)
+            },
+            PaletteAction(title: "Split Pane Vertically", subtitle: "⇧⌘D", symbolName: "rectangle.split.1x2") { [weak self] in
+                self?.currentPaneSplitController?.splitPane(direction: .vertical)
+            },
+            PaletteAction(title: "Open Browser Pane", subtitle: "⇧⌘O", symbolName: "globe") { [weak self] in
+                self?.splitWithBrowser()
+            },
+            PaletteAction(title: "Find in Terminal", subtitle: "⌘F", symbolName: "magnifyingglass") { [weak self] in
+                guard let self = self else { return }
+                self.tabs[safe: self.activeTabIndex]?.activePane?.terminalViewController?.showFindBar()
+            },
+            PaletteAction(title: "Jump to Previous Prompt", subtitle: "⌘↑", symbolName: "arrow.up.to.line") { [weak self] in
+                guard let self = self else { return }
+                self.tabs[safe: self.activeTabIndex]?.activePane?.terminalViewController?.scrollToPreviousPrompt()
+            },
+            PaletteAction(title: "Jump to Next Prompt", subtitle: "⌘↓", symbolName: "arrow.down.to.line") { [weak self] in
+                guard let self = self else { return }
+                self.tabs[safe: self.activeTabIndex]?.activePane?.terminalViewController?.scrollToNextPrompt()
+            },
+            PaletteAction(title: "Quick Open File", subtitle: "⌘P", symbolName: "doc.text.magnifyingglass") { [weak self] in
+                self?.showQuickOpen()
+            },
+            PaletteAction(title: "Show Files Panel", subtitle: "⇧⌘E", symbolName: "folder") { [weak self] in
+                self?.showPanel(.files)
+            },
+            PaletteAction(title: "Show Git Panel", subtitle: "⇧⌘G", symbolName: "arrow.branch") { [weak self] in
+                self?.showPanel(.git)
+            },
+            PaletteAction(title: "Show Search Panel", subtitle: "⇧⌘F", symbolName: "magnifyingglass.circle") { [weak self] in
+                self?.showPanel(.search)
+            },
+            PaletteAction(title: "Show Run Panel", subtitle: "⇧⌘R", symbolName: "play.circle") { [weak self] in
+                self?.showPanel(.run)
+            },
+            PaletteAction(title: "Toggle Sidebar", subtitle: "⌘B", symbolName: "sidebar.left") { [weak self] in
+                self?.toggleSidebar()
+            },
+            PaletteAction(title: "Toggle Hidden Files", subtitle: "⇧⌘.", symbolName: "eye.slash") { [weak self] in
+                self?.sidebarContainerView.toggleHiddenFiles()
+            },
+            PaletteAction(title: "Preferences", subtitle: "⌘,", symbolName: "gearshape") { [weak self] in
+                self?.showPreferences()
+            },
+            PaletteAction(title: "Edit Config File", subtitle: "config.toml", symbolName: "doc.badge.gearshape") { [weak self] in
+                self?.openConfigFile()
+            }
+        ]
+
+        commandPalette?.show(relativeTo: window, actions: actions)
+    }
+
     func showPreferences() {
         if preferencesWindowController == nil {
             preferencesWindowController = PreferencesWindowController(config: config, mainWindowController: self)
@@ -952,8 +1125,26 @@ extension MainWindowController {
             currentPaneSplitController?.splitPane(direction: direction)
         case .newTab:
             createNewTab()
+        case .jumpToPrompt(let previous):
+            guard let terminal = tabs[safe: activeTabIndex]?.activePane?.terminalViewController else { return }
+            if previous {
+                terminal.scrollToPreviousPrompt()
+            } else {
+                terminal.scrollToNextPrompt()
+            }
+        case .commandPalette:
+            showCommandPalette()
+        case .findInTerminal:
+            tabs[safe: activeTabIndex]?.activePane?.terminalViewController?.showFindBar()
         case .toggleHiddenFiles:
-            sidebarContainerView.toggleHiddenFiles()
+            // Keep the keyboard toggle and the preferences setting in sync.
+            if config.editor == nil {
+                config.editor = EditorConfig()
+            }
+            let show = !(config.editor?.showHiddenFiles ?? false)
+            config.editor?.showHiddenFiles = show
+            sidebarContainerView.setShowHiddenFiles(show)
+            config.save()
         case .closeTab:
             closeTab(index: activeTabIndex)
         case .saveFile:
@@ -1015,6 +1206,10 @@ extension MainWindowController {
             sidebarContainerView.setVisible(true)
             updateSidebarLayout()
         }
+
+        // Re-push the active pane's directory so a freshly opened panel
+        // reflects the current terminal, not whatever it last saw.
+        syncSidebarToActiveTab()
     }
 
     func splitWithBrowser() {

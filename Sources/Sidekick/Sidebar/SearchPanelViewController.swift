@@ -139,9 +139,13 @@ class SearchPanelViewController: NSViewController {
         // Cancel previous debounce work
         debounceWorkItem?.cancel()
 
-        // Cancel current search
+        // Cancel current search. Clearing the reference also makes any
+        // late results from the terminated task fail the identity check
+        // instead of rendering for the old query.
         searchTimeoutWorkItem?.cancel()
+        searchTimeoutWorkItem = nil
         searchTask?.terminate()
+        searchTask = nil
 
         if searchText.isEmpty {
             searchMatches = []
@@ -220,7 +224,8 @@ class SearchPanelViewController: NSViewController {
         task.standardOutput = pipe
         task.standardError = Pipe() // Suppress errors
 
-        // Store reference to cancel if needed
+        // Replace any in-flight search before starting this one
+        searchTask?.terminate()
         searchTask = task
 
         do {

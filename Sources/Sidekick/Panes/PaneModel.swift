@@ -23,6 +23,7 @@ class PaneModel: Identifiable, Hashable {
     var browserViewController: BrowserPanelViewController?
     var view: NSView?
     var paneType: PaneType = .terminal
+    private var editorDirtyStateObserver: NSObjectProtocol?
 
     enum PaneType {
         case terminal
@@ -74,9 +75,10 @@ class PaneModel: Identifiable, Hashable {
     }
 
     private func observeEditorDirtyState(_ editorVC: EditorViewController) {
-        // We'll need to add KVO for the isModified property in EditorViewController
-        // For now, we'll set up a notification observer
-        NotificationCenter.default.addObserver(
+        if let existingObserver = editorDirtyStateObserver {
+            NotificationCenter.default.removeObserver(existingObserver)
+        }
+        editorDirtyStateObserver = NotificationCenter.default.addObserver(
             forName: NSNotification.Name("EditorModifiedStateChanged"),
             object: editorVC,
             queue: .main
@@ -131,7 +133,7 @@ class PaneModel: Identifiable, Hashable {
         self.title = "Uncommitted Changes"
     }
 
-    func createBrowserViewController() {
+    func createBrowserViewController(initialURL: URL? = nil) {
         let browserVC = BrowserPanelViewController()
         self.browserViewController = browserVC
 
@@ -140,6 +142,10 @@ class PaneModel: Identifiable, Hashable {
 
         self.view = browserVC.view
         self.paneType = .browser
+
+        if let initialURL = initialURL {
+            browserVC.navigate(to: initialURL)
+        }
 
         // Update title
         title = "Browser"
@@ -217,6 +223,9 @@ class PaneModel: Identifiable, Hashable {
     }
 
     deinit {
+        if let observer = editorDirtyStateObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         terminalViewController = nil
         editorViewController = nil
         diffViewController = nil
@@ -243,6 +252,38 @@ extension PaneModel: TerminalViewControllerDelegate {
             name: NSNotification.Name("PaneAgentStateChanged"),
             object: self,
             userInfo: ["agentState": state]
+        )
+    }
+
+    func terminalRequestsOpenFile(_ terminal: TerminalViewController, path: String, line: Int?) {
+        var userInfo: [String: Any] = ["path": path]
+        if let line = line {
+            userInfo["line"] = line
+        }
+        NotificationCenter.default.post(
+            name: NSNotification.Name("PaneOpenFileRequested"),
+            object: self,
+            userInfo: userInfo
+        )
+    }
+
+    func terminalRequestsOpenURL(_ terminal: TerminalViewController, url: URL) {
+        NotificationCenter.default.post(
+            name: NSNotification.Name("PaneOpenURLRequested"),
+            object: self,
+            userInfo: ["url": url]
+        )
+    }
+
+    func terminalDidUpdateCommandStatus(_ terminal: TerminalViewController, status: TerminalCommandStatus?) {
+        var userInfo: [String: Any] = [:]
+        if let status = status {
+            userInfo["status"] = status
+        }
+        NotificationCenter.default.post(
+            name: NSNotification.Name("PaneCommandStatusChanged"),
+            object: self,
+            userInfo: userInfo
         )
     }
 }

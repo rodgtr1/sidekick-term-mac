@@ -7,6 +7,8 @@ class EditorViewController: NSViewController {
     private var syntaxHighlighter: SyntaxHighlighter!
     private var currentURL: URL?
     private var activeSearchTerm: String?
+    private var pendingHighlightRange: NSRange?
+    private var isProgrammaticLoad = false
 
     var isModified: Bool = false {
         didSet {
@@ -58,6 +60,7 @@ class EditorViewController: NSViewController {
 
         let textStorage = NSTextStorage()
         textStorage.addLayoutManager(layoutManager)
+        textStorage.delegate = self
 
         textView = NSTextView(frame: scrollView.contentView.bounds, textContainer: textContainer)
         textView.isEditable = true
@@ -124,12 +127,16 @@ class EditorViewController: NSViewController {
         isModified = true
         // Trigger syntax highlighting after a small delay to avoid performance issues
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(updateSyntaxHighlighting), object: nil)
-        perform(#selector(updateSyntaxHighlighting), with: nil, afterDelay: 0.1)
+        perform(#selector(updateSyntaxHighlighting), with: nil, afterDelay: 0.3)
     }
 
     @objc private func updateSyntaxHighlighting() {
-        syntaxHighlighter.highlightSyntax()
-        applySearchHighlights()
+        // Only re-highlight the paragraphs that actually changed since the
+        // last pass, not the whole document.
+        let dirtyRange = pendingHighlightRange
+        pendingHighlightRange = nil
+        syntaxHighlighter.highlightSyntax(in: dirtyRange)
+        applySearchHighlights(in: dirtyRange)
     }
 
     func openFile(_ url: URL) {
@@ -148,7 +155,10 @@ class EditorViewController: NSViewController {
 
         do {
             let content = try String(contentsOf: url)
+            isProgrammaticLoad = true
             textView.string = content
+            isProgrammaticLoad = false
+            pendingHighlightRange = nil
             currentURL = url
             isModified = false
             updateTitle()
@@ -264,21 +274,27 @@ class EditorViewController: NSViewController {
         applySearchHighlights()
     }
 
-    private func applySearchHighlights() {
+    private func applySearchHighlights(in dirtyRange: NSRange? = nil) {
         guard let textView,
               let textStorage = textView.textStorage else { return }
 
-        let fullRange = NSRange(location: 0, length: textStorage.length)
-        textStorage.removeAttribute(.backgroundColor, range: fullRange)
+        let content = textView.string as NSString
+        let fullRange = NSRange(location: 0, length: content.length)
+        let scanRange: NSRange
+        if let dirtyRange = dirtyRange {
+            scanRange = content.paragraphRange(for: NSIntersectionRange(dirtyRange, fullRange))
+        } else {
+            scanRange = fullRange
+        }
+        textStorage.removeAttribute(.backgroundColor, range: scanRange)
 
         guard let searchTerm = activeSearchTerm,
               !searchTerm.isEmpty else { return }
 
-        let content = textView.string as NSString
-        var searchRange = NSRange(location: 0, length: content.length)
+        var searchRange = scanRange
         let highlightColor = NSColor(hex: "#f9e2af")?.withAlphaComponent(0.35) ?? NSColor.systemYellow.withAlphaComponent(0.35)
 
-        while searchRange.location < content.length {
+        while searchRange.length > 0 {
             let foundRange = content.range(
                 of: searchTerm,
                 options: [.caseInsensitive, .diacriticInsensitive],
@@ -290,7 +306,8 @@ class EditorViewController: NSViewController {
             textStorage.addAttribute(.backgroundColor, value: highlightColor, range: foundRange)
 
             let nextLocation = foundRange.location + max(foundRange.length, 1)
-            searchRange = NSRange(location: nextLocation, length: content.length - nextLocation)
+            guard nextLocation < NSMaxRange(scanRange) else { break }
+            searchRange = NSRange(location: nextLocation, length: NSMaxRange(scanRange) - nextLocation)
         }
     }
 
@@ -300,5 +317,21 @@ class EditorViewController: NSViewController {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+}
+
+extension EditorViewController: NSTextStorageDelegate {
+    func textStorage(
+        _ textStorage: NSTextStorage,
+        didProcessEditing editedMask: NSTextStorageEditActions,
+        range editedRange: NSRange,
+        changeInLength delta: Int
+    ) {
+        guard editedMask.contains(.editedCharacters), !isProgrammaticLoad else { return }
+        if let pending = pendingHighlightRange {
+            pendingHighlightRange = NSUnionRange(pending, editedRange)
+        } else {
+            pendingHighlightRange = editedRange
+        }
     }
 }

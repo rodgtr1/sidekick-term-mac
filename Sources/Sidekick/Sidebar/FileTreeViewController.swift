@@ -36,6 +36,7 @@ class FileTreeViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupOutlineView()
+        showHidden = Config.load().editor?.showHiddenFiles ?? false
         // Start with home directory instead of root
         let initialPath = FileManager.default.homeDirectoryForCurrentUser.path
         loadFileTree(for: initialPath)
@@ -169,7 +170,12 @@ class FileTreeViewController: NSViewController {
     }
 
     func toggleHiddenFiles() {
-        showHidden.toggle()
+        setShowHidden(!showHidden)
+    }
+
+    func setShowHidden(_ show: Bool) {
+        guard show != showHidden else { return }
+        showHidden = show
         if let rootPath = rootNode?.url.path {
             loadFileTree(for: rootPath, force: true)
         }
@@ -431,13 +437,17 @@ extension FileTreeViewController: NSOutlineViewDelegate {
         view?.textField?.stringValue = node.name
         view?.imageView?.image = node.icon
 
-        // Style based on file state
+        // Style based on file state: hidden and gitignored entries render
+        // dimmed (name and icon) so they're distinguishable at a glance.
         if node.isGitIgnored {
             view?.textField?.textColor = NSColor(hex: "#6c7086") // Dimmed for ignored files
+            view?.imageView?.alphaValue = 0.4
         } else if node.isHidden {
             view?.textField?.textColor = NSColor(hex: "#9399b2") // Slightly dimmed for hidden files
+            view?.imageView?.alphaValue = 0.55
         } else {
             view?.textField?.textColor = NSColor(hex: "#cdd6f4") // Normal text color
+            view?.imageView?.alphaValue = 1.0
         }
 
         return view

@@ -40,7 +40,7 @@ class BrowserPanelViewController: NSViewController {
             preferences.javaScriptEnabled = true
         }
 
-        preferences.javaScriptCanOpenWindowsAutomatically = true
+        preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.preferences = preferences
         configuration.websiteDataStore = .default()
         configuration.userContentController = makeUserContentController()
@@ -401,6 +401,13 @@ class BrowserPanelViewController: NSViewController {
         loadURL(url)
     }
 
+    /// Navigates the pane to a URL programmatically (e.g. detected dev server).
+    func navigate(to url: URL) {
+        _ = view
+        urlField.stringValue = url.absoluteString
+        loadURL(url)
+    }
+
     private func loadURL(_ url: URL) {
         let request = cacheBypassingRequest(for: url)
 
@@ -478,6 +485,21 @@ class BrowserPanelViewController: NSViewController {
 
 // MARK: - WKNavigationDelegate
 extension BrowserPanelViewController: WKNavigationDelegate {
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        // Block web content from navigating to local files; the embedded
+        // browser is for http(s) dev servers and docs only.
+        if let scheme = navigationAction.request.url?.scheme?.lowercased(),
+           scheme == "file" {
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         updateNavigationButtons()
     }

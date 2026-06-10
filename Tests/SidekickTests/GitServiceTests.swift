@@ -39,4 +39,62 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(entry?.path, "new/path.swift")
         XCTAssertEqual(entry?.stagedStatus, "R")
     }
+
+    func testParsesPathWithSpaces() {
+        let entry = GitService.parseStatusLine(" M docs/my notes.md")
+
+        XCTAssertEqual(entry?.path, "docs/my notes.md")
+    }
+
+    func testUnquotesQuotedPathWithEscapedQuote() {
+        let entry = GitService.parseStatusLine("?? \"weird \\\"name\\\".txt\"")
+
+        XCTAssertEqual(entry?.path, "weird \"name\".txt")
+    }
+
+    func testUnquotesOctalEscapedUnicodePath() {
+        // git renders "é" (UTF-8 0xC3 0xA9) as \303\251 in quoted paths
+        let entry = GitService.parseStatusLine("?? \"caf\\303\\251.txt\"")
+
+        XCTAssertEqual(entry?.path, "café.txt")
+    }
+
+    func testParsesQuotedRenameDestination() {
+        let entry = GitService.parseStatusLine("R  \"old name.txt\" -> \"new name.txt\"")
+
+        XCTAssertEqual(entry?.path, "new name.txt")
+    }
+
+    func testRejectsMalformedShortLine() {
+        XCTAssertNil(GitService.parseStatusLine("M"))
+        XCTAssertNil(GitService.parseStatusLine(""))
+    }
+
+    func testSplitDiffByFileSeparatesFiles() {
+        let diff = """
+        diff --git a/foo.swift b/foo.swift
+        index 111..222 100644
+        --- a/foo.swift
+        +++ b/foo.swift
+        @@ -1 +1 @@
+        -old
+        +new
+        diff --git a/bar.swift b/bar.swift
+        @@ -2 +2 @@
+        +added
+        """
+
+        let byFile = GitService.splitDiffByFile(diff)
+
+        XCTAssertEqual(byFile.count, 2)
+        XCTAssertTrue(byFile["foo.swift"]?.contains("+new") ?? false)
+        XCTAssertTrue(byFile["bar.swift"]?.contains("+added") ?? false)
+        XCTAssertFalse(byFile["foo.swift"]?.contains("+added") ?? true)
+    }
+
+    func testParsePathFromQuotedDiffHeader() {
+        let path = GitService.parsePathFromDiffHeader("diff --git \"a/my file.txt\" \"b/my file.txt\"")
+
+        XCTAssertEqual(path, "my file.txt")
+    }
 }

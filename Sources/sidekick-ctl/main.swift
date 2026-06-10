@@ -136,9 +136,13 @@ class IPCClient {
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
 
+        let maxPathLength = MemoryLayout.size(ofValue: addr.sun_path)
+        guard socketPath.utf8CString.count <= maxPathLength else { return false }
+
         socketPath.withCString { pathCString in
             withUnsafeMutablePointer(to: &addr.sun_path.0) { pathPtr in
-                _ = strcpy(pathPtr, pathCString)
+                strncpy(pathPtr, pathCString, maxPathLength - 1)
+                pathPtr[maxPathLength - 1] = 0
             }
         }
 
@@ -160,6 +164,10 @@ class IPCClient {
             } ?? 0
 
             guard written == commandString.utf8.count else { return false }
+
+            // Signal EOF on the write side so the server knows the request
+            // is complete before it writes the response.
+            shutdown(socketFD, SHUT_WR)
 
             // Read response
             let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 1024)

@@ -93,30 +93,20 @@ final class UncommittedChangesViewController: NSViewController {
     private func loadChanges() {
         showLoading()
 
-        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, focusedFilePath, gitService] in
+        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService] in
             do {
-                var entries = try gitService.status(repositoryRoot: repositoryPath)
+                // Keep a stable alphabetical order; the focused file is
+                // scrolled into view rather than reordered to the top.
+                let entries = try gitService.status(repositoryRoot: repositoryPath)
                     .sorted { lhs, rhs in
                         URL(fileURLWithPath: lhs.path).lastPathComponent < URL(fileURLWithPath: rhs.path).lastPathComponent
                     }
 
-                if let focusedFilePath {
-                    let focusedRelativePath = WorkspaceContext(
-                        workingDirectory: repositoryPath,
-                        repositoryRoot: repositoryPath
-                    ).relativePath(for: focusedFilePath)
-
-                    entries.sort { lhs, rhs in
-                        if lhs.path == focusedRelativePath { return true }
-                        if rhs.path == focusedRelativePath { return false }
-                        return URL(fileURLWithPath: lhs.path).lastPathComponent < URL(fileURLWithPath: rhs.path).lastPathComponent
-                    }
-                }
-
-                let sections = try entries.map { entry in
+                let diffs = try gitService.diffsByPath(for: entries, repositoryRoot: repositoryPath)
+                let sections = entries.map { entry in
                     ChangeSection(
                         relativePath: entry.path,
-                        diff: try gitService.diff(relativePath: entry.path, repositoryRoot: repositoryPath)
+                        diff: diffs[entry.path] ?? "No changes"
                     )
                 }
 
@@ -158,7 +148,11 @@ final class UncommittedChangesViewController: NSViewController {
         }
 
         if let focusedFilePath {
-            scrollToFocusedFile(focusedFilePath)
+            // Frames are only valid after layout, so scroll on the next
+            // runloop pass once the stack view has sized its sections.
+            DispatchQueue.main.async { [weak self] in
+                self?.scrollToFocusedFile(focusedFilePath)
+            }
         }
     }
 
@@ -180,12 +174,13 @@ final class UncommittedChangesViewController: NSViewController {
         container.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
 
         let header = makeHeaderView(section)
-        let diffView = makeDiffComparisonView(section.diff)
+        let renderedDiff = InlineDiffRenderer.render(section.diff)
+        let diffView = makeDiffColumn(text: renderedDiff)
 
         container.addSubview(header)
         container.addSubview(diffView)
 
-        let lineCount = max(1, section.diff.components(separatedBy: .newlines).count)
+        let lineCount = max(1, renderedDiff.string.filter { $0 == "\n" }.count + 1)
         let diffHeight = min(CGFloat(lineCount) * Metrics.diffLineHeight + 14, Metrics.maxDiffHeight)
 
         NSLayoutConstraint.activate([
@@ -247,47 +242,6 @@ final class UncommittedChangesViewController: NSViewController {
         return header
     }
 
-    private func makeDiffComparisonView(_ diff: String) -> NSView {
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.backgroundColor = DiffViewController.DiffColors.background.cgColor
-        container.translatesAutoresizingMaskIntoConstraints = false
-        
-        let columns = makeSideBySideText(diff)
-        let leftTextView = makeDiffColumn(text: columns.before)
-        let rightTextView = makeDiffColumn(text: columns.after)
-
-        let divider = NSView()
-        divider.wantsLayer = true
-        divider.layer?.backgroundColor = NSColor(hex: "#45475a")?.cgColor
-        divider.translatesAutoresizingMaskIntoConstraints = false
-
-        container.addSubview(leftTextView)
-        container.addSubview(divider)
-        container.addSubview(rightTextView)
-
-        NSLayoutConstraint.activate([
-            leftTextView.topAnchor.constraint(equalTo: container.topAnchor),
-            leftTextView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            leftTextView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            leftTextView.widthAnchor.constraint(greaterThanOrEqualToConstant: 520),
-
-            divider.topAnchor.constraint(equalTo: container.topAnchor),
-            divider.leadingAnchor.constraint(equalTo: leftTextView.trailingAnchor),
-            divider.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            divider.widthAnchor.constraint(equalToConstant: 1),
-
-            rightTextView.topAnchor.constraint(equalTo: container.topAnchor),
-            rightTextView.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
-            rightTextView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            rightTextView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            rightTextView.widthAnchor.constraint(equalTo: leftTextView.widthAnchor),
-            rightTextView.widthAnchor.constraint(greaterThanOrEqualToConstant: 520)
-        ])
-
-        return container
-    }
-
     private func makeDiffColumn(text: NSAttributedString) -> NSTextView {
         let textView = NSTextView()
         textView.translatesAutoresizingMaskIntoConstraints = false
@@ -309,85 +263,32 @@ final class UncommittedChangesViewController: NSViewController {
         return textView
     }
 
-    private func makeSideBySideText(_ diff: String) -> (before: NSAttributedString, after: NSAttributedString) {
-        let before = NSMutableAttributedString()
-        let after = NSMutableAttributedString()
-        let lines = diff.components(separatedBy: .newlines)
-
-        for (index, line) in lines.enumerated() {
-            appendSideBySideLine(line, before: before, after: after)
-            if index < lines.count - 1 {
-                before.append(NSAttributedString(string: "\n", attributes: Self.baseAttributes()))
-                after.append(NSAttributedString(string: "\n", attributes: Self.baseAttributes()))
-            }
-        }
-
-        return (before, after)
-    }
-
-    private func appendSideBySideLine(
-        _ line: String,
-        before: NSMutableAttributedString,
-        after: NSMutableAttributedString
-    ) {
-        if line.hasPrefix("+") && !line.hasPrefix("+++") {
-            before.append(Self.blankDiffLine())
-            after.append(Self.formatDiffLine(line))
-        } else if line.hasPrefix("-") && !line.hasPrefix("---") {
-            before.append(Self.formatDiffLine(line))
-            after.append(Self.blankDiffLine())
-        } else {
-            let formatted = Self.formatDiffLine(line)
-            before.append(formatted)
-            after.append(formatted)
-        }
-    }
-
     @objc private func openFileClicked(_ sender: NSButton) {
         guard let path = sender.identifier?.rawValue else { return }
         onOpenFile?(path)
     }
 
     private func scrollToFocusedFile(_ filePath: String) {
-        guard let sectionView = stackView.arrangedSubviews.first(where: { $0.identifier?.rawValue == filePath }) else { return }
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: sectionView.frame.minY))
+        guard let sectionView = stackView.arrangedSubviews.first(where: { $0.identifier?.rawValue == filePath }),
+              let documentView = scrollView.documentView else { return }
+
+        view.layoutSubtreeIfNeeded()
+
+        // Align the section's top edge with the top of the viewport,
+        // accounting for the document view's coordinate orientation.
+        let sectionFrame = sectionView.convert(sectionView.bounds, to: documentView)
+        let clipHeight = scrollView.contentView.bounds.height
+        let targetY: CGFloat
+        if documentView.isFlipped {
+            targetY = max(0, sectionFrame.minY - Metrics.sectionSpacing)
+        } else {
+            targetY = max(0, sectionFrame.maxY - clipHeight + Metrics.sectionSpacing)
+        }
+
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
-    private static func baseAttributes() -> [NSAttributedString.Key: Any] {
-        [
-            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
-            .foregroundColor: DiffViewController.DiffColors.text
-        ]
-    }
-
-    private static func formatDiffLine(_ line: String) -> NSAttributedString {
-        var attributes = baseAttributes()
-
-        if line.hasPrefix("+++") || line.hasPrefix("---") {
-            attributes[.foregroundColor] = DiffViewController.DiffColors.fileHeader
-        } else if line.hasPrefix("@@") {
-            attributes[.foregroundColor] = DiffViewController.DiffColors.hunkHeader
-        } else if line.hasPrefix("+") {
-            attributes[.foregroundColor] = DiffViewController.DiffColors.added
-            attributes[.backgroundColor] = NSColor(hex: "#a6e3a1")?.withAlphaComponent(0.1)
-        } else if line.hasPrefix("-") {
-            attributes[.foregroundColor] = DiffViewController.DiffColors.removed
-            attributes[.backgroundColor] = NSColor(hex: "#f38ba8")?.withAlphaComponent(0.1)
-        } else if line.hasPrefix("index") || line.hasPrefix("diff --git") {
-            attributes[.foregroundColor] = DiffViewController.DiffColors.context
-        }
-
-        return NSAttributedString(string: line, attributes: attributes)
-    }
-
-    private static func blankDiffLine() -> NSAttributedString {
-        NSAttributedString(string: " ", attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
-            .foregroundColor: DiffViewController.DiffColors.context,
-            .backgroundColor: (NSColor(hex: "#313244") ?? .controlBackgroundColor).withAlphaComponent(0.35)
-        ])
-    }
 }
 
 private struct ChangeSection {

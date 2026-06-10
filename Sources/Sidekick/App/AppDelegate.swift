@@ -10,6 +10,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         print("✅ Activation policy set")
 
+        // Keep the on-disk shell integration scripts in sync with this build
+        ShellIntegration.installScripts()
+
         setupMenuBar()
         print("✅ Menu bar setup completed")
 

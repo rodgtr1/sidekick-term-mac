@@ -18,6 +18,8 @@ class PreferencesWindowController: NSWindowController {
     private var fontFamilyPopup: NSPopUpButton!
     private var fontSizeSlider: NSSlider!
     private var fontSizeLabel: NSTextField!
+    private var shellIntegrationStatusLabel: NSTextField!
+    private var shellIntegrationButton: NSButton!
 
     // Appearance Tab
     private var themePopup: NSPopUpButton!
@@ -25,6 +27,7 @@ class PreferencesWindowController: NSWindowController {
     // Editor Tab
     private var fileOpenModePopup: NSPopUpButton!
     private var wordWrapCheckbox: NSButton!
+    private var showHiddenFilesCheckbox: NSButton!
 
     init(config: Config, mainWindowController: MainWindowController? = nil) {
         self.config = config
@@ -203,11 +206,47 @@ class PreferencesWindowController: NSWindowController {
         fontSizeLabel.alignment = .right
         fontSizeLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // Shell integration
+        let shellIntegrationTitleLabel = NSTextField(labelWithString: "Shell Integration:")
+        shellIntegrationTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        shellIntegrationTitleLabel.textColor = AppTheme.primaryText
+        shellIntegrationTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        shellIntegrationStatusLabel = NSTextField(labelWithString: "")
+        shellIntegrationStatusLabel.font = NSFont.systemFont(ofSize: 12)
+        shellIntegrationStatusLabel.textColor = AppTheme.secondaryText
+        shellIntegrationStatusLabel.lineBreakMode = .byWordWrapping
+        shellIntegrationStatusLabel.maximumNumberOfLines = 3
+        shellIntegrationStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        shellIntegrationButton = NSButton(
+            title: "Install for zsh…",
+            target: self,
+            action: #selector(installShellIntegrationClicked(_:))
+        )
+        shellIntegrationButton.bezelStyle = .rounded
+        shellIntegrationButton.translatesAutoresizingMaskIntoConstraints = false
+
         terminalView.addSubview(fontFamilyLabel)
         terminalView.addSubview(fontFamilyPopup)
         terminalView.addSubview(fontSizeTitleLabel)
         terminalView.addSubview(fontSizeSlider)
         terminalView.addSubview(fontSizeLabel)
+        terminalView.addSubview(shellIntegrationTitleLabel)
+        terminalView.addSubview(shellIntegrationStatusLabel)
+        terminalView.addSubview(shellIntegrationButton)
+
+        NSLayoutConstraint.activate([
+            shellIntegrationTitleLabel.topAnchor.constraint(equalTo: fontSizeSlider.bottomAnchor, constant: 30),
+            shellIntegrationTitleLabel.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
+
+            shellIntegrationStatusLabel.topAnchor.constraint(equalTo: shellIntegrationTitleLabel.bottomAnchor, constant: 6),
+            shellIntegrationStatusLabel.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
+            shellIntegrationStatusLabel.trailingAnchor.constraint(equalTo: terminalView.trailingAnchor, constant: -20),
+
+            shellIntegrationButton.topAnchor.constraint(equalTo: shellIntegrationStatusLabel.bottomAnchor, constant: 10),
+            shellIntegrationButton.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
+        ])
 
         NSLayoutConstraint.activate([
             fontFamilyLabel.topAnchor.constraint(equalTo: terminalView.topAnchor, constant: 30),
@@ -290,9 +329,18 @@ class PreferencesWindowController: NSWindowController {
         wordWrapCheckbox.font = NSFont.systemFont(ofSize: 13)
         wordWrapCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
+        showHiddenFilesCheckbox = NSButton(
+            checkboxWithTitle: "Show hidden files in file tree (dimmed)",
+            target: self,
+            action: #selector(showHiddenFilesChanged(_:))
+        )
+        showHiddenFilesCheckbox.font = NSFont.systemFont(ofSize: 13)
+        showHiddenFilesCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
         editorView.addSubview(fileOpenModeLabel)
         editorView.addSubview(fileOpenModePopup)
         editorView.addSubview(wordWrapCheckbox)
+        editorView.addSubview(showHiddenFilesCheckbox)
 
         NSLayoutConstraint.activate([
             fileOpenModeLabel.topAnchor.constraint(equalTo: editorView.topAnchor, constant: 30),
@@ -303,7 +351,10 @@ class PreferencesWindowController: NSWindowController {
             fileOpenModePopup.widthAnchor.constraint(equalToConstant: 200),
 
             wordWrapCheckbox.topAnchor.constraint(equalTo: fileOpenModePopup.bottomAnchor, constant: 24),
-            wordWrapCheckbox.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20)
+            wordWrapCheckbox.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
+
+            showHiddenFilesCheckbox.topAnchor.constraint(equalTo: wordWrapCheckbox.bottomAnchor, constant: 12),
+            showHiddenFilesCheckbox.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20)
         ])
 
         let editorTabItem = NSTabViewItem(identifier: "editor")
@@ -345,6 +396,23 @@ class PreferencesWindowController: NSWindowController {
         let editorConfig = config.editor ?? EditorConfig()
         fileOpenModePopup.selectItem(at: editorConfig.fileOpenMode == "builtin" ? 1 : 0)
         wordWrapCheckbox.state = editorConfig.wordWrap ? .on : .off
+        showHiddenFilesCheckbox.state = editorConfig.showHiddenFiles ? .on : .off
+
+        updateShellIntegrationStatus()
+    }
+
+    private func updateShellIntegrationStatus() {
+        if ShellIntegration.isInstalledInZshrc() {
+            shellIntegrationStatusLabel.stringValue =
+                "Installed in ~/.zshrc — prompt marks, exit-code indicators, and instant cwd tracking are active in new shells."
+            shellIntegrationButton.isEnabled = false
+            shellIntegrationButton.title = "Installed ✓"
+        } else {
+            shellIntegrationStatusLabel.stringValue =
+                "Adds prompt navigation (⌘↑/⌘↓), failed-command indicators, and instant cwd tracking. Installs one line into ~/.zshrc."
+            shellIntegrationButton.isEnabled = true
+            shellIntegrationButton.title = "Install for zsh…"
+        }
     }
 
     // MARK: - Actions
@@ -389,6 +457,34 @@ class PreferencesWindowController: NSWindowController {
         config.editor?.wordWrap = sender.state == .on
         mainWindowController?.applyRuntimeConfig(config)
         config.save()
+    }
+
+    @objc private func showHiddenFilesChanged(_ sender: NSButton) {
+        ensureEditorConfig()
+        config.editor?.showHiddenFiles = sender.state == .on
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
+    }
+
+    @objc private func installShellIntegrationClicked(_ sender: NSButton) {
+        ShellIntegration.installScripts()
+
+        let alert = NSAlert()
+        do {
+            let added = try ShellIntegration.installInZshrc()
+            alert.messageText = added ? "Shell Integration Installed" : "Already Installed"
+            alert.informativeText = added
+                ? "Added one line to ~/.zshrc. Open a new tab (or run `source ~/.zshrc`) to activate it. For bash, source ~/.config/sidekick/shell-integration/sidekick.bash from your ~/.bashrc."
+                : "~/.zshrc already sources the Sidekick shell integration."
+            alert.alertStyle = .informational
+        } catch {
+            alert.messageText = "Installation Failed"
+            alert.informativeText = "Could not modify ~/.zshrc: \(error.localizedDescription)"
+            alert.alertStyle = .warning
+        }
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        updateShellIntegrationStatus()
     }
 
     @objc private func rawConfigButtonClicked(_ sender: NSButton) {

@@ -94,6 +94,71 @@ final class GitService {
         return output.isEmpty ? "No changes" : output
     }
 
+    /// Returns combined (staged + unstaged) diffs keyed by relative path,
+    /// using two repo-wide git invocations instead of several per file.
+    func diffsByPath(for entries: [GitStatusEntry], repositoryRoot: String) throws -> [String: String] {
+        let stagedByPath = Self.splitDiffByFile(try gitOutput(["diff", "--cached"], repositoryRoot: repositoryRoot))
+        let unstagedByPath = Self.splitDiffByFile(try gitOutput(["diff"], repositoryRoot: repositoryRoot))
+
+        var combined: [String: String] = [:]
+        for entry in entries {
+            if entry.isUntracked {
+                combined[entry.path] = (try? untrackedFileDiff(relativePath: entry.path, repositoryRoot: repositoryRoot)) ?? "No changes"
+                continue
+            }
+
+            var output = stagedByPath[entry.path] ?? ""
+            if let unstagedDiff = unstagedByPath[entry.path] {
+                if !output.isEmpty {
+                    output += "\n"
+                }
+                output += unstagedDiff
+            }
+            combined[entry.path] = output.isEmpty ? "No changes" : output
+        }
+        return combined
+    }
+
+    static func splitDiffByFile(_ output: String) -> [String: String] {
+        var result: [String: String] = [:]
+        var currentPath: String?
+        var currentLines: [String] = []
+
+        func flush() {
+            if let path = currentPath, !currentLines.isEmpty {
+                result[path, default: ""] += currentLines.joined(separator: "\n")
+            }
+            currentLines = []
+        }
+
+        for line in output.components(separatedBy: "\n") {
+            if line.hasPrefix("diff --git ") {
+                flush()
+                currentPath = parsePathFromDiffHeader(line)
+            }
+            if currentPath != nil {
+                currentLines.append(line)
+            }
+        }
+        flush()
+        return result
+    }
+
+    static func parsePathFromDiffHeader(_ line: String) -> String? {
+        // Quoted form: diff --git "a/pa th" "b/pa th"
+        if let quotedRange = line.range(of: "\"b/", options: .backwards) {
+            let tail = line[quotedRange.upperBound...]
+            if let closingQuote = tail.lastIndex(of: "\"") {
+                return String(tail[..<closingQuote])
+            }
+        }
+        // Plain form: diff --git a/path b/path
+        if let plainRange = line.range(of: " b/", options: .backwards) {
+            return String(line[plainRange.upperBound...])
+        }
+        return nil
+    }
+
     func stage(path: String, repositoryRoot: String) throws -> Bool {
         try runGit(["add", path], repositoryRoot: repositoryRoot).succeeded
     }
@@ -119,13 +184,63 @@ final class GitService {
         let unstagedStatus = line[line.index(after: line.startIndex)]
         let pathStart = line.index(line.startIndex, offsetBy: 3)
         let rawPath = String(line[pathStart...])
-        let path = rawPath.components(separatedBy: " -> ").last ?? rawPath
+        // Rename/copy entries are "old -> new"; show the destination.
+        let destination = rawPath.components(separatedBy: " -> ").last ?? rawPath
 
         return GitStatusEntry(
-            path: path,
+            path: unquoteGitPath(destination),
             stagedStatus: stagedStatus,
             unstagedStatus: unstagedStatus
         )
+    }
+
+    /// Git quotes paths containing special characters in C style:
+    /// `"name \"x\".txt"` with `\t`, `\n`, `\\`, `\"` and `\ooo` octal
+    /// escapes encoding UTF-8 bytes.
+    static func unquoteGitPath(_ raw: String) -> String {
+        guard raw.hasPrefix("\""), raw.hasSuffix("\""), raw.count >= 2 else { return raw }
+
+        let inner = Array(raw.utf8.dropFirst().dropLast())
+        var bytes: [UInt8] = []
+        var i = 0
+        while i < inner.count {
+            let byte = inner[i]
+            guard byte == UInt8(ascii: "\\"), i + 1 < inner.count else {
+                bytes.append(byte)
+                i += 1
+                continue
+            }
+
+            let escape = inner[i + 1]
+            switch escape {
+            case UInt8(ascii: "t"):
+                bytes.append(0x09)
+                i += 2
+            case UInt8(ascii: "n"):
+                bytes.append(0x0A)
+                i += 2
+            case UInt8(ascii: "r"):
+                bytes.append(0x0D)
+                i += 2
+            case UInt8(ascii: "0")...UInt8(ascii: "7"):
+                var value = 0
+                var digits = 0
+                var j = i + 1
+                while j < inner.count, digits < 3,
+                      (UInt8(ascii: "0")...UInt8(ascii: "7")).contains(inner[j]) {
+                    value = value * 8 + Int(inner[j] - UInt8(ascii: "0"))
+                    j += 1
+                    digits += 1
+                }
+                bytes.append(UInt8(value & 0xFF))
+                i = j
+            default:
+                // Covers \" and \\ along with anything unrecognized.
+                bytes.append(escape)
+                i += 2
+            }
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     private func gitOutput(_ arguments: [String], repositoryRoot: String) throws -> String {

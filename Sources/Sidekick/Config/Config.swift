@@ -111,6 +111,8 @@ context_lines = 3
 file_open_mode = "terminal"
 # Wrap long lines in the editor (true = word wrap, false = horizontal scroll)
 word_wrap = true
+# Show hidden files and gitignored files in the file tree (rendered dimmed)
+show_hidden_files = false
 
 # Global run-panel tasks (available in every project)
 # [[tasks]]
@@ -277,21 +279,25 @@ public struct DiffConfig: Codable {
 public struct EditorConfig: Codable {
     public var fileOpenMode: String
     public var wordWrap: Bool
+    public var showHiddenFiles: Bool
 
     enum CodingKeys: String, CodingKey {
         case fileOpenMode = "file_open_mode"
         case wordWrap = "word_wrap"
+        case showHiddenFiles = "show_hidden_files"
     }
 
     public init() {
         self.fileOpenMode = "terminal"
         self.wordWrap = true
+        self.showHiddenFiles = false
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.fileOpenMode = try container.decodeIfPresent(String.self, forKey: .fileOpenMode) ?? "terminal"
         self.wordWrap = try container.decodeIfPresent(Bool.self, forKey: .wordWrap) ?? true
+        self.showHiddenFiles = try container.decodeIfPresent(Bool.self, forKey: .showHiddenFiles) ?? false
     }
 }
 

@@ -13,9 +13,20 @@ class TabModel: ObservableObject, Identifiable {
     @Published var title: String = "Terminal"
     @Published var isActive: Bool = false
     @Published var isDirty: Bool = false
-    @Published var agentState: AgentState = .idle
+    @Published var agentState: AgentState = .idle {
+        didSet {
+            if agentState != oldValue {
+                agentStateChangedAt = Date()
+            }
+        }
+    }
+    var agentStateChangedAt = Date()
     @Published var panes: [PaneModel] = []
     @Published var activePaneIndex: Int = 0
+
+    // Last finished command (from shell integration); nil while one runs
+    @Published var lastCommandFailed: Bool = false
+    var lastCommandTooltip: String?
 
     var rootSplitView: NSSplitView?
 

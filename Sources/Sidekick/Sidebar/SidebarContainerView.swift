@@ -7,6 +7,9 @@ protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String?)
     func sidebarContainer(_ container: SidebarContainerView, didRequestRunTask command: String)
     func sidebarContainer(_ container: SidebarContainerView, didRequestPasteCommand command: String)
+    func sidebarContainerTabs(_ container: SidebarContainerView) -> [TabModel]
+    func sidebarContainer(_ container: SidebarContainerView, didRequestSwitchToTab index: Int)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestConnectCommand command: String)
 }
 
 class SidebarContainerView: NSView {
@@ -114,6 +117,16 @@ class SidebarContainerView: NSView {
             runPanelVC.delegate = self
             panelControllers[panel] = runPanelVC
             return runPanelVC.view
+        case .agents:
+            let agentDashboardVC = AgentDashboardViewController()
+            agentDashboardVC.delegate = self
+            panelControllers[panel] = agentDashboardVC
+            return agentDashboardVC.view
+        case .hosts:
+            let hostsPanelVC = HostsPanelViewController()
+            hostsPanelVC.delegate = self
+            panelControllers[panel] = hostsPanelVC
+            return hostsPanelVC.view
         }
     }
 
@@ -141,6 +154,10 @@ class SidebarContainerView: NSView {
 
         if panel == .search {
             (panelControllers[.search] as? SearchPanelViewController)?.focusSearchField()
+        }
+
+        if panel == .agents {
+            (panelControllers[.agents] as? AgentDashboardViewController)?.reload()
         }
     }
 
@@ -184,10 +201,32 @@ class SidebarContainerView: NSView {
         }
     }
 
+    func setShowHiddenFiles(_ show: Bool) {
+        if let fileTreeVC = panelControllers[.files] as? FileTreeViewController {
+            fileTreeVC.setShowHidden(show)
+        }
+    }
+
     func refreshFileTree() {
         if let fileTreeVC = panelControllers[.files] as? FileTreeViewController {
             fileTreeVC.refresh()
         }
+    }
+}
+
+extension SidebarContainerView: AgentDashboardDelegate {
+    func agentDashboardTabs(_ dashboard: AgentDashboardViewController) -> [TabModel] {
+        delegate?.sidebarContainerTabs(self) ?? []
+    }
+
+    func agentDashboard(_ dashboard: AgentDashboardViewController, didSelectTabAt index: Int) {
+        delegate?.sidebarContainer(self, didRequestSwitchToTab: index)
+    }
+}
+
+extension SidebarContainerView: HostsPanelDelegate {
+    func hostsPanel(_ panel: HostsPanelViewController, didRequestConnectCommand command: String) {
+        delegate?.sidebarContainer(self, didRequestConnectCommand: command)
     }
 }
 

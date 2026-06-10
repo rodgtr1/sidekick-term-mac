@@ -1,0 +1,213 @@
+import Cocoa
+
+protocol AgentDashboardDelegate: AnyObject {
+    func agentDashboardTabs(_ dashboard: AgentDashboardViewController) -> [TabModel]
+    func agentDashboard(_ dashboard: AgentDashboardViewController, didSelectTabAt index: Int)
+}
+
+/// Sidebar panel showing every tab's agent state with elapsed time.
+/// Clicking a row jumps to that tab.
+final class AgentDashboardViewController: NSViewController {
+    weak var delegate: AgentDashboardDelegate?
+
+    private var tableView: NSTableView!
+    private var scrollView: NSScrollView!
+    private var emptyLabel: NSTextField!
+    private var refreshTimer: Timer?
+
+    private struct Row {
+        let tabIndex: Int
+        let title: String
+        let state: AgentState
+        let since: Date
+    }
+
+    private var rows: [Row] = []
+
+    override func loadView() {
+        view = NSView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setupViews()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(agentStateChanged),
+            name: NSNotification.Name("PaneAgentStateChanged"),
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        refreshTimer?.invalidate()
+    }
+
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        reload()
+        // Tick to keep elapsed times fresh while the panel is visible.
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.reload()
+        }
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+    }
+
+    private func setupViews() {
+        scrollView = NSScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = AppTheme.sidebarBackground
+
+        tableView = NSTableView()
+        tableView.headerView = nil
+        tableView.backgroundColor = AppTheme.sidebarBackground
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.target = self
+        tableView.action = #selector(rowClicked)
+        tableView.usesAlternatingRowBackgroundColors = false
+        if #available(macOS 12.0, *) {
+            tableView.style = .plain
+        }
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("AgentColumn"))
+        column.isEditable = false
+        tableView.addTableColumn(column)
+        scrollView.documentView = tableView
+
+        emptyLabel = NSTextField(labelWithString: "No agent activity.\nAgent states from Claude/Codex\nsessions appear here.")
+        emptyLabel.font = NSFont.systemFont(ofSize: 12)
+        emptyLabel.textColor = NSColor(hex: "#6c7086")
+        emptyLabel.alignment = .center
+        emptyLabel.maximumNumberOfLines = 0
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(scrollView)
+        view.addSubview(emptyLabel)
+
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            emptyLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 40),
+            emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 12),
+            emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -12)
+        ])
+    }
+
+    @objc private func agentStateChanged() {
+        reload()
+    }
+
+    func reload() {
+        guard isViewLoaded else { return }
+        let tabs = delegate?.agentDashboardTabs(self) ?? []
+
+        rows = tabs.enumerated().compactMap { index, tab in
+            guard tab.agentState != .idle else { return nil }
+            return Row(
+                tabIndex: index,
+                title: tab.title,
+                state: tab.agentState,
+                since: tab.agentStateChangedAt
+            )
+        }
+
+        emptyLabel.isHidden = !rows.isEmpty
+        tableView.reloadData()
+    }
+
+    @objc private func rowClicked() {
+        let row = tableView.clickedRow
+        guard row >= 0 && row < rows.count else { return }
+        delegate?.agentDashboard(self, didSelectTabAt: rows[row].tabIndex)
+    }
+
+    fileprivate static func describe(_ state: AgentState) -> (label: String, color: NSColor) {
+        let theme = Theme.shared.current
+        switch state {
+        case .working: return ("Working", NSColor(hex: "#f9e2af") ?? theme.yellow)
+        case .ready: return ("Needs input", theme.green)
+        case .done: return ("Done", theme.blue)
+        case .idle: return ("Idle", NSColor(hex: "#6c7086") ?? .gray)
+        }
+    }
+
+    fileprivate static func elapsedString(since date: Date) -> String {
+        let seconds = max(0, Int(Date().timeIntervalSince(date)))
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
+        return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
+    }
+}
+
+extension AgentDashboardViewController: NSTableViewDataSource {
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        rows.count
+    }
+}
+
+extension AgentDashboardViewController: NSTableViewDelegate {
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < rows.count else { return nil }
+        let rowData = rows[row]
+        let (stateLabel, stateColor) = Self.describe(rowData.state)
+
+        let cell = NSTableCellView()
+
+        let dot = NSTextField(labelWithString: "●")
+        dot.font = NSFont.systemFont(ofSize: 10)
+        dot.textColor = stateColor
+        dot.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = NSTextField(labelWithString: rowData.title)
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = NSColor(hex: "#cdd6f4")
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let detailLabel = NSTextField(
+            labelWithString: "\(stateLabel) · \(Self.elapsedString(since: rowData.since))"
+        )
+        detailLabel.font = NSFont.systemFont(ofSize: 11)
+        detailLabel.textColor = stateColor
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        cell.addSubview(dot)
+        cell.addSubview(titleLabel)
+        cell.addSubview(detailLabel)
+
+        NSLayoutConstraint.activate([
+            dot.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
+            dot.topAnchor.constraint(equalTo: cell.topAnchor, constant: 7),
+
+            titleLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 7),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8),
+            titleLabel.topAnchor.constraint(equalTo: cell.topAnchor, constant: 5),
+
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8)
+        ])
+
+        return cell
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        42
+    }
+}

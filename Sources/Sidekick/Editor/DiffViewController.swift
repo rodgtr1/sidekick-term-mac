@@ -3,7 +3,6 @@ import Cocoa
 class DiffViewController: NSViewController {
     private var textView: NSTextView!
     private var scrollView: NSScrollView!
-    private var lineNumberRuler: LineNumberRulerView!
     private var hunkButtons: [HunkButton] = []
 
     private var filePath: String?
@@ -85,11 +84,8 @@ class DiffViewController: NSViewController {
 
         scrollView.documentView = textView
 
-        // Add line number ruler
-        lineNumberRuler = LineNumberRulerView(scrollView: scrollView, orientation: .verticalRuler)
-        scrollView.verticalRulerView = lineNumberRuler
-        scrollView.hasVerticalRuler = true
-        scrollView.rulersVisible = true
+        // No line-number ruler: the inline diff rendering carries its own
+        // gutter with the new file's line numbers.
 
         view.addSubview(scrollView)
 
@@ -164,23 +160,7 @@ class DiffViewController: NSViewController {
             return
         }
 
-        let lines = content.components(separatedBy: .newlines)
-
-        print("📝 DiffViewController: Processing \(lines.count) lines")
-
-        for (index, line) in lines.enumerated() {
-            let attributedLine = formatDiffLine(line)
-            textStorage.append(attributedLine)
-
-            // Add newline except for the last line
-            if index < lines.count - 1 {
-                let newline = NSAttributedString(string: "\n", attributes: [
-                    .foregroundColor: DiffColors.text,
-                    .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-                ])
-                textStorage.append(newline)
-            }
-        }
+        textStorage.append(InlineDiffRenderer.render(content))
 
         print("📝 DiffViewController: Final textStorage length: \(textStorage.length)")
         print("📝 DiffViewController: textView bounds: \(textView.bounds)")
@@ -194,38 +174,6 @@ class DiffViewController: NSViewController {
         // Force a layout update
         textView.setNeedsDisplay(textView.bounds)
         scrollView.setNeedsDisplay(scrollView.bounds)
-    }
-
-    private func formatDiffLine(_ line: String) -> NSAttributedString {
-        let baseAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        ]
-
-        var attributes = baseAttributes
-
-        if line.hasPrefix("+++") || line.hasPrefix("---") {
-            // File headers
-            attributes[.foregroundColor] = DiffColors.fileHeader
-        } else if line.hasPrefix("@@") {
-            // Hunk headers
-            attributes[.foregroundColor] = DiffColors.hunkHeader
-        } else if line.hasPrefix("+") {
-            // Added lines
-            attributes[.foregroundColor] = DiffColors.added
-            attributes[.backgroundColor] = NSColor(hex: "#a6e3a1")?.withAlphaComponent(0.1)
-        } else if line.hasPrefix("-") {
-            // Removed lines
-            attributes[.foregroundColor] = DiffColors.removed
-            attributes[.backgroundColor] = NSColor(hex: "#f38ba8")?.withAlphaComponent(0.1)
-        } else if line.hasPrefix("index") || line.hasPrefix("diff --git") {
-            // Git metadata
-            attributes[.foregroundColor] = DiffColors.context
-        } else {
-            // Context lines
-            attributes[.foregroundColor] = DiffColors.text
-        }
-
-        return NSAttributedString(string: line, attributes: attributes)
     }
 
     private func parseHunks() {

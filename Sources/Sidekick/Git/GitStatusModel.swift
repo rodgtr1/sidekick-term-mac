@@ -1,5 +1,6 @@
 import Foundation
 import Cocoa
+import CoreServices
 
 enum GitFileStatus: String, CaseIterable {
     case modified = "M"
@@ -72,8 +73,12 @@ class GitStatusModel: ObservableObject {
     @Published var error: String?
 
     private var _repositoryPath: String = ""
-    private let refreshInterval: TimeInterval = 2.0
+    // Fallback poll for changes FSEvents can't see (e.g. edits over NFS).
+    private let fallbackRefreshInterval: TimeInterval = 30.0
+    private let refreshDebounce: TimeInterval = 0.3
     private var refreshTimer: Timer?
+    private var eventStream: FSEventStreamRef?
+    private var pendingRefresh: DispatchWorkItem?
     private let gitService: GitService
     private var refreshGeneration: Int = 0
 
@@ -105,6 +110,7 @@ class GitStatusModel: ObservableObject {
         _repositoryPath = repositoryRoot
         refreshStatus(force: true)
         startAutoRefresh()
+        startWatchingRepository(repositoryRoot)
     }
 
     func refreshStatus(force: Bool = false) {
@@ -137,7 +143,7 @@ class GitStatusModel: ObservableObject {
 
     private func startAutoRefresh() {
         stopAutoRefresh()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: fallbackRefreshInterval, repeats: true) { [weak self] _ in
             self?.refreshStatus()
         }
     }
@@ -145,6 +151,63 @@ class GitStatusModel: ObservableObject {
     private func stopAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = nil
+        pendingRefresh?.cancel()
+        pendingRefresh = nil
+        stopWatchingRepository()
+    }
+
+    // MARK: - File system watching
+
+    private func startWatchingRepository(_ repositoryRoot: String) {
+        stopWatchingRepository()
+
+        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
+            guard let info = info else { return }
+            let model = Unmanaged<GitStatusModel>.fromOpaque(info).takeUnretainedValue()
+            model.scheduleDebouncedRefresh()
+        }
+
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+
+        guard let stream = FSEventStreamCreate(
+            nil,
+            callback,
+            &context,
+            [repositoryRoot] as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.5,
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
+        ) else {
+            print("GitStatusModel: Failed to create FSEvents stream for \(repositoryRoot)")
+            return
+        }
+
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
+        FSEventStreamStart(stream)
+        eventStream = stream
+    }
+
+    private func stopWatchingRepository() {
+        guard let stream = eventStream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        eventStream = nil
+    }
+
+    private func scheduleDebouncedRefresh() {
+        pendingRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.refreshStatus()
+        }
+        pendingRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + refreshDebounce, execute: work)
     }
 
     private func getCurrentBranch(repositoryRoot: String) -> String {

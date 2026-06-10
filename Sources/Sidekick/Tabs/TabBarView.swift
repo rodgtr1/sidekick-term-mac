@@ -93,7 +93,12 @@ class TabBarView: NSView {
             }
 
             self.workingPulseIsBright.toggle()
-            self.rebuildTabButtons()
+            // Refresh only the titles of working tabs; rebuilding every
+            // button twice a second thrashes the view hierarchy.
+            for (index, tab) in self.tabs.enumerated() where tab.agentState == .working {
+                guard index < self.tabButtons.count else { continue }
+                self.tabButtons[index].attributedTitle = self.makeAttributedTitle(for: tab)
+            }
         }
     }
 
@@ -132,57 +137,13 @@ class TabBarView: NSView {
         let tabButton = NSButton(frame: tabRect)
         tabButton.cell = TabButtonCell(textLeadingPadding: tabHorizontalPadding, textTrailingPadding: closeButtonSize + 18)
 
-        // Build title with attributed string for proper icon/color rendering
-        let attributedTitle = NSMutableAttributedString()
-        let titleParagraphStyle = NSMutableParagraphStyle()
-        titleParagraphStyle.lineBreakMode = .byTruncatingMiddle
-        titleParagraphStyle.alignment = .center
-
-        // Agent state indicator
         let theme = Theme.shared.current
-        switch tab.agentState {
-        case .idle:
-            break // No indicator
-        case .working:
-            appendAgentIndicator(
-                systemSymbolName: "circle.fill",
-                accessibilityDescription: "Agent Working",
-                color: workingAgentIndicatorColor,
-                to: attributedTitle
-            )
-        case .ready:
-            appendAgentIndicator(
-                systemSymbolName: "circle.fill",
-                accessibilityDescription: "Agent Waiting",
-                color: theme.green,
-                to: attributedTitle
-            )
-        case .done:
-            appendAgentIndicator(
-                systemSymbolName: "circle.fill",
-                accessibilityDescription: "Agent Done",
-                color: theme.blue,
-                to: attributedTitle
-            )
+        tabButton.attributedTitle = makeAttributedTitle(for: tab)
+        if let commandTooltip = tab.lastCommandTooltip {
+            tabButton.toolTip = "\(tab.title)\n\(commandTooltip)"
+        } else {
+            tabButton.toolTip = tab.title
         }
-
-        // Dirty indicator
-        if tab.isDirty {
-            let dirtyText = NSAttributedString(string: "● ", attributes: [
-                .font: NSFont.systemFont(ofSize: 9)
-            ])
-            attributedTitle.append(dirtyText)
-        }
-
-        // Tab title
-        let titleText = NSAttributedString(string: tab.title, attributes: [
-            .font: NSFont.systemFont(ofSize: 12),
-            .paragraphStyle: titleParagraphStyle
-        ])
-        attributedTitle.append(titleText)
-
-        tabButton.attributedTitle = attributedTitle
-        tabButton.toolTip = tab.title
         tabButton.bezelStyle = .regularSquare
         tabButton.isBordered = false
         tabButton.cell?.lineBreakMode = .byTruncatingMiddle
@@ -248,6 +209,68 @@ class TabBarView: NSView {
             addSubview(indicator)
             activeIndicators.append(indicator)
         }
+    }
+
+    private func makeAttributedTitle(for tab: TabModel) -> NSAttributedString {
+        // Build title with attributed string for proper icon/color rendering
+        let attributedTitle = NSMutableAttributedString()
+        let titleParagraphStyle = NSMutableParagraphStyle()
+        titleParagraphStyle.lineBreakMode = .byTruncatingMiddle
+        titleParagraphStyle.alignment = .center
+
+        // Agent state indicator
+        let theme = Theme.shared.current
+        switch tab.agentState {
+        case .idle:
+            break // No indicator
+        case .working:
+            appendAgentIndicator(
+                systemSymbolName: "circle.fill",
+                accessibilityDescription: "Agent Working",
+                color: workingAgentIndicatorColor,
+                to: attributedTitle
+            )
+        case .ready:
+            appendAgentIndicator(
+                systemSymbolName: "circle.fill",
+                accessibilityDescription: "Agent Waiting",
+                color: theme.green,
+                to: attributedTitle
+            )
+        case .done:
+            appendAgentIndicator(
+                systemSymbolName: "circle.fill",
+                accessibilityDescription: "Agent Done",
+                color: theme.blue,
+                to: attributedTitle
+            )
+        }
+
+        // Failed-command indicator (from shell integration)
+        if tab.lastCommandFailed {
+            let failedText = NSAttributedString(string: "✗ ", attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: theme.red
+            ])
+            attributedTitle.append(failedText)
+        }
+
+        // Dirty indicator
+        if tab.isDirty {
+            let dirtyText = NSAttributedString(string: "● ", attributes: [
+                .font: NSFont.systemFont(ofSize: 9)
+            ])
+            attributedTitle.append(dirtyText)
+        }
+
+        // Tab title
+        let titleText = NSAttributedString(string: tab.title, attributes: [
+            .font: NSFont.systemFont(ofSize: 12),
+            .paragraphStyle: titleParagraphStyle
+        ])
+        attributedTitle.append(titleText)
+
+        return attributedTitle
     }
 
     private func appendAgentIndicator(

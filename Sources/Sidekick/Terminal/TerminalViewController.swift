@@ -4,6 +4,29 @@ import SwiftTerm
 protocol TerminalViewControllerDelegate: AnyObject {
     func terminalDidUpdateTitle(_ terminal: TerminalViewController, directory: String, branch: String?)
     func terminalDidDetectAgentState(_ terminal: TerminalViewController, state: AgentState)
+    func terminalDidUpdateCommandStatus(_ terminal: TerminalViewController, status: TerminalCommandStatus?)
+    func terminalRequestsOpenURL(_ terminal: TerminalViewController, url: URL)
+    func terminalRequestsOpenFile(_ terminal: TerminalViewController, path: String, line: Int?)
+}
+
+/// Result of the last finished shell command, reported via OSC 133 marks
+/// from the shell integration script.
+struct TerminalCommandStatus {
+    let exitCode: Int
+    let duration: TimeInterval?
+
+    var succeeded: Bool { exitCode == 0 }
+
+    var summary: String {
+        let outcome = succeeded ? "✓ exit 0" : "✗ exit \(exitCode)"
+        guard let duration = duration else { return outcome }
+        if duration >= 60 {
+            let minutes = Int(duration) / 60
+            let seconds = Int(duration) % 60
+            return "\(outcome) · \(minutes)m \(seconds)s"
+        }
+        return String(format: "%@ · %.1fs", outcome, duration)
+    }
 }
 
 private final class AgentAwareTerminalView: LocalProcessTerminalView {
@@ -31,13 +54,57 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var config: Config
     private var cwdTimer: Timer?
     private var currentCWD: String = "~"
-    private var shellPID: pid_t = 0
     private var isUpdatingCWD = false
+
+    // SwiftTerm tracks the exact child PID; scanning `ps` for "a child of
+    // this app" breaks as soon as a second tab (or any transient child
+    // process) exists.
+    private var shellPID: pid_t {
+        terminalView?.process?.shellPid ?? 0
+    }
     private var initialDirectory: String?
     private var recentOutput = ""
     private var agentStatusSequenceBuffer = ""
     private var lastDetectedAgentState: AgentState = .idle
     private var agentDoneTimer: Timer?
+    private var pendingDetectionOutput = ""
+    private var detectionFlushScheduled = false
+
+    private var findBar: TerminalFindBar?
+    private var scrollEventMonitor: Any?
+    private var alternateScrollAccumulator: CGFloat = 0
+
+    // Dev-server detection
+    private var serverBannerView: NSView?
+    private var serverBannerDismissWork: DispatchWorkItem?
+    private var detectedServerURL: URL?
+    private var lastOfferedServerURL: URL?
+
+    private static let serverURLRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: "https?://(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)(?::\\d{2,5})?(?:/[A-Za-z0-9_\\-./?#=&%]*)?"
+    )
+    private static let listeningPortRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: "(?i)listening on (?:port )?(?:[a-z.*]*:)?(\\d{2,5})\\b"
+    )
+
+    // Shell integration (OSC 7 + OSC 133) state
+    private var hasShellIntegration = false
+    private var commandMarkBuffer = ""
+    private var commandStartDate: Date?
+    private var promptMarkRows: [Int] = []
+    private static let maxPromptMarks = 500
+
+    private static let commandMarkRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: "\u{001B}\\]133;([A-Za-z])(?:;([^\u{001B}\u{0007}]*))?(?:\u{001B}\\\\|\u{0007})")
+
+    private static let agentStatusRegex: NSRegularExpression? = {
+        let escapedTermprop = NSRegularExpression.escapedPattern(for: agentStatusTermprop)
+        let pattern = "\u{001B}\\]666;\(escapedTermprop)=([A-Za-z_-]+)(?:\u{001B}\\\\|\u{0007})"
+        return try? NSRegularExpression(pattern: pattern)
+    }()
+
+    private static let ansiEscapeRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]")
 
     init(config: Config, initialDirectory: String? = nil) {
         self.config = config
@@ -59,6 +126,76 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         setupTerminal()
         startShell()
         startCWDTracking()
+        setupAlternateScreenScrolling()
+    }
+
+    /// SwiftTerm's scrollWheel only ever scrolls the scrollback buffer.
+    /// That breaks two cases that other terminals handle:
+    ///  - apps with mouse reporting enabled (Claude Code) expect wheel
+    ///    events so they can scroll their own content;
+    ///  - alternate-screen apps without mouse reporting (vim, less) have
+    ///    no scrollback, so wheel events should become arrow keys.
+    /// Plain shells still fall through to normal scrollback scrolling.
+    private func setupAlternateScreenScrolling() {
+        scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self = self else { return event }
+            return self.handleScrollWheelEvent(event)
+        }
+    }
+
+    private func handleScrollWheelEvent(_ event: NSEvent) -> NSEvent? {
+        guard let window = view.window,
+              event.window === window,
+              let terminalView = terminalView else { return event }
+
+        let terminal = terminalView.getTerminal()
+        let reportsMouse = terminal.mouseMode != .off
+        guard reportsMouse || terminal.isCurrentBufferAlternate else { return event }
+
+        // Only handle events over this terminal's view.
+        let pointInView = terminalView.convert(event.locationInWindow, from: nil)
+        guard terminalView.bounds.contains(pointInView) else { return event }
+
+        let lines: Int
+        if event.hasPreciseScrollingDeltas {
+            // Trackpad: accumulate pixel deltas into whole cell rows.
+            let cellHeight = max(1, terminalView.bounds.height / CGFloat(max(1, terminal.rows)))
+            alternateScrollAccumulator += event.scrollingDeltaY
+            let wholeLines = Int(alternateScrollAccumulator / cellHeight)
+            guard wholeLines != 0 else { return nil }
+            alternateScrollAccumulator -= CGFloat(wholeLines) * cellHeight
+            lines = wholeLines
+        } else {
+            guard event.deltaY != 0 else { return nil }
+            lines = Int(event.deltaY.rounded(.awayFromZero))
+        }
+
+        let scrollingUp = lines > 0
+        let count = min(10, abs(lines))
+
+        if reportsMouse {
+            // Send wheel events at the hovered cell (xterm buttons 4/5).
+            let col = min(terminal.cols - 1, max(0, Int(pointInView.x / max(1, terminalView.bounds.width / CGFloat(max(1, terminal.cols))))))
+            let cellHeight = max(1, terminalView.bounds.height / CGFloat(max(1, terminal.rows)))
+            let row = min(terminal.rows - 1, max(0, Int((terminalView.bounds.height - pointInView.y) / cellHeight)))
+            let buttonFlags = terminal.encodeButton(
+                button: scrollingUp ? 4 : 5,
+                release: false,
+                shift: event.modifierFlags.contains(.shift),
+                meta: event.modifierFlags.contains(.option),
+                control: event.modifierFlags.contains(.control)
+            )
+            for _ in 0..<count {
+                terminal.sendEvent(buttonFlags: buttonFlags, x: col, y: row)
+            }
+        } else {
+            // Alternate screen without mouse reporting: arrow keys.
+            let sequence = terminal.applicationCursor
+                ? (scrollingUp ? "\u{1B}OA" : "\u{1B}OB")
+                : (scrollingUp ? "\u{1B}[A" : "\u{1B}[B")
+            terminalView.send(txt: String(repeating: sequence, count: count))
+        }
+        return nil
     }
 
     override func viewDidAppear() {
@@ -76,7 +213,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let agentAwareTerminalView = AgentAwareTerminalView(frame: view.bounds)
         agentAwareTerminalView.onOutput = { [weak self] output in
             DispatchQueue.main.async {
-                self?.detectAgentState(from: output)
+                self?.queueAgentDetection(output)
             }
         }
         agentAwareTerminalView.onInput = { [weak self] in
@@ -84,6 +221,11 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
                 self?.handleTerminalInput()
             }
         }
+        // Cmd+click opens file paths in the built-in editor. A gesture
+        // recognizer is used because SwiftTerm's mouseDown is not open.
+        let commandClickRecognizer = NSClickGestureRecognizer(target: self, action: #selector(terminalCommandClicked(_:)))
+        commandClickRecognizer.delaysPrimaryMouseButtonEvents = false
+        agentAwareTerminalView.addGestureRecognizer(commandClickRecognizer)
         terminalView = agentAwareTerminalView
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         terminalView.font = font
@@ -140,14 +282,22 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         currentCWD = startDirectory
 
-        // Start the shell process - let SwiftTerm handle environment setup
-        // SwiftTerm will automatically set TERM, HOME, PWD and other required variables
-        terminalView.startProcess(executable: shell, execName: shellIdiom, currentDirectory: startDirectory)
+        // Start the shell with SwiftTerm's default environment plus
+        // TERM_PROGRAM so the shell-integration script can detect Sidekick.
+        var environment = Terminal.getEnvironmentVariables()
+        environment.append("TERM_PROGRAM=\(ShellIntegration.termProgram)")
+        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+            environment.append("TERM_PROGRAM_VERSION=\(version)")
+        }
+        terminalView.startProcess(
+            executable: shell,
+            environment: environment,
+            execName: shellIdiom,
+            currentDirectory: startDirectory
+        )
 
-        // Find the shell PID after a brief delay to allow process to start
+        // Publish the initial title/CWD once the process is up
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.findShellPID()
-            // Trigger initial CWD update
             self?.currentCWD = startDirectory
             self?.updateTitle()
         }
@@ -191,7 +341,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
                 guard let self = self else { return }
                 self.isUpdatingCWD = false
 
-                if let cwd = cwd {
+                // Only refresh the title (which spawns git for the branch)
+                // when the directory actually changed.
+                if let cwd = cwd, cwd != self.currentCWD {
                     self.currentCWD = cwd
                     self.updateTitle()
                 }
@@ -280,46 +432,6 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private func handleProcessTerminated() {
         cwdTimer?.invalidate()
         cwdTimer = nil
-        shellPID = 0
-    }
-
-    private func findShellPID() {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let task = Process()
-            task.launchPath = "/bin/ps"
-            task.arguments = ["-x", "-o", "pid,ppid,comm"]
-
-            let pipe = Pipe()
-            task.standardOutput = pipe
-            task.standardError = Pipe()
-
-            do {
-                try task.run()
-                task.waitUntilExit()
-
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let output = String(data: data, encoding: .utf8) {
-                    let lines = output.split(separator: "\n")
-                    let myPid = ProcessInfo.processInfo.processIdentifier
-                    var detectedPID: pid_t = 0
-
-                    for line in lines {
-                        let components = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
-                        if components.count >= 3,
-                           let pid = pid_t(components[0]),
-                           let ppid = pid_t(components[1]),
-                           ppid == myPid {
-                            detectedPID = pid
-                            break
-                        }
-                    }
-
-                    DispatchQueue.main.async { [weak self] in
-                        self?.shellPID = detectedPID
-                    }
-                }
-            } catch {}
-        }
     }
 
     // MARK: - LocalProcessTerminalViewDelegate Methods
@@ -336,16 +448,40 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         // OSC 7 command received - update current directory
         // The directory comes as a file:// URL, convert to path
-        if let directory = directory {
-            // Try to parse as URL and extract path
-            if let url = URL(string: directory), url.scheme == "file" {
-                currentCWD = url.path
+        guard let directory = directory else { return }
+
+        let newCWD: String
+        if let url = URL(string: directory), url.scheme == "file" {
+            newCWD = url.path
+        } else if directory.hasPrefix("file://") {
+            // Shell integration emits the path unencoded; URL parsing fails
+            // for paths with spaces, so strip the scheme and host manually.
+            let afterScheme = directory.dropFirst("file://".count)
+            if let firstSlash = afterScheme.firstIndex(of: "/") {
+                newCWD = String(afterScheme[firstSlash...])
             } else {
-                // Fall back to using it as-is if not a URL
-                currentCWD = directory
+                return
             }
+        } else {
+            newCWD = directory
+        }
+
+        // The shell is reporting its own directory — polling is redundant.
+        markShellIntegrationDetected()
+
+        if newCWD != currentCWD {
+            currentCWD = newCWD
             updateTitle()
         }
+    }
+
+    /// Once the shell proves it has integration (OSC 7 or OSC 133), stop
+    /// the CWD polling timer — updates now arrive for free.
+    private func markShellIntegrationDetected() {
+        guard !hasShellIntegration else { return }
+        hasShellIntegration = true
+        cwdTimer?.invalidate()
+        cwdTimer = nil
     }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
@@ -362,7 +498,30 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // For now, users can copy URLs manually and open them
     }
 
+    private func queueAgentDetection(_ output: String) {
+        // Coalesce high-throughput output into ~10Hz detection passes so the
+        // regex scanning doesn't run once per output chunk.
+        pendingDetectionOutput += output
+        if pendingDetectionOutput.count > 16_000 {
+            pendingDetectionOutput = String(pendingDetectionOutput.suffix(16_000))
+        }
+
+        guard !detectionFlushScheduled else { return }
+        detectionFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self = self else { return }
+            self.detectionFlushScheduled = false
+            let chunk = self.pendingDetectionOutput
+            self.pendingDetectionOutput = ""
+            guard !chunk.isEmpty else { return }
+            self.detectAgentState(from: chunk)
+        }
+    }
+
     private func detectAgentState(from output: String) {
+        consumeCommandMarkSequences(from: output)
+        detectDevServer(in: output)
+
         if consumeAgentStatusSequences(from: output) {
             return
         }
@@ -387,15 +546,296 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
     }
 
+    // MARK: - Cmd+click file opening
+
+    private static let filePathTokenRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: "((?:~|\\.{1,2})?/?[A-Za-z0-9_@+.\\-]+(?:/[A-Za-z0-9_@+.\\-]+)*)(?::(\\d+))?"
+    )
+
+    @objc private func terminalCommandClicked(_ recognizer: NSClickGestureRecognizer) {
+        guard NSEvent.modifierFlags.contains(.command) else { return }
+        let terminal = terminalView.getTerminal()
+        guard terminal.cols > 0, terminal.rows > 0 else { return }
+
+        let point = recognizer.location(in: terminalView)
+        let cellWidth = terminalView.bounds.width / CGFloat(terminal.cols)
+        let cellHeight = terminalView.bounds.height / CGFloat(terminal.rows)
+        guard cellWidth > 0, cellHeight > 0 else { return }
+        let col = min(terminal.cols - 1, max(0, Int(point.x / cellWidth)))
+        let row = min(terminal.rows - 1, max(0, Int((terminalView.bounds.height - point.y) / cellHeight)))
+
+        _ = handleCommandClick(col: col, row: row)
+    }
+
+    /// Cmd+click: if the clicked cell sits on a file path (optionally with
+    /// `:line`), open it in the built-in editor. Returns true when handled.
+    private func handleCommandClick(col: Int, row: Int) -> Bool {
+        guard let line = terminalView.getTerminal().getLine(row: row) else { return false }
+        let text = line.translateToString(trimRight: true)
+        guard !text.isEmpty else { return false }
+
+        guard let regex = Self.filePathTokenRegex else { return false }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+
+        for match in matches {
+            // The clicked column must fall inside this token.
+            guard match.range.location <= col, col < match.range.location + match.range.length else { continue }
+
+            let candidate = nsText.substring(with: match.range(at: 1))
+            var lineNumber: Int?
+            if match.range(at: 2).location != NSNotFound {
+                lineNumber = Int(nsText.substring(with: match.range(at: 2)))
+            }
+
+            // Require something path-like, not a bare word.
+            guard candidate.contains("/") || candidate.contains(".") else { continue }
+
+            guard let resolved = resolveFilePath(candidate) else { continue }
+            delegate?.terminalRequestsOpenFile(self, path: resolved, line: lineNumber)
+            return true
+        }
+        return false
+    }
+
+    private func resolveFilePath(_ candidate: String) -> String? {
+        let expanded: String
+        if candidate.hasPrefix("~") {
+            expanded = NSString(string: candidate).expandingTildeInPath
+        } else if candidate.hasPrefix("/") {
+            expanded = candidate
+        } else {
+            expanded = URL(fileURLWithPath: currentCWD).appendingPathComponent(candidate).path
+        }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory),
+              !isDirectory.boolValue else { return nil }
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
+    // MARK: - Dev-server detection
+
+    private func detectDevServer(in output: String) {
+        // Strip ANSI codes but keep case (URLs paths are case-sensitive).
+        var text = output
+        if let ansiRegex = Self.ansiEscapeRegex {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            text = ansiRegex.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+        }
+
+        var url: URL?
+        if let regex = Self.serverURLRegex {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            if let match = regex.firstMatch(in: text, range: range),
+               let matchRange = Range(match.range, in: text) {
+                url = URL(string: normalizeLocalURLString(String(text[matchRange])))
+            }
+        }
+        if url == nil, let regex = Self.listeningPortRegex {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            if let match = regex.firstMatch(in: text, range: range),
+               let portRange = Range(match.range(at: 1), in: text),
+               let port = Int(text[portRange]), port >= 80 {
+                url = URL(string: "http://localhost:\(port)/")
+            }
+        }
+
+        guard let serverURL = url, serverURL != lastOfferedServerURL else { return }
+        lastOfferedServerURL = serverURL
+        showServerBanner(for: serverURL)
+    }
+
+    private func normalizeLocalURLString(_ raw: String) -> String {
+        raw
+            .replacingOccurrences(of: "0.0.0.0", with: "localhost")
+            .replacingOccurrences(of: "127.0.0.1", with: "localhost")
+    }
+
+    private func showServerBanner(for url: URL) {
+        hideServerBanner()
+        detectedServerURL = url
+
+        let banner = NSView()
+        banner.wantsLayer = true
+        banner.layer?.backgroundColor = NSColor(hex: "#313244")?.cgColor
+        banner.layer?.cornerRadius = 6
+        banner.layer?.borderWidth = 1
+        banner.layer?.borderColor = NSColor(hex: "#45475a")?.cgColor
+        banner.translatesAutoresizingMaskIntoConstraints = false
+
+        let host = url.host ?? "localhost"
+        let port = url.port.map { ":\($0)" } ?? ""
+        let openButton = NSButton(
+            title: "Open \(host)\(port) in browser",
+            target: self,
+            action: #selector(serverBannerOpenClicked)
+        )
+        openButton.bezelStyle = .inline
+        openButton.isBordered = false
+        openButton.contentTintColor = NSColor(hex: "#89b4fa")
+        openButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        openButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let closeButton = NSButton(
+            title: "✕",
+            target: self,
+            action: #selector(serverBannerDismissClicked)
+        )
+        closeButton.bezelStyle = .inline
+        closeButton.isBordered = false
+        closeButton.contentTintColor = NSColor(hex: "#6c7086")
+        closeButton.font = NSFont.systemFont(ofSize: 11)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+
+        banner.addSubview(openButton)
+        banner.addSubview(closeButton)
+        view.addSubview(banner)
+
+        NSLayoutConstraint.activate([
+            banner.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            banner.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            banner.heightAnchor.constraint(equalToConstant: 30),
+
+            openButton.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 10),
+            openButton.centerYAnchor.constraint(equalTo: banner.centerYAnchor),
+
+            closeButton.leadingAnchor.constraint(equalTo: openButton.trailingAnchor, constant: 8),
+            closeButton.trailingAnchor.constraint(equalTo: banner.trailingAnchor, constant: -8),
+            closeButton.centerYAnchor.constraint(equalTo: banner.centerYAnchor)
+        ])
+
+        serverBannerView = banner
+
+        let dismissWork = DispatchWorkItem { [weak self] in
+            self?.hideServerBanner()
+        }
+        serverBannerDismissWork = dismissWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: dismissWork)
+    }
+
+    private func hideServerBanner() {
+        serverBannerDismissWork?.cancel()
+        serverBannerDismissWork = nil
+        serverBannerView?.removeFromSuperview()
+        serverBannerView = nil
+    }
+
+    @objc private func serverBannerOpenClicked() {
+        if let url = detectedServerURL {
+            delegate?.terminalRequestsOpenURL(self, url: url)
+        }
+        hideServerBanner()
+    }
+
+    @objc private func serverBannerDismissClicked() {
+        hideServerBanner()
+    }
+
+    // MARK: - Shell integration (OSC 133 command marks)
+
+    private func consumeCommandMarkSequences(from output: String) {
+        commandMarkBuffer += output
+        if commandMarkBuffer.count > 2_000 {
+            commandMarkBuffer = String(commandMarkBuffer.suffix(2_000))
+        }
+
+        guard let regex = Self.commandMarkRegex else { return }
+
+        let searchRange = NSRange(commandMarkBuffer.startIndex..<commandMarkBuffer.endIndex, in: commandMarkBuffer)
+        let matches = regex.matches(in: commandMarkBuffer, range: searchRange)
+        guard !matches.isEmpty else { return }
+
+        var consumedUpperBound = commandMarkBuffer.startIndex
+        for match in matches {
+            if let matchRange = Range(match.range, in: commandMarkBuffer) {
+                consumedUpperBound = matchRange.upperBound
+            }
+            guard let kindRange = Range(match.range(at: 1), in: commandMarkBuffer) else { continue }
+            let kind = String(commandMarkBuffer[kindRange])
+            var parameter: String?
+            if match.range(at: 2).location != NSNotFound,
+               let parameterRange = Range(match.range(at: 2), in: commandMarkBuffer) {
+                parameter = String(commandMarkBuffer[parameterRange])
+            }
+            handleCommandMark(kind: kind, parameter: parameter)
+        }
+        commandMarkBuffer = String(commandMarkBuffer[consumedUpperBound...])
+    }
+
+    private func handleCommandMark(kind: String, parameter: String?) {
+        markShellIntegrationDetected()
+
+        switch kind {
+        case "A":
+            // Prompt drawn — remember where, for jump-to-prompt navigation.
+            if let row = absoluteCursorRow() {
+                promptMarkRows.append(row)
+                if promptMarkRows.count > Self.maxPromptMarks {
+                    promptMarkRows.removeFirst(promptMarkRows.count - Self.maxPromptMarks)
+                }
+            }
+        case "C":
+            // Command started — clear the previous command's status.
+            commandStartDate = Date()
+            delegate?.terminalDidUpdateCommandStatus(self, status: nil)
+        case "D":
+            let exitCode = parameter.flatMap { Int($0) } ?? 0
+            let duration = commandStartDate.map { Date().timeIntervalSince($0) }
+            commandStartDate = nil
+            delegate?.terminalDidUpdateCommandStatus(
+                self,
+                status: TerminalCommandStatus(exitCode: exitCode, duration: duration)
+            )
+        default:
+            break
+        }
+    }
+
+    /// The cursor's absolute row in the scrollback buffer, derived from
+    /// public SwiftTerm API (yBase itself is not exposed).
+    private func absoluteCursorRow() -> Int? {
+        let buffer = terminalView.getTerminal().buffer
+
+        // Pinned at the bottom (or no scrollback yet): yDisp == yBase.
+        if !terminalView.canScroll || terminalView.scrollPosition >= 1.0 {
+            return buffer.yDisp + buffer.y
+        }
+
+        // Scrolled up: recover yBase from scrollPosition = yDisp / maxScrollback.
+        let position = terminalView.scrollPosition
+        guard position > 0, buffer.yDisp > 0 else { return nil }
+        let yBase = Int((Double(buffer.yDisp) / position).rounded())
+        return yBase + buffer.y
+    }
+
+    /// Scrolls so the most recent prompt above the current view lands at the top.
+    func scrollToPreviousPrompt() {
+        let currentTop = terminalView.getTerminal().buffer.yDisp
+        guard let target = promptMarkRows.last(where: { $0 < currentTop }) else {
+            terminalView.scrollUp(lines: terminalView.getTerminal().rows)
+            return
+        }
+        terminalView.scrollUp(lines: currentTop - target)
+    }
+
+    /// Scrolls so the next prompt below the current view lands at the top.
+    func scrollToNextPrompt() {
+        let currentTop = terminalView.getTerminal().buffer.yDisp
+        guard let target = promptMarkRows.first(where: { $0 > currentTop }) else {
+            terminalView.scrollDown(lines: terminalView.getTerminal().rows)
+            return
+        }
+        terminalView.scrollDown(lines: target - currentTop)
+    }
+
     private func consumeAgentStatusSequences(from output: String) -> Bool {
         agentStatusSequenceBuffer += output
         if agentStatusSequenceBuffer.count > 2_000 {
             agentStatusSequenceBuffer = String(agentStatusSequenceBuffer.suffix(2_000))
         }
 
-        let escapedTermprop = NSRegularExpression.escapedPattern(for: Self.agentStatusTermprop)
-        let pattern = "\u{001B}\\]666;\(escapedTermprop)=([A-Za-z_-]+)(?:\u{001B}\\\\|\u{0007})"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        guard let regex = Self.agentStatusRegex else {
             return false
         }
 
@@ -444,8 +884,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func normalizeTerminalOutput(_ output: String) -> String {
-        return output
-            .replacingOccurrences(of: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]", with: "", options: .regularExpression)
+        guard let regex = Self.ansiEscapeRegex else { return output.lowercased() }
+        let range = NSRange(output.startIndex..<output.endIndex, in: output)
+        return regex.stringByReplacingMatches(in: output, range: range, withTemplate: "")
             .lowercased()
     }
 
@@ -518,6 +959,31 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         view.window?.makeFirstResponder(terminalView)
     }
 
+    // MARK: - Scrollback search
+
+    func showFindBar() {
+        if findBar == nil {
+            let bar = TerminalFindBar()
+            bar.delegate = self
+            bar.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(bar)
+            NSLayoutConstraint.activate([
+                bar.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+                bar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
+            ])
+            findBar = bar
+        }
+        findBar?.isHidden = false
+        findBar?.focusSearchField()
+    }
+
+    func hideFindBar() {
+        guard let findBar = findBar, !findBar.isHidden else { return }
+        findBar.isHidden = true
+        terminalView.clearSearch()
+        focusTerminal()
+    }
+
     func applyConfig(_ newConfig: Config) {
         print("🔄 Applying config to terminal: font=\(newConfig.font.family) size=\(newConfig.font.size) blur=\(newConfig.window.enableBlur)")
         self.config = newConfig
@@ -565,6 +1031,29 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         MainActor.assumeIsolated {
             cwdTimer?.invalidate()
             agentDoneTimer?.invalidate()
+            if let scrollEventMonitor {
+                NSEvent.removeMonitor(scrollEventMonitor)
+            }
         }
+    }
+}
+
+extension TerminalViewController: TerminalFindBarDelegate {
+    func findBar(_ bar: TerminalFindBar, searchChanged term: String) {
+        terminalView.clearSearch()
+        guard !term.isEmpty else { return }
+        terminalView.findNext(term)
+    }
+
+    func findBar(_ bar: TerminalFindBar, findNext term: String) {
+        terminalView.findNext(term)
+    }
+
+    func findBar(_ bar: TerminalFindBar, findPrevious term: String) {
+        terminalView.findPrevious(term)
+    }
+
+    func findBarDidClose(_ bar: TerminalFindBar) {
+        hideFindBar()
     }
 }

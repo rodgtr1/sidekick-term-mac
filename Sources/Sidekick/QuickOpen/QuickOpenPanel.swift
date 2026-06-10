@@ -82,10 +82,20 @@ class QuickOpenPanel: NSPanel {
         searchField.font = NSFont.systemFont(ofSize: 14)
         searchField.translatesAutoresizingMaskIntoConstraints = false
 
-        // Override search field to handle Escape key
+        // Route escape/arrows/enter from the field editor to the panel
         searchFieldDelegate = SearchFieldDelegate()
         searchFieldDelegate?.escapeHandler = { [weak self] in
             self?.close()
+        }
+        searchFieldDelegate?.moveUpHandler = { [weak self] in
+            self?.selectPreviousRow()
+        }
+        searchFieldDelegate?.moveDownHandler = { [weak self] in
+            self?.selectNextRow()
+        }
+        searchFieldDelegate?.enterHandler = { [weak self] in
+            guard let self = self, let selectedRow = self.getSelectedRow() else { return }
+            self.selectFileAtRow(selectedRow)
         }
         searchField.delegate = searchFieldDelegate
 
@@ -470,13 +480,30 @@ class QuickOpenCellView: NSTableCellView {
     }
 }
 
-// MARK: - Search Field Delegate for Escape Key
+// MARK: - Search Field Delegate
+// Routes keys the field editor would otherwise swallow (escape, arrows,
+// enter) back to the owning panel so list navigation works while typing.
 class SearchFieldDelegate: NSObject, NSSearchFieldDelegate {
     var escapeHandler: (() -> Void)?
+    var moveUpHandler: (() -> Void)?
+    var moveDownHandler: (() -> Void)?
+    var enterHandler: (() -> Void)?
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
             escapeHandler?()
+            return true
+        }
+        if commandSelector == #selector(NSResponder.moveUp(_:)), let moveUpHandler {
+            moveUpHandler()
+            return true
+        }
+        if commandSelector == #selector(NSResponder.moveDown(_:)), let moveDownHandler {
+            moveDownHandler()
+            return true
+        }
+        if commandSelector == #selector(NSResponder.insertNewline(_:)), let enterHandler {
+            enterHandler()
             return true
         }
         return false

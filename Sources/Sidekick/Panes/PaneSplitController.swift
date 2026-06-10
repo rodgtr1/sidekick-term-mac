@@ -295,7 +295,7 @@ class PaneSplitController: NSViewController {
         updatePaneCloseButtons()
     }
 
-    func splitWithBrowser(direction: SplitDirection) {
+    func splitWithBrowser(direction: SplitDirection, initialURL: URL? = nil) {
         print("🌐 splitWithBrowser called, current panes: \(panes.count), max: \(Limits.maxPanesPerTab)")
         guard panes.count < Limits.maxPanesPerTab else {
             print("⚠️ Max panes reached, not adding browser")
@@ -312,7 +312,7 @@ class PaneSplitController: NSViewController {
         }
 
         let newPane = PaneModel()
-        newPane.createBrowserViewController()
+        newPane.createBrowserViewController(initialURL: initialURL)
         panes.append(newPane)
         delegate?.paneSplitController(self, didAddPane: newPane, at: panes.count - 1)
         print("🌐 Browser pane created and added, total panes now: \(panes.count)")

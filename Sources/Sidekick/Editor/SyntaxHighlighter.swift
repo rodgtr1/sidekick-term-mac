@@ -5,6 +5,12 @@ class SyntaxHighlighter {
     private let colorScheme: SyntaxColorScheme
     var fileExtension: String = ""
 
+    /// Files larger than this (UTF-16 units) are not highlighted at all.
+    static let maxHighlightLength = 1_000_000
+
+    /// Compiled regexes are cached per pattern; patterns are static per language.
+    private var regexCache: [String: NSRegularExpression] = [:]
+
     struct SyntaxColorScheme {
         let text: NSColor
         let background: NSColor
@@ -32,52 +38,65 @@ class SyntaxHighlighter {
         self.colorScheme = colorScheme
     }
 
+    /// Highlights the whole document.
     func highlightSyntax() {
-        guard let textStorage = textView.textStorage else { return }
+        highlightSyntax(in: nil)
+    }
 
-        let text = textStorage.string
-        let range = NSRange(location: 0, length: text.count)
+    /// Highlights only the paragraphs overlapping `dirtyRange` (the whole
+    /// document when nil), so edits don't re-scan the entire file.
+    func highlightSyntax(in dirtyRange: NSRange?) {
+        guard let textStorage = textView.textStorage else { return }
+        guard textStorage.length <= Self.maxHighlightLength else { return }
+
+        let nsText = textStorage.string as NSString
+        let fullRange = NSRange(location: 0, length: nsText.length)
+
+        let range: NSRange
+        if let dirtyRange = dirtyRange {
+            let clamped = NSIntersectionRange(dirtyRange, fullRange)
+            range = nsText.paragraphRange(for: clamped)
+        } else {
+            range = fullRange
+        }
+        guard range.length > 0 else { return }
+
+        textStorage.beginEditing()
+        defer { textStorage.endEditing() }
 
         // Reset to base text color
         textStorage.removeAttribute(.foregroundColor, range: range)
         textStorage.addAttribute(.foregroundColor, value: colorScheme.text, range: range)
 
-        // Detect file type from extension
-        let fileExtension = getFileExtension()
-
         switch fileExtension {
         case "swift":
-            highlightSwift(text: text, textStorage: textStorage, range: range)
+            highlightSwift(text: nsText, textStorage: textStorage, range: range)
         case "js", "ts", "jsx", "tsx":
-            highlightJavaScript(text: text, textStorage: textStorage, range: range)
+            highlightJavaScript(text: nsText, textStorage: textStorage, range: range)
         case "py":
-            highlightPython(text: text, textStorage: textStorage, range: range)
+            highlightPython(text: nsText, textStorage: textStorage, range: range)
         case "rs":
-            highlightRust(text: text, textStorage: textStorage, range: range)
+            highlightRust(text: nsText, textStorage: textStorage, range: range)
         case "go":
-            highlightGo(text: text, textStorage: textStorage, range: range)
+            highlightGo(text: nsText, textStorage: textStorage, range: range)
         case "c", "cpp", "cc", "cxx", "h", "hpp":
-            highlightC(text: text, textStorage: textStorage, range: range)
+            highlightC(text: nsText, textStorage: textStorage, range: range)
         case "java":
-            highlightJava(text: text, textStorage: textStorage, range: range)
+            highlightJava(text: nsText, textStorage: textStorage, range: range)
         case "html", "htm":
-            highlightHTML(text: text, textStorage: textStorage, range: range)
+            highlightHTML(text: nsText, textStorage: textStorage, range: range)
         case "css":
-            highlightCSS(text: text, textStorage: textStorage, range: range)
+            highlightCSS(text: nsText, textStorage: textStorage, range: range)
         case "json":
-            highlightJSON(text: text, textStorage: textStorage, range: range)
+            highlightJSON(text: nsText, textStorage: textStorage, range: range)
         case "md", "markdown":
-            highlightMarkdown(text: text, textStorage: textStorage, range: range)
+            highlightMarkdown(text: nsText, textStorage: textStorage, range: range)
         default:
-            highlightGeneric(text: text, textStorage: textStorage, range: range)
+            highlightGeneric(text: nsText, textStorage: textStorage, range: range)
         }
     }
 
-    private func getFileExtension() -> String {
-        return fileExtension
-    }
-
-    private func highlightSwift(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightSwift(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         let keywords = [
             "class", "struct", "enum", "protocol", "extension", "func", "var", "let", "if", "else", "for", "while", "switch", "case", "default", "break", "continue", "return", "import", "private", "public", "internal", "fileprivate", "static", "final", "override", "mutating", "nonmutating", "convenience", "required", "optional", "weak", "strong", "unowned", "lazy", "dynamic", "inout", "throws", "rethrows", "try", "catch", "defer", "guard", "where", "associatedtype", "typealias", "self", "Self", "super", "nil", "true", "false", "init", "deinit", "subscript", "operator", "precedencegroup", "infix", "prefix", "postfix", "left", "right", "none", "assignment", "higherThan", "lowerThan", "as", "is", "in", "some", "any"
         ]
@@ -86,157 +105,146 @@ class SyntaxHighlighter {
             "Int", "Float", "Double", "String", "Bool", "Array", "Dictionary", "Set", "Optional", "Result", "NSString", "NSArray", "NSDictionary", "NSSet", "NSNumber", "NSData", "NSDate", "NSURL", "NSError", "NSObject", "UIView", "UIViewController", "NSView", "NSViewController"
         ]
 
-        highlightKeywords(keywords, in: text, textStorage: textStorage, color: colorScheme.keyword)
-        highlightKeywords(types, in: text, textStorage: textStorage, color: colorScheme.type)
-        highlightComments(in: text, textStorage: textStorage, commentStyle: .slashSlash)
-        highlightStrings(in: text, textStorage: textStorage)
-        highlightNumbers(in: text, textStorage: textStorage)
+        highlightKeywords(keywords, in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
+        highlightKeywords(types, in: text, textStorage: textStorage, range: range, color: colorScheme.type)
+        highlightComments(in: text, textStorage: textStorage, range: range, commentStyle: .slashSlash)
+        highlightStrings(in: text, textStorage: textStorage, range: range)
+        highlightNumbers(in: text, textStorage: textStorage, range: range)
     }
 
-    private func highlightJavaScript(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightJavaScript(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         let keywords = [
             "var", "let", "const", "function", "class", "extends", "import", "export", "from", "default", "if", "else", "for", "while", "do", "switch", "case", "break", "continue", "return", "try", "catch", "finally", "throw", "new", "delete", "typeof", "instanceof", "in", "of", "this", "super", "static", "async", "await", "yield", "true", "false", "null", "undefined"
         ]
 
         let types = ["Array", "Object", "String", "Number", "Boolean", "Function", "Date", "RegExp", "Error", "Promise", "Map", "Set", "WeakMap", "WeakSet"]
 
-        highlightKeywords(keywords, in: text, textStorage: textStorage, color: colorScheme.keyword)
-        highlightKeywords(types, in: text, textStorage: textStorage, color: colorScheme.type)
-        highlightComments(in: text, textStorage: textStorage, commentStyle: .slashSlash)
-        highlightStrings(in: text, textStorage: textStorage)
-        highlightNumbers(in: text, textStorage: textStorage)
+        highlightKeywords(keywords, in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
+        highlightKeywords(types, in: text, textStorage: textStorage, range: range, color: colorScheme.type)
+        highlightComments(in: text, textStorage: textStorage, range: range, commentStyle: .slashSlash)
+        highlightStrings(in: text, textStorage: textStorage, range: range)
+        highlightNumbers(in: text, textStorage: textStorage, range: range)
     }
 
-    private func highlightPython(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightPython(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         let keywords = [
             "def", "class", "if", "elif", "else", "for", "while", "break", "continue", "return", "import", "from", "as", "try", "except", "finally", "raise", "with", "lambda", "yield", "global", "nonlocal", "and", "or", "not", "is", "in", "True", "False", "None", "pass", "del", "assert"
         ]
 
         let types = ["int", "float", "str", "bool", "list", "dict", "tuple", "set", "frozenset", "bytes", "bytearray"]
 
-        highlightKeywords(keywords, in: text, textStorage: textStorage, color: colorScheme.keyword)
-        highlightKeywords(types, in: text, textStorage: textStorage, color: colorScheme.type)
-        highlightComments(in: text, textStorage: textStorage, commentStyle: .hash)
-        highlightStrings(in: text, textStorage: textStorage)
-        highlightNumbers(in: text, textStorage: textStorage)
+        highlightKeywords(keywords, in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
+        highlightKeywords(types, in: text, textStorage: textStorage, range: range, color: colorScheme.type)
+        highlightComments(in: text, textStorage: textStorage, range: range, commentStyle: .hash)
+        highlightStrings(in: text, textStorage: textStorage, range: range)
+        highlightNumbers(in: text, textStorage: textStorage, range: range)
     }
 
-    private func highlightRust(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightRust(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         let keywords = [
             "fn", "let", "mut", "const", "static", "struct", "enum", "impl", "trait", "mod", "pub", "use", "if", "else", "match", "for", "while", "loop", "break", "continue", "return", "where", "move", "ref", "self", "Self", "super", "crate", "true", "false", "unsafe", "async", "await"
         ]
 
         let types = ["i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "f32", "f64", "bool", "char", "str", "String", "Vec", "HashMap", "Result", "Option", "Box", "Rc", "Arc"]
 
-        highlightKeywords(keywords, in: text, textStorage: textStorage, color: colorScheme.keyword)
-        highlightKeywords(types, in: text, textStorage: textStorage, color: colorScheme.type)
-        highlightComments(in: text, textStorage: textStorage, commentStyle: .slashSlash)
-        highlightStrings(in: text, textStorage: textStorage)
-        highlightNumbers(in: text, textStorage: textStorage)
+        highlightKeywords(keywords, in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
+        highlightKeywords(types, in: text, textStorage: textStorage, range: range, color: colorScheme.type)
+        highlightComments(in: text, textStorage: textStorage, range: range, commentStyle: .slashSlash)
+        highlightStrings(in: text, textStorage: textStorage, range: range)
+        highlightNumbers(in: text, textStorage: textStorage, range: range)
     }
 
-    private func highlightGo(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightGo(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         let keywords = [
             "package", "import", "func", "var", "const", "type", "struct", "interface", "if", "else", "for", "range", "switch", "case", "default", "break", "continue", "return", "go", "defer", "select", "chan", "map", "make", "new", "append", "len", "cap", "copy", "delete", "close", "true", "false", "nil"
         ]
 
         let types = ["int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float32", "float64", "complex64", "complex128", "bool", "byte", "rune", "string", "error"]
 
-        highlightKeywords(keywords, in: text, textStorage: textStorage, color: colorScheme.keyword)
-        highlightKeywords(types, in: text, textStorage: textStorage, color: colorScheme.type)
-        highlightComments(in: text, textStorage: textStorage, commentStyle: .slashSlash)
-        highlightStrings(in: text, textStorage: textStorage)
-        highlightNumbers(in: text, textStorage: textStorage)
+        highlightKeywords(keywords, in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
+        highlightKeywords(types, in: text, textStorage: textStorage, range: range, color: colorScheme.type)
+        highlightComments(in: text, textStorage: textStorage, range: range, commentStyle: .slashSlash)
+        highlightStrings(in: text, textStorage: textStorage, range: range)
+        highlightNumbers(in: text, textStorage: textStorage, range: range)
     }
 
-    private func highlightC(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightC(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         let keywords = [
             "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while", "_Bool", "_Complex", "_Imaginary", "true", "false"
         ]
 
         let types = ["int", "char", "float", "double", "void", "long", "short", "unsigned", "signed", "bool", "size_t", "ssize_t", "ptrdiff_t", "wchar_t"]
 
-        highlightKeywords(keywords, in: text, textStorage: textStorage, color: colorScheme.keyword)
-        highlightKeywords(types, in: text, textStorage: textStorage, color: colorScheme.type)
-        highlightComments(in: text, textStorage: textStorage, commentStyle: .slashSlash)
-        highlightStrings(in: text, textStorage: textStorage)
-        highlightNumbers(in: text, textStorage: textStorage)
+        highlightKeywords(keywords, in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
+        highlightKeywords(types, in: text, textStorage: textStorage, range: range, color: colorScheme.type)
+        highlightComments(in: text, textStorage: textStorage, range: range, commentStyle: .slashSlash)
+        highlightStrings(in: text, textStorage: textStorage, range: range)
+        highlightNumbers(in: text, textStorage: textStorage, range: range)
     }
 
-    private func highlightJava(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightJava(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         let keywords = [
             "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const", "continue", "default", "do", "double", "else", "enum", "extends", "final", "finally", "float", "for", "goto", "if", "implements", "import", "instanceof", "int", "interface", "long", "native", "new", "package", "private", "protected", "public", "return", "short", "static", "strictfp", "super", "switch", "synchronized", "this", "throw", "throws", "transient", "try", "void", "volatile", "while", "true", "false", "null"
         ]
 
         let types = ["String", "Integer", "Double", "Float", "Boolean", "Character", "Byte", "Short", "Long", "Object", "Class", "Array", "List", "Map", "Set", "Collection"]
 
-        highlightKeywords(keywords, in: text, textStorage: textStorage, color: colorScheme.keyword)
-        highlightKeywords(types, in: text, textStorage: textStorage, color: colorScheme.type)
-        highlightComments(in: text, textStorage: textStorage, commentStyle: .slashSlash)
-        highlightStrings(in: text, textStorage: textStorage)
-        highlightNumbers(in: text, textStorage: textStorage)
+        highlightKeywords(keywords, in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
+        highlightKeywords(types, in: text, textStorage: textStorage, range: range, color: colorScheme.type)
+        highlightComments(in: text, textStorage: textStorage, range: range, commentStyle: .slashSlash)
+        highlightStrings(in: text, textStorage: textStorage, range: range)
+        highlightNumbers(in: text, textStorage: textStorage, range: range)
     }
 
-    private func highlightHTML(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightHTML(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         // HTML tags
-        let tagPattern = "<[^>]+>"
-        highlightPattern(tagPattern, in: text, textStorage: textStorage, color: colorScheme.keyword)
+        highlightPattern("<[^>]+>", in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
 
         // HTML comments
-        let commentPattern = "<!--[\\s\\S]*?-->"
-        highlightPattern(commentPattern, in: text, textStorage: textStorage, color: colorScheme.comment)
+        highlightPattern("<!--[\\s\\S]*?-->", in: text, textStorage: textStorage, range: range, color: colorScheme.comment)
 
         // Attribute values
-        let attributePattern = "\"[^\"]*\""
-        highlightPattern(attributePattern, in: text, textStorage: textStorage, color: colorScheme.string)
+        highlightPattern("\"[^\"]*\"", in: text, textStorage: textStorage, range: range, color: colorScheme.string)
     }
 
-    private func highlightCSS(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightCSS(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         // CSS properties
-        let propertyPattern = "\\b[a-z-]+(?=\\s*:)"
-        highlightPattern(propertyPattern, in: text, textStorage: textStorage, color: colorScheme.keyword)
+        highlightPattern("\\b[a-z-]+(?=\\s*:)", in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
 
         // CSS values
-        let valuePattern = "(?<=:)\\s*[^;]+"
-        highlightPattern(valuePattern, in: text, textStorage: textStorage, color: colorScheme.string)
+        highlightPattern("(?<=:)\\s*[^;]+", in: text, textStorage: textStorage, range: range, color: colorScheme.string)
 
         // CSS comments
-        let commentPattern = "/\\*[\\s\\S]*?\\*/"
-        highlightPattern(commentPattern, in: text, textStorage: textStorage, color: colorScheme.comment)
+        highlightPattern("/\\*[\\s\\S]*?\\*/", in: text, textStorage: textStorage, range: range, color: colorScheme.comment)
     }
 
-    private func highlightJSON(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightJSON(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         // JSON strings
-        let stringPattern = "\"([^\"\\\\]|\\\\.)*\""
-        highlightPattern(stringPattern, in: text, textStorage: textStorage, color: colorScheme.string)
+        highlightPattern("\"([^\"\\\\]|\\\\.)*\"", in: text, textStorage: textStorage, range: range, color: colorScheme.string)
 
         // JSON numbers
-        highlightNumbers(in: text, textStorage: textStorage)
+        highlightNumbers(in: text, textStorage: textStorage, range: range)
 
         // JSON booleans and null
-        let keywords = ["true", "false", "null"]
-        highlightKeywords(keywords, in: text, textStorage: textStorage, color: colorScheme.keyword)
+        highlightKeywords(["true", "false", "null"], in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
     }
 
-    private func highlightMarkdown(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightMarkdown(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         // Headers
-        let headerPattern = "^#{1,6}\\s+.*$"
-        highlightPattern(headerPattern, in: text, textStorage: textStorage, color: colorScheme.keyword)
+        highlightPattern("^#{1,6}\\s+.*$", in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
 
         // Code blocks
-        let codeBlockPattern = "`[^`]+`|```[\\s\\S]*?```"
-        highlightPattern(codeBlockPattern, in: text, textStorage: textStorage, color: colorScheme.function)
+        highlightPattern("`[^`]+`|```[\\s\\S]*?```", in: text, textStorage: textStorage, range: range, color: colorScheme.function)
 
         // Links
-        let linkPattern = "\\[([^\\]]+)\\]\\([^)]+\\)"
-        highlightPattern(linkPattern, in: text, textStorage: textStorage, color: colorScheme.string)
+        highlightPattern("\\[([^\\]]+)\\]\\([^)]+\\)", in: text, textStorage: textStorage, range: range, color: colorScheme.string)
     }
 
-    private func highlightGeneric(text: String, textStorage: NSTextStorage, range: NSRange) {
+    private func highlightGeneric(text: NSString, textStorage: NSTextStorage, range: NSRange) {
         // Generic highlighting for unknown file types
-        highlightComments(in: text, textStorage: textStorage, commentStyle: .slashSlash)
-        highlightStrings(in: text, textStorage: textStorage)
-        highlightNumbers(in: text, textStorage: textStorage)
+        highlightComments(in: text, textStorage: textStorage, range: range, commentStyle: .slashSlash)
+        highlightStrings(in: text, textStorage: textStorage, range: range)
+        highlightNumbers(in: text, textStorage: textStorage, range: range)
     }
 
     // MARK: - Helper Methods
@@ -247,14 +255,15 @@ class SyntaxHighlighter {
         case slashStar
     }
 
-    private func highlightKeywords(_ keywords: [String], in text: String, textStorage: NSTextStorage, color: NSColor) {
-        for keyword in keywords {
-            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: keyword))\\b"
-            highlightPattern(pattern, in: text, textStorage: textStorage, color: color)
-        }
+    private func highlightKeywords(_ keywords: [String], in text: NSString, textStorage: NSTextStorage, range: NSRange, color: NSColor) {
+        // One alternation regex for the whole keyword set instead of one
+        // regex pass per keyword.
+        let escaped = keywords.map { NSRegularExpression.escapedPattern(for: $0) }
+        let pattern = "\\b(?:\(escaped.joined(separator: "|")))\\b"
+        highlightPattern(pattern, in: text, textStorage: textStorage, range: range, color: color)
     }
 
-    private func highlightComments(in text: String, textStorage: NSTextStorage, commentStyle: CommentStyle) {
+    private func highlightComments(in text: NSString, textStorage: NSTextStorage, range: NSRange, commentStyle: CommentStyle) {
         let pattern: String
         switch commentStyle {
         case .slashSlash:
@@ -265,36 +274,38 @@ class SyntaxHighlighter {
             pattern = "/\\*[\\s\\S]*?\\*/"
         }
 
-        highlightPattern(pattern, in: text, textStorage: textStorage, color: colorScheme.comment)
+        highlightPattern(pattern, in: text, textStorage: textStorage, range: range, color: colorScheme.comment)
     }
 
-    private func highlightStrings(in text: String, textStorage: NSTextStorage) {
+    private func highlightStrings(in text: NSString, textStorage: NSTextStorage, range: NSRange) {
         // Double quoted strings
-        let doubleQuotePattern = "\"([^\"\\\\]|\\\\.)*\""
-        highlightPattern(doubleQuotePattern, in: text, textStorage: textStorage, color: colorScheme.string)
+        highlightPattern("\"([^\"\\\\]|\\\\.)*\"", in: text, textStorage: textStorage, range: range, color: colorScheme.string)
 
         // Single quoted strings
-        let singleQuotePattern = "'([^'\\\\]|\\\\.)*'"
-        highlightPattern(singleQuotePattern, in: text, textStorage: textStorage, color: colorScheme.string)
+        highlightPattern("'([^'\\\\]|\\\\.)*'", in: text, textStorage: textStorage, range: range, color: colorScheme.string)
     }
 
-    private func highlightNumbers(in text: String, textStorage: NSTextStorage) {
+    private func highlightNumbers(in text: NSString, textStorage: NSTextStorage, range: NSRange) {
         // Integer and floating point numbers
-        let numberPattern = "\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b"
-        highlightPattern(numberPattern, in: text, textStorage: textStorage, color: colorScheme.number)
+        highlightPattern("\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b", in: text, textStorage: textStorage, range: range, color: colorScheme.number)
     }
 
-    private func highlightPattern(_ pattern: String, in text: String, textStorage: NSTextStorage, color: NSColor) {
-        do {
-            let regex = try NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
-            let range = NSRange(location: 0, length: text.count)
-            let matches = regex.matches(in: text, options: [], range: range)
+    private func highlightPattern(_ pattern: String, in text: NSString, textStorage: NSTextStorage, range: NSRange, color: NSColor) {
+        guard let regex = cachedRegex(for: pattern) else { return }
 
-            for match in matches {
+        regex.enumerateMatches(in: text as String, options: [], range: range) { match, _, _ in
+            if let match = match {
                 textStorage.addAttribute(.foregroundColor, value: color, range: match.range)
             }
-        } catch {
-            // Silently ignore regex errors
         }
+    }
+
+    private func cachedRegex(for pattern: String) -> NSRegularExpression? {
+        if let cached = regexCache[pattern] {
+            return cached
+        }
+        let regex = try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
+        regexCache[pattern] = regex
+        return regex
     }
 }
