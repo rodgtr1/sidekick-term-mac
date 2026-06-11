@@ -13,6 +13,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Keep the on-disk shell integration scripts in sync with this build
         ShellIntegration.installScripts()
 
+        // Clear out yesterday's pasted-image temp files
+        DispatchQueue.global(qos: .utility).async {
+            ImagePasteStore.pruneOldFiles()
+        }
+
         setupMenuBar()
         print("✅ Menu bar setup completed")
 

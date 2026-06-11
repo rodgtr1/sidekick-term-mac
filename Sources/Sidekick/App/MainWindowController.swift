@@ -1353,10 +1353,9 @@ extension MainWindowController {
             return false
         }
 
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("sidekick-paste-\(UUID().uuidString.prefix(8)).png")
+        let url: URL
         do {
-            try png.write(to: url)
+            url = try ImagePasteStore.store(png: png)
         } catch {
             print("📋 Failed to write pasted image: \(error)")
             return false
