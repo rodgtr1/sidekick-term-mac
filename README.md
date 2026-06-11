@@ -52,6 +52,29 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - Push/pull operations with progress feedback
 - Branch display and auto-refresh
 
+✅ **Session Restore**
+- Tabs, split panes, and working directories saved to `~/.config/sidekick/session.json`
+- Autosaves every minute and on window close; restores on launch
+- Disable with `restore_session = false` under `[behavior]` in config.toml
+
+✅ **Agent Edit Review (Claude Code hook)**
+- `sidekick-hook` is a PreToolUse hook for Write/Edit/MultiEdit: the proposed
+  change appears as a diff sheet in Sidekick with Accept/Reject buttons
+- Reject blocks the edit (exit 2); if Sidekick isn't running the edit is allowed
+- Install with `scripts/install-agent-status-hooks`
+
+✅ **Quality of Life**
+- App-wide font zoom: `Cmd+=` / `Cmd+-` / `Cmd+0`
+- Paste an image from the clipboard into a terminal (`Cmd+V`): it's written to
+  a temp PNG and the quoted path is typed — handy for handing screenshots to agents
+- Rename tabs (right-click) and drag tabs to reorder
+- Run-panel tasks run in a dedicated split below with a running/finished/failed
+  dot; an optional `open_browser = "http://..."` field opens the embedded browser
+- macOS notifications when an agent waits for input / finishes or a long
+  command (≥30s) ends while the app is in the background
+- Activity-bar badge counts agents waiting for input
+- config.toml changes apply live (no restart)
+
 ## Keyboard Shortcuts
 
 ### Tabs
@@ -73,7 +96,9 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 
 ### Terminal
 - `Cmd+C` - Copy selected text
-- `Cmd+V` - Paste
+- `Cmd+V` - Paste (clipboard images become a temp PNG path)
+- `Cmd+F` - Find in terminal
+- `Cmd+=` / `Cmd+-` / `Cmd+0` - Zoom in / out / reset (all terminals)
 
 ### Sidebar Panels
 - `Cmd+B` - Toggle sidebar

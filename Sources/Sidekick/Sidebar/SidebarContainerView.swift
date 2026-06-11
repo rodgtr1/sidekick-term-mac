@@ -5,7 +5,12 @@ protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String)
     func sidebarContainer(_ container: SidebarContainerView, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String?)
-    func sidebarContainer(_ container: SidebarContainerView, didRequestRunTask command: String)
+    func sidebarContainer(
+        _ container: SidebarContainerView,
+        didRequestRunTask command: String,
+        openBrowser: String?,
+        taskName: String
+    )
     func sidebarContainer(_ container: SidebarContainerView, didRequestPasteCommand command: String)
     func sidebarContainerTabs(_ container: SidebarContainerView) -> [TabModel]
     func sidebarContainer(_ container: SidebarContainerView, didRequestSwitchToTab index: Int)
@@ -212,6 +217,12 @@ class SidebarContainerView: NSView {
             fileTreeVC.refresh()
         }
     }
+
+    func updateRunTaskStatus(name: String, status: TaskRunStatus?) {
+        if let runPanelVC = panelControllers[.run] as? RunPanelViewController {
+            runPanelVC.setTaskStatus(name: name, status: status)
+        }
+    }
 }
 
 extension SidebarContainerView: AgentDashboardDelegate {
@@ -261,8 +272,13 @@ extension SidebarContainerView: SearchPanelDelegate {
 }
 
 extension SidebarContainerView: RunPanelDelegate {
-    func runPanel(_ panel: RunPanelViewController, didRequestRunTask command: String) {
-        delegate?.sidebarContainer(self, didRequestRunTask: command)
+    func runPanel(
+        _ panel: RunPanelViewController,
+        didRequestRunTask command: String,
+        openBrowser: String?,
+        taskName: String
+    ) {
+        delegate?.sidebarContainer(self, didRequestRunTask: command, openBrowser: openBrowser, taskName: taskName)
     }
 
     func runPanel(_ panel: RunPanelViewController, didRequestPasteCommand command: String) {

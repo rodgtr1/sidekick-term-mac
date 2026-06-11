@@ -2,14 +2,27 @@ import Cocoa
 import TOMLKit
 
 protocol RunPanelDelegate: AnyObject {
-    func runPanel(_ panel: RunPanelViewController, didRequestRunTask command: String)
+    func runPanel(
+        _ panel: RunPanelViewController,
+        didRequestRunTask command: String,
+        openBrowser: String?,
+        taskName: String
+    )
     func runPanel(_ panel: RunPanelViewController, didRequestPasteCommand command: String)
+}
+
+/// Live status of a task launched from the Run panel.
+enum TaskRunStatus {
+    case running
+    case succeeded
+    case failed
 }
 
 struct ProjectTask {
     let name: String
     let cmd: String
     let llmPrompt: String?
+    let openBrowser: String?
 }
 
 class RunPanelViewController: NSViewController {
@@ -24,6 +37,7 @@ class RunPanelViewController: NSViewController {
     private var globalTasks: [Task] = []
     private var projectTasks: [ProjectTask] = []
     private var currentWorkingDirectory: String = FileManager.default.currentDirectoryPath
+    private var taskStatuses: [String: TaskRunStatus] = [:]
 
     private enum TaskSection: Int, CaseIterable {
         case global = 0
@@ -161,7 +175,8 @@ class RunPanelViewController: NSViewController {
                        let name = taskDict["name"]?.string,
                        let cmd = taskDict["cmd"]?.string {
                         let llmPrompt = taskDict["llm_prompt"]?.string ?? taskDict["llm"]?.string
-                        let task = ProjectTask(name: name, cmd: cmd, llmPrompt: llmPrompt)
+                        let openBrowser = taskDict["open_browser"]?.string
+                        let task = ProjectTask(name: name, cmd: cmd, llmPrompt: llmPrompt, openBrowser: openBrowser)
                         projectTasks.append(task)
                     }
                 }
@@ -180,6 +195,17 @@ class RunPanelViewController: NSViewController {
     func updateWorkingDirectory(_ directory: String) {
         currentWorkingDirectory = directory
         loadTasks()
+    }
+
+    /// Called by the window controller as a launched task starts/finishes.
+    func setTaskStatus(name: String, status: TaskRunStatus?) {
+        guard taskStatuses[name] != status else { return }
+        if let status = status {
+            taskStatuses[name] = status
+        } else {
+            taskStatuses.removeValue(forKey: name)
+        }
+        tableView.reloadData()
     }
 
     private func taskForRow(_ row: Int) -> (section: TaskSection, task: Any)? {
@@ -229,8 +255,8 @@ class RunPanelViewController: NSViewController {
         return rows
     }
 
-    private func runTask(_ command: String) {
-        delegate?.runPanel(self, didRequestRunTask: command)
+    private func runTask(name: String, command: String, openBrowser: String?) {
+        delegate?.runPanel(self, didRequestRunTask: command, openBrowser: openBrowser, taskName: name)
     }
 
     private func pasteCommand(_ command: String) {
@@ -268,6 +294,8 @@ extension RunPanelViewController: NSTableViewDelegate {
                 name: globalTask.name,
                 command: globalTask.cmd,
                 llmPrompt: globalTask.llmPrompt,
+                openBrowser: globalTask.openBrowser,
+                status: taskStatuses[globalTask.name],
                 delegate: self
             )
             return cellView
@@ -278,6 +306,8 @@ extension RunPanelViewController: NSTableViewDelegate {
                 name: projectTask.name,
                 command: projectTask.cmd,
                 llmPrompt: projectTask.llmPrompt,
+                openBrowser: projectTask.openBrowser,
+                status: taskStatuses[projectTask.name],
                 delegate: self
             )
             return cellView
@@ -304,8 +334,8 @@ extension RunPanelViewController: NSTableViewDelegate {
 
 // MARK: - TaskCellViewDelegate
 extension RunPanelViewController: TaskCellViewDelegate {
-    func taskCell(_ cell: TaskCellView, didRequestRun command: String) {
-        runTask(command)
+    func taskCell(_ cell: TaskCellView, didRequestRunNamed name: String, command: String, openBrowser: String?) {
+        runTask(name: name, command: command, openBrowser: openBrowser)
     }
 
     func taskCell(_ cell: TaskCellView, didRequestPaste command: String) {
@@ -355,7 +385,7 @@ class TaskSectionHeaderView: NSTableCellView {
 
 // MARK: - Task Cell View Protocol
 protocol TaskCellViewDelegate: AnyObject {
-    func taskCell(_ cell: TaskCellView, didRequestRun command: String)
+    func taskCell(_ cell: TaskCellView, didRequestRunNamed name: String, command: String, openBrowser: String?)
     func taskCell(_ cell: TaskCellView, didRequestPaste command: String)
     func taskCell(_ cell: TaskCellView, didRequestCopyLLM prompt: String)
 }
@@ -370,12 +400,15 @@ private class TaskCellLabel: NSTextField {
 class TaskCellView: NSTableCellView {
     private var nameLabel: NSTextField!
     private var commandLabel: NSTextField!
+    private var statusDot: NSTextField!
     private var pasteButton: NSButton!
     private var runButton: NSButton!
     private var llmButton: NSButton!
 
+    private var currentName: String = ""
     private var currentCommand: String = ""
     private var currentLLMPrompt: String?
+    private var currentOpenBrowser: String?
 
     weak var taskDelegate: TaskCellViewDelegate?
 
@@ -398,12 +431,18 @@ class TaskCellView: NSTableCellView {
             return
         }
 
-        taskDelegate?.taskCell(self, didRequestRun: currentCommand)
+        taskDelegate?.taskCell(self, didRequestRunNamed: currentName, command: currentCommand, openBrowser: currentOpenBrowser)
     }
 
     private func setupUI() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+
+        // Status dot (running/done indicator for tasks launched in a split)
+        statusDot = TaskCellLabel(labelWithString: "●")
+        statusDot.font = NSFont.systemFont(ofSize: 9)
+        statusDot.isHidden = true
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
 
         // Name label
         nameLabel = TaskCellLabel(labelWithString: "")
@@ -434,7 +473,7 @@ class TaskCellView: NSTableCellView {
         runButton.font = NSFont.systemFont(ofSize: 12)
         runButton.target = self
         runButton.action = #selector(runButtonClicked)
-        runButton.toolTip = "Run command"
+        runButton.toolTip = "Run in a split below"
         runButton.translatesAutoresizingMaskIntoConstraints = false
 
         llmButton = NSButton()
@@ -446,6 +485,7 @@ class TaskCellView: NSTableCellView {
         llmButton.toolTip = "Copy LLM prompt"
         llmButton.translatesAutoresizingMaskIntoConstraints = false
 
+        addSubview(statusDot)
         addSubview(nameLabel)
         addSubview(commandLabel)
         addSubview(pasteButton)
@@ -453,9 +493,13 @@ class TaskCellView: NSTableCellView {
         addSubview(llmButton)
 
         NSLayoutConstraint.activate([
+            // Status dot
+            statusDot.centerYAnchor.constraint(equalTo: nameLabel.centerYAnchor),
+            statusDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+
             // Name label
             nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            nameLabel.leadingAnchor.constraint(equalTo: statusDot.trailingAnchor, constant: 4),
             nameLabel.trailingAnchor.constraint(equalTo: llmButton.leadingAnchor, constant: -8),
 
             // Command label
@@ -482,12 +526,34 @@ class TaskCellView: NSTableCellView {
         ])
     }
 
-    func configure(name: String, command: String, llmPrompt: String?, delegate: TaskCellViewDelegate?) {
+    func configure(
+        name: String,
+        command: String,
+        llmPrompt: String?,
+        openBrowser: String?,
+        status: TaskRunStatus?,
+        delegate: TaskCellViewDelegate?
+    ) {
         nameLabel.stringValue = name
         commandLabel.stringValue = command
+        currentName = name
         currentCommand = command
         currentLLMPrompt = llmPrompt
+        currentOpenBrowser = openBrowser
         taskDelegate = delegate
+
+        let theme = Theme.shared.current
+        let style: (color: NSColor, tip: String)? = status.map {
+            switch $0 {
+            case .running: return (theme.yellow, "Running")
+            case .succeeded: return (theme.green, "Finished")
+            case .failed: return (theme.red, "Failed")
+            }
+        }
+        statusDot.stringValue = style == nil ? "" : "●"
+        statusDot.textColor = style?.color
+        statusDot.toolTip = style?.tip
+        statusDot.isHidden = style == nil
 
         // Show/hide LLM button based on whether there's a prompt
         llmButton.isHidden = llmPrompt == nil
@@ -498,7 +564,7 @@ class TaskCellView: NSTableCellView {
     }
 
     @objc private func runButtonClicked() {
-        taskDelegate?.taskCell(self, didRequestRun: currentCommand)
+        taskDelegate?.taskCell(self, didRequestRunNamed: currentName, command: currentCommand, openBrowser: currentOpenBrowser)
     }
 
     @objc private func llmButtonClicked() {

@@ -133,6 +133,15 @@ class MainWindowController: NSWindowController {
     fileprivate var commandPalette: CommandPalettePanel?
     private var keyEventMonitor: Any?
     private let keyboardCommandRouter = KeyboardCommandRouter()
+    private let configWatcher = ConfigWatcher()
+    private var sessionSaveTimer: Timer?
+    /// Last session state written, to skip identical autosave writes.
+    private var lastSavedSession: SessionState?
+    /// Panes running a task from the Run panel, keyed by pane id → task name.
+    private var runningTaskPanes: [UUID: String] = [:]
+    /// Pending hook diff approvals, shown one sheet at a time.
+    private var diffApprovalQueue: [(path: String, old: String, new: String, completion: (Bool) -> Void)] = []
+    private var activeDiffApproval: DiffApprovalPanel?
 
     convenience init() {
         print("🏗️ Creating MainWindowController...")
@@ -174,6 +183,53 @@ class MainWindowController: NSWindowController {
 
         setupIPC()
         print("✅ IPC server started")
+
+        setupConfigWatcher()
+        setupSessionPersistence()
+    }
+
+    private func setupConfigWatcher() {
+        configWatcher.onChange = { [weak self] in
+            guard let self = self else { return }
+            print("🔄 Config file changed on disk, reloading")
+            let newConfig = Config.load()
+            Theme.shared.loadFromConfig(newConfig)
+            self.applyRuntimeConfig(newConfig)
+        }
+        configWatcher.start()
+    }
+
+    private func setupSessionPersistence() {
+        sessionSaveTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.saveSession()
+        }
+
+        if let window = window {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowWillClose),
+                name: NSWindow.willCloseNotification,
+                object: window
+            )
+        }
+    }
+
+    @objc private func windowWillClose() {
+        saveSession()
+
+        // Don't strand hook processes blocked on approval: reject anything
+        // pending so their IPC responses are sent and sockets closed.
+        activeDiffApproval?.cancel()
+        activeDiffApproval = nil
+        drainDiffApprovalQueue()
+    }
+
+    private func drainDiffApprovalQueue() {
+        let pending = diffApprovalQueue
+        diffApprovalQueue.removeAll()
+        for request in pending {
+            request.completion(false)
+        }
     }
 
     private func setupUI() {
@@ -192,8 +248,90 @@ class MainWindowController: NSWindowController {
 
         layoutViews()
 
-        // Create initial tab after all views are set up
-        createNewTab()
+        // Create initial tab(s) after all views are set up
+        if config.behavior.restoreSession, let session = SessionStore.load() {
+            restoreSession(session)
+        } else {
+            createNewTab()
+        }
+    }
+
+    // MARK: - Session save/restore
+
+    func saveSession() {
+        guard !tabs.isEmpty else { return }
+
+        let tabStates: [SessionTabState] = tabs.map { tab in
+            let panes: [SessionPaneState] = tab.panes.compactMap { pane in
+                switch pane.paneType {
+                case .terminal:
+                    return SessionPaneState(
+                        type: "terminal",
+                        cwd: pane.resolvedWorkingDirectory(),
+                        url: nil
+                    )
+                case .browser:
+                    return SessionPaneState(
+                        type: "browser",
+                        cwd: nil,
+                        url: pane.browserViewController?.pageURL?.absoluteString
+                    )
+                case .editor, .diff, .uncommittedChanges:
+                    // Transient views; don't recreate them on relaunch.
+                    return nil
+                }
+            }
+            return SessionTabState(
+                panes: panes,
+                activePaneIndex: min(tab.activePaneIndex, max(panes.count - 1, 0)),
+                customTitle: tab.customTitle
+            )
+        }
+
+        let state = SessionState(tabs: tabStates, activeTabIndex: activeTabIndex)
+        guard state != lastSavedSession else { return }
+        lastSavedSession = state
+        SessionStore.save(state)
+    }
+
+    private func restoreSession(_ session: SessionState) {
+        let restorable = session.tabs.filter { !$0.panes.isEmpty }
+        guard !restorable.isEmpty else {
+            createNewTab()
+            return
+        }
+
+        print("📦 Restoring session with \(restorable.count) tab(s)")
+        for tabState in restorable.prefix(Limits.maxTabs) {
+            restoreTab(from: tabState)
+        }
+
+        let targetIndex = min(max(0, session.activeTabIndex), tabs.count - 1)
+        if targetIndex != activeTabIndex {
+            switchToTab(index: targetIndex)
+        }
+        // Point the sidebar at the restored tab's directory right away.
+        syncSidebarToActiveTab()
+    }
+
+    private func restoreTab(from state: SessionTabState) {
+        let tab = TabModel()
+        tab.panes.removeAll()
+        tab.customTitle = state.customTitle
+
+        for paneState in state.panes.prefix(Limits.maxPanesPerTab) {
+            let pane = PaneModel()
+            if paneState.type == "browser" {
+                pane.createBrowserViewController(initialURL: paneState.url.flatMap { URL(string: $0) })
+            } else {
+                pane.createTerminalViewController(config: config, initialDirectory: paneState.cwd)
+            }
+            tab.panes.append(pane)
+        }
+        tab.activePaneIndex = min(max(0, state.activePaneIndex), tab.panes.count - 1)
+        tab.updateTitleFromActivePane()
+
+        installTab(tab)
     }
 
     private func setupTitlebarBackground() {
@@ -453,20 +591,27 @@ class MainWindowController: NSWindowController {
 
     @objc private func paneOpenURLRequested(_ notification: Notification) {
         guard let url = notification.userInfo?["url"] as? URL else { return }
-
-        // Reuse an existing browser pane in the active tab if there is one.
-        if let browserPane = tabs[safe: activeTabIndex]?.panes.first(where: { $0.paneType == .browser }),
-           let browserVC = browserPane.browserViewController {
-            browserVC.navigate(to: url)
-            return
-        }
-
-        currentPaneSplitController?.splitWithBrowser(direction: .horizontal, initialURL: url)
+        openURLInBrowserPane(url)
     }
 
     @objc private func paneCommandStatusChanged(_ notification: Notification) {
         guard let pane = notification.object as? PaneModel else { return }
         let status = notification.userInfo?["status"] as? TerminalCommandStatus
+
+        // Reflect run-panel task completion (pane was launched from Run
+        // panel). The mapping is removed once the task's command finishes so
+        // later manual commands in the same split don't rewrite the status.
+        if let taskName = runningTaskPanes[pane.id] {
+            if let status = status {
+                runningTaskPanes.removeValue(forKey: pane.id)
+                sidebarContainerView.updateRunTaskStatus(
+                    name: taskName,
+                    status: status.succeeded ? .succeeded : .failed
+                )
+            } else {
+                sidebarContainerView.updateRunTaskStatus(name: taskName, status: .running)
+            }
+        }
 
         for tab in tabs {
             if tab.panes.contains(where: { $0.id == pane.id }) {
@@ -493,7 +638,14 @@ class MainWindowController: NSWindowController {
               !NSApp.isActive else { return }
 
         NSApp.requestUserAttention(.informationalRequest)
+        postUserNotification(
+            title: status.succeeded ? "Command finished" : "Command failed",
+            body: "\(tabTitle) — \(status.summary)",
+            playSound: !status.succeeded
+        )
+    }
 
+    private func postUserNotification(title: String, body: String, playSound: Bool) {
         // UNUserNotificationCenter requires a real bundle; skip when running
         // the bare debug binary.
         guard Bundle.main.bundleIdentifier != nil else { return }
@@ -501,9 +653,9 @@ class MainWindowController: NSWindowController {
         center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard granted else { return }
             let content = UNMutableNotificationContent()
-            content.title = status.succeeded ? "Command finished" : "Command failed"
-            content.body = "\(tabTitle) — \(status.summary)"
-            content.sound = status.succeeded ? nil : .default
+            content.title = title
+            content.body = body
+            content.sound = playSound ? .default : nil
             let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
             center.add(request)
         }
@@ -513,56 +665,72 @@ class MainWindowController: NSWindowController {
         guard let pane = notification.object as? PaneModel,
               let state = notification.userInfo?["agentState"] as? AgentState else { return }
 
-        for tab in tabs {
-            if tab.panes.contains(where: { $0.id == pane.id }) {
-                tab.agentState = state
-                updateTabBar()
+        if let tab = tabs.first(where: { $0.panes.contains(where: { $0.id == pane.id }) }) {
+            applyAgentState(state, to: tab)
+        }
+    }
 
-                if state == .ready || state == .done {
-                    NSApp.requestUserAttention(.informationalRequest)
-                }
-                break
+    /// Single path for agent state changes regardless of how they arrived
+    /// (OSC termprop from the shell vs the IPC socket): updates the tab dot,
+    /// the activity-bar badge, and alerts the user when input is needed.
+    private func applyAgentState(_ state: AgentState, to tab: TabModel) {
+        tab.agentState = state
+        updateTabBar()
+        refreshAgentsBadge()
+
+        if state == .ready || state == .done {
+            NSApp.requestUserAttention(.informationalRequest)
+            if !NSApp.isActive {
+                postUserNotification(
+                    title: state == .ready ? "Agent waiting for input" : "Agent finished",
+                    body: tab.title,
+                    playSound: state == .ready
+                )
             }
         }
+    }
+
+    /// Updates the activity-bar badge with the number of tabs whose agent is
+    /// waiting for input.
+    private func refreshAgentsBadge() {
+        let waiting = tabs.filter { $0.agentState == .ready }.count
+        activityBarView.updateAgentsBadge(count: waiting)
     }
 
     func createNewTab(workingDirectory: String? = nil) {
         let startDirectory = workingDirectory ?? currentWorkingDirectoryForNewTerminal()
 
-        // Hide current tab's split controller if exists
-        if let currentController = currentPaneSplitController {
-            currentController.view.isHidden = true
-        }
-
         let tab = TabModel()
-        tabs.append(tab)
-
-        // Mark old tab as inactive
-        if activeTabIndex < tabs.count - 1 {
-            tabs[activeTabIndex].isActive = false
-        }
-
-        activeTabIndex = tabs.count - 1
-        tab.isActive = true
-
-        // Initialize the first pane with a terminal
         if let firstPane = tab.panes.first {
             firstPane.createTerminalViewController(config: config, initialDirectory: startDirectory)
         }
 
-        // Create pane split controller for this tab
+        installTab(tab)
+    }
+
+    /// Shared plumbing for adding a fully-built tab: hides the current tab,
+    /// appends and activates the new one, and installs its split controller
+    /// into the main content view. Used by new-tab, session restore, and
+    /// single-pane (diff/changes) tabs so they can't drift apart.
+    private func installTab(_ tab: TabModel) {
+        if let currentController = currentPaneSplitController {
+            currentController.view.isHidden = true
+        }
+        if let activeTab = tabs[safe: activeTabIndex] {
+            activeTab.isActive = false
+        }
+
+        tab.isActive = true
+        tabs.append(tab)
+        activeTabIndex = tabs.count - 1
+
         let paneSplitController = PaneSplitController(config: config)
         paneSplitController.delegate = self
         currentPaneSplitController = paneSplitController
-
-        // Store the mapping of tab to split controller
         tabSplitControllers[tab.id] = paneSplitController
 
-        // Add to main content view (this triggers loadView which creates splitView)
         mainContentView.addSubview(paneSplitController.view)
         paneSplitController.view.translatesAutoresizingMaskIntoConstraints = false
-
-        // Now rebuild the split view with the tab's panes
         paneSplitController.rebuildSplitView(for: tab)
 
         NSLayoutConstraint.activate([
@@ -674,6 +842,7 @@ class MainWindowController: NSWindowController {
 
         updateTabBar()
         syncSidebarToActiveTab()
+        refreshAgentsBadge()
     }
 }
 
@@ -688,6 +857,30 @@ extension MainWindowController: TabBarDelegate {
 
     func tabBarDidRequestNewTab(_ tabBar: TabBarView) {
         createNewTab()
+    }
+
+    func tabBar(_ tabBar: TabBarView, didMoveTab fromIndex: Int, to toIndex: Int) {
+        guard fromIndex != toIndex,
+              fromIndex >= 0, fromIndex < tabs.count,
+              toIndex >= 0, toIndex < tabs.count else {
+            updateTabBar()
+            return
+        }
+
+        let activeTab = tabs[safe: activeTabIndex]
+        let tab = tabs.remove(at: fromIndex)
+        tabs.insert(tab, at: toIndex)
+
+        if let activeTab = activeTab, let newActiveIndex = tabs.firstIndex(where: { $0.id == activeTab.id }) {
+            activeTabIndex = newActiveIndex
+        }
+        updateTabBar()
+    }
+
+    func tabBar(_ tabBar: TabBarView, didRenameTab index: Int, to title: String?) {
+        guard let tab = tabs[safe: index] else { return }
+        tab.customTitle = title
+        updateTabBar()
     }
 }
 
@@ -714,6 +907,10 @@ extension MainWindowController: PaneSplitControllerDelegate {
     }
 
     func paneSplitController(_ controller: PaneSplitController, didClosePane pane: PaneModel, at index: Int) {
+        if let taskName = runningTaskPanes.removeValue(forKey: pane.id) {
+            sidebarContainerView.updateRunTaskStatus(name: taskName, status: nil)
+        }
+
         guard let activeTab = tabs[safe: activeTabIndex],
               tabSplitControllers[activeTab.id] === controller else { return }
 
@@ -791,8 +988,55 @@ extension MainWindowController: SidebarContainerDelegate {
         openFileInEditor(url, atLine: line, highlighting: searchTerm)
     }
 
-    func sidebarContainer(_ container: SidebarContainerView, didRequestRunTask command: String) {
-        runCommandInActiveTerminal(command)
+    func sidebarContainer(
+        _ container: SidebarContainerView,
+        didRequestRunTask command: String,
+        openBrowser: String?,
+        taskName: String
+    ) {
+        runTaskInSplit(command: command, openBrowser: openBrowser, taskName: taskName)
+    }
+
+    /// Runs a task from the Run panel in a dedicated split below the active
+    /// pane, tracks its pane for status updates, and optionally opens the
+    /// embedded browser at the task's URL.
+    private func runTaskInSplit(command: String, openBrowser: String?, taskName: String) {
+        let paneCountBefore = currentPaneSplitController?.paneCount ?? 0
+        currentPaneSplitController?.splitPane(direction: .vertical)
+
+        if let controller = currentPaneSplitController,
+           controller.paneCount > paneCountBefore,
+           let pane = controller.activePane,
+           let terminal = pane.terminalViewController {
+            // Fresh split: give the shell a moment to start before typing.
+            runningTaskPanes[pane.id] = taskName
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak terminal] in
+                terminal?.send(text: command + "\n")
+            }
+        } else {
+            // Split failed (e.g. max panes reached): run in the active
+            // terminal, tracking whichever pane the command was sent to.
+            if let pane = runCommandInActiveTerminal(command) {
+                runningTaskPanes[pane.id] = taskName
+            }
+        }
+
+        sidebarContainerView.updateRunTaskStatus(name: taskName, status: .running)
+
+        if let urlString = openBrowser, let url = URL(string: urlString), url.scheme != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.openURLInBrowserPane(url)
+            }
+        }
+    }
+
+    private func openURLInBrowserPane(_ url: URL) {
+        if let browserPane = tabs[safe: activeTabIndex]?.panes.first(where: { $0.paneType == .browser }),
+           let browserVC = browserPane.browserViewController {
+            browserVC.navigate(to: url)
+            return
+        }
+        currentPaneSplitController?.splitWithBrowser(direction: .horizontal, initialURL: url)
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestPasteCommand command: String) {
@@ -861,40 +1105,12 @@ extension MainWindowController: SidebarContainerDelegate {
     }
 
     private func openSinglePaneTab(pane: PaneModel) {
-        if let currentController = currentPaneSplitController {
-            currentController.view.isHidden = true
-        }
-
-        if activeTabIndex < tabs.count {
-            tabs[activeTabIndex].isActive = false
-        }
-
         let tab = TabModel()
         tab.panes = [pane]
         tab.activePaneIndex = 0
-        tab.isActive = true
         tab.updateTitleFromActivePane()
 
-        tabs.append(tab)
-        activeTabIndex = tabs.count - 1
-
-        let paneSplitController = PaneSplitController(config: config)
-        paneSplitController.delegate = self
-        currentPaneSplitController = paneSplitController
-        tabSplitControllers[tab.id] = paneSplitController
-
-        mainContentView.addSubview(paneSplitController.view)
-        paneSplitController.view.translatesAutoresizingMaskIntoConstraints = false
-        paneSplitController.rebuildSplitView(for: tab)
-
-        NSLayoutConstraint.activate([
-            paneSplitController.view.topAnchor.constraint(equalTo: mainContentView.topAnchor),
-            paneSplitController.view.leadingAnchor.constraint(equalTo: mainContentView.leadingAnchor),
-            paneSplitController.view.trailingAnchor.constraint(equalTo: mainContentView.trailingAnchor),
-            paneSplitController.view.bottomAnchor.constraint(equalTo: mainContentView.bottomAnchor)
-        ])
-
-        updateTabBar()
+        installTab(tab)
         syncSidebarToActiveTab()
     }
 
@@ -982,6 +1198,15 @@ extension MainWindowController: SidebarContainerDelegate {
             PaletteAction(title: "Toggle Hidden Files", subtitle: "⇧⌘.", symbolName: "eye.slash") { [weak self] in
                 self?.sidebarContainerView.toggleHiddenFiles()
             },
+            PaletteAction(title: "Zoom In", subtitle: "⌘=", symbolName: "plus.magnifyingglass") {
+                FontZoom.shared.zoomIn()
+            },
+            PaletteAction(title: "Zoom Out", subtitle: "⌘-", symbolName: "minus.magnifyingglass") {
+                FontZoom.shared.zoomOut()
+            },
+            PaletteAction(title: "Reset Zoom", subtitle: "⌘0", symbolName: "1.magnifyingglass") {
+                FontZoom.shared.reset()
+            },
             PaletteAction(title: "Preferences", subtitle: "⌘,", symbolName: "gearshape") { [weak self] in
                 self?.showPreferences()
             },
@@ -1042,32 +1267,19 @@ extension MainWindowController: SidebarContainerDelegate {
         }
     }
 
-    private func runCommandInActiveTerminal(_ command: String) {
-        print("🖥️ runCommandInActiveTerminal called with: \(command)")
-        print("🖥️ tabs.count: \(tabs.count), activeTabIndex: \(activeTabIndex)")
-
-        guard activeTabIndex < tabs.count else {
-            print("❌ activeTabIndex out of bounds!")
-            return
-        }
-
-        let activeTab = tabs[activeTabIndex]
-        print("🖥️ Active tab has \(activeTab.panes.count) panes")
-
-        guard let terminalPane = activeTab.panes.first(where: { $0.terminalViewController != nil }) else {
+    /// Sends the command to the active tab's first terminal pane and returns
+    /// that pane, so callers can track which pane ran the command.
+    @discardableResult
+    private func runCommandInActiveTerminal(_ command: String) -> PaneModel? {
+        guard let activeTab = tabs[safe: activeTabIndex],
+              let terminalPane = activeTab.panes.first(where: { $0.terminalViewController != nil }),
+              let terminalVC = terminalPane.terminalViewController else {
             print("❌ No terminal pane found in active tab!")
-            return
+            return nil
         }
 
-        guard let terminalVC = terminalPane.terminalViewController else {
-            print("❌ Terminal pane has no terminalViewController!")
-            return
-        }
-
-        // Send the command followed by Enter to the terminal
-        let commandWithEnter = command + "\n"
-        print("✅ Sending command to terminal: \(commandWithEnter)")
-        terminalVC.send(text: commandWithEnter)
+        terminalVC.send(text: command + "\n")
+        return terminalPane
     }
 
     private func pasteCommandToActiveTerminal(_ command: String) {
@@ -1109,7 +1321,48 @@ extension MainWindowController {
             return false
         }
 
+        // Cmd+V only intercepts when the pasteboard holds an image (pasted
+        // as a temp PNG path); otherwise fall through to normal paste.
+        if command == .pasteIntoTerminal {
+            return pasteImageAsTempFileIfPossible()
+        }
+
         performKeyboardCommand(command)
+        return true
+    }
+
+    /// When the clipboard holds an image (and no plain text), write it to a
+    /// temp PNG and type the quoted path into the focused terminal — handy
+    /// for handing screenshots to CLI agents. Returns true when handled.
+    private func pasteImageAsTempFileIfPossible() -> Bool {
+        // Only intercept when keyboard focus is really on the terminal;
+        // otherwise Cmd+V belongs to the editor/find bar/sidebar field.
+        guard let terminal = tabs[safe: activeTabIndex]?.activePane?.terminalViewController,
+              terminal.isTerminalFocused else {
+            return false
+        }
+
+        let pasteboard = NSPasteboard.general
+        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+            return false
+        }
+        guard let image = NSImage(pasteboard: pasteboard),
+              let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            return false
+        }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sidekick-paste-\(UUID().uuidString.prefix(8)).png")
+        do {
+            try png.write(to: url)
+        } catch {
+            print("📋 Failed to write pasted image: \(error)")
+            return false
+        }
+
+        terminal.send(text: "'\(url.path)'")
         return true
     }
 
@@ -1161,6 +1414,14 @@ extension MainWindowController {
             forward ? currentPaneSplitController?.focusNextPane() : currentPaneSplitController?.focusPreviousPane()
         case .selectTab(let index):
             switchToTab(index: index)
+        case .zoomIn:
+            FontZoom.shared.zoomIn()
+        case .zoomOut:
+            FontZoom.shared.zoomOut()
+        case .zoomReset:
+            FontZoom.shared.reset()
+        case .pasteIntoTerminal:
+            break // handled in handleKeyDown
         }
     }
 
@@ -1232,60 +1493,85 @@ extension MainWindowController {
 
 // MARK: - IPCServerDelegate
 extension MainWindowController: IPCServerDelegate {
-    func ipcServer(_ server: IPCServer, didReceiveCommand command: IPCCommandType) -> IPCResponse {
+    func ipcServer(
+        _ server: IPCServer,
+        didReceiveCommand command: IPCCommandType,
+        completion: @escaping (IPCResponse) -> Void
+    ) {
         switch command {
         case .ping:
-            return IPCResponse(ok: true)
+            completion(IPCResponse(ok: true))
 
         case .newTab(let cwd):
             createNewTab(workingDirectory: cwd)
-            return IPCResponse(ok: true)
+            completion(IPCResponse(ok: true))
 
-        case .showDiff(let path, _, _):
-            // For now, just open the file - could be enhanced to show actual diff
-            let url = URL(fileURLWithPath: path)
-            openFileInEditor(url)
-            return IPCResponse(ok: true)
+        case .showDiff(let path, let old, let new):
+            if old.isEmpty && new.isEmpty {
+                // `sidekick-ctl open-diff <file>`: just view the file.
+                openFileInEditor(URL(fileURLWithPath: path))
+                completion(IPCResponse(ok: true))
+            } else {
+                // Hook approval: hold the response until the user decides.
+                enqueueDiffApproval(path: path, old: old, new: new) { accepted in
+                    completion(IPCResponse(ok: true, accepted: accepted))
+                }
+            }
 
         case .agentReady:
-            // Mark the active tab as agent ready
-            if activeTabIndex < tabs.count {
-                tabs[activeTabIndex].agentState = .ready
-                updateTabBar()
-
-                // Notification: Bounce dock icon once
-                NSApp.requestUserAttention(.informationalRequest) // Bounce dock icon once
-            }
-            return IPCResponse(ok: true)
+            setActiveTabAgentState(.ready)
+            completion(IPCResponse(ok: true))
 
         case .agentBusy:
-            // Mark the active tab as agent busy
-            if activeTabIndex < tabs.count {
-                tabs[activeTabIndex].agentState = .working
-                updateTabBar()
-            }
-            return IPCResponse(ok: true)
+            setActiveTabAgentState(.working)
+            completion(IPCResponse(ok: true))
 
         case .agentDone:
-            // Mark the active tab as done
-            if activeTabIndex < tabs.count {
-                tabs[activeTabIndex].agentState = .done
-                updateTabBar()
-
-                NSApp.requestUserAttention(.informationalRequest)
-            }
-            return IPCResponse(ok: true)
+            setActiveTabAgentState(.done)
+            completion(IPCResponse(ok: true))
 
         case .agentIdle:
-            // Mark the active tab as agent idle
-            if activeTabIndex < tabs.count {
-                tabs[activeTabIndex].agentState = .idle
-                updateTabBar()
-            }
-            return IPCResponse(ok: true)
+            setActiveTabAgentState(.idle)
+            completion(IPCResponse(ok: true))
         }
     }
 
+    private func setActiveTabAgentState(_ state: AgentState) {
+        guard let tab = tabs[safe: activeTabIndex] else { return }
+        applyAgentState(state, to: tab)
+    }
+
+    // MARK: - Hook diff approval
+
+    private func enqueueDiffApproval(
+        path: String,
+        old: String,
+        new: String,
+        completion: @escaping (Bool) -> Void
+    ) {
+        diffApprovalQueue.append((path: path, old: old, new: new, completion: completion))
+        presentNextDiffApprovalIfIdle()
+    }
+
+    private func presentNextDiffApprovalIfIdle() {
+        guard activeDiffApproval == nil, !diffApprovalQueue.isEmpty else { return }
+
+        // No window to attach a sheet to: reject rather than leave the hook
+        // blocked and the queue wedged.
+        guard let window = window, window.isVisible else {
+            drainDiffApprovalQueue()
+            return
+        }
+
+        let request = diffApprovalQueue.removeFirst()
+        let panel = DiffApprovalPanel()
+        activeDiffApproval = panel
+        panel.show(relativeTo: window, path: request.path, old: request.old, new: request.new) { [weak self] accepted in
+            request.completion(accepted)
+            self?.activeDiffApproval = nil
+            self?.presentNextDiffApprovalIfIdle()
+        }
+    }
 }
 
 extension NSColor {

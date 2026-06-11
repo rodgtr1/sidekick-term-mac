@@ -10,6 +10,7 @@ let package = Package(
         .executable(name: "Sidekick", targets: ["Sidekick"]),
         .executable(name: "sidekick-ctl", targets: ["SidekickCtl"]),
         .executable(name: "sidekick-agent-status", targets: ["SidekickAgentStatus"]),
+        .executable(name: "sidekick-hook", targets: ["SidekickHook"]),
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.13.0"),
@@ -38,6 +39,13 @@ let package = Package(
         .executableTarget(
             name: "SidekickAgentStatus",
             path: "Sources/sidekick-agent-status",
+            swiftSettings: [
+                .unsafeFlags(["-swift-version", "5"])
+            ]
+        ),
+        .executableTarget(
+            name: "SidekickHook",
+            path: "Sources/sidekick-hook",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "5"])
             ]

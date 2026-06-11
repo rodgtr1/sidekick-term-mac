@@ -24,6 +24,12 @@ class TabModel: ObservableObject, Identifiable {
     @Published var panes: [PaneModel] = []
     @Published var activePaneIndex: Int = 0
 
+    /// User-assigned name from "Rename Tab"; overrides the automatic
+    /// directory/branch title until cleared (set back to nil).
+    var customTitle: String? {
+        didSet { updateTitleFromActivePane() }
+    }
+
     // Last finished command (from shell integration); nil while one runs
     @Published var lastCommandFailed: Bool = false
     var lastCommandTooltip: String?
@@ -80,6 +86,11 @@ class TabModel: ObservableObject, Identifiable {
     }
 
     func updateTitleFromActivePane() {
+        if let customTitle = customTitle, !customTitle.isEmpty {
+            title = customTitle
+            return
+        }
+
         guard let activePane = activePane else { return }
 
         // Use the active pane's title (which includes directory and git branch)

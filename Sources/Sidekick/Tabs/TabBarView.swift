@@ -4,6 +4,16 @@ protocol TabBarDelegate: AnyObject {
     func tabBar(_ tabBar: TabBarView, didSelectTab index: Int)
     func tabBar(_ tabBar: TabBarView, didCloseTab index: Int)
     func tabBarDidRequestNewTab(_ tabBar: TabBarView)
+    func tabBar(_ tabBar: TabBarView, didMoveTab fromIndex: Int, to toIndex: Int)
+    func tabBar(_ tabBar: TabBarView, didRenameTab index: Int, to title: String?)
+}
+
+/// Tab buttons forward mouse-downs to the tab bar so it can distinguish a
+/// click (select) from a horizontal drag (reorder).
+private final class TabButton: NSButton {
+    override func mouseDown(with event: NSEvent) {
+        (superview as? TabBarView)?.handleTabMouseDown(event, button: self)
+    }
 }
 
 class TabBarView: NSView {
@@ -23,6 +33,7 @@ class TabBarView: NSView {
     private let closeButtonSize: CGFloat = 16
     private let tabSpacing: CGFloat = 1
     private let tabHorizontalPadding: CGFloat = 12
+    private var lastTabWidth: CGFloat = 120
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -122,6 +133,7 @@ class TabBarView: NSView {
         let tabCount = CGFloat(tabs.count)
         var tabWidth = tabCount > 0 ? availableWidth / tabCount : tabMinWidth
         tabWidth = max(tabMinWidth, min(tabMaxWidth, tabWidth))
+        lastTabWidth = tabWidth
 
         // Create tab buttons
         for (index, tab) in tabs.enumerated() {
@@ -134,7 +146,7 @@ class TabBarView: NSView {
         let tabRect = NSRect(x: x, y: 0, width: width, height: tabHeight)
 
         // Tab button
-        let tabButton = NSButton(frame: tabRect)
+        let tabButton = TabButton(frame: tabRect)
         tabButton.cell = TabButtonCell(textLeadingPadding: tabHorizontalPadding, textTrailingPadding: closeButtonSize + 18)
 
         let theme = Theme.shared.current
@@ -149,8 +161,6 @@ class TabBarView: NSView {
         tabButton.cell?.lineBreakMode = .byTruncatingMiddle
         tabButton.cell?.truncatesLastVisibleLine = true
         tabButton.cell?.wraps = false
-        tabButton.target = self
-        tabButton.action = #selector(tabButtonClicked(_:))
         tabButton.tag = index
 
         // Style based on active state
@@ -303,11 +313,118 @@ class TabBarView: NSView {
         return NSColor(hex: "#c9a96a") ?? Theme.shared.current.yellow.blended(withFraction: 0.3, of: .black) ?? Theme.shared.current.yellow
     }
 
-    @objc private func tabButtonClicked(_ sender: NSButton) {
-        delegate?.tabBar(self, didSelectTab: sender.tag)
+    @objc private func closeButtonClicked(_ sender: NSButton) {
+        delegate?.tabBar(self, didCloseTab: sender.tag)
     }
 
-    @objc private func closeButtonClicked(_ sender: NSButton) {
+    // MARK: - Click / drag-reorder tracking
+
+    /// Runs a synchronous tracking loop: a mouse-up without much horizontal
+    /// movement selects the tab; dragging slides the button and reorders on
+    /// release.
+    fileprivate func handleTabMouseDown(_ event: NSEvent, button: NSButton) {
+        let index = button.tag
+        let startPoint = convert(event.locationInWindow, from: nil)
+        let originalX = button.frame.origin.x
+        var dragging = false
+
+        while true {
+            guard let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else {
+                // Tracking aborted: snap everything back to layout positions.
+                rebuildTabButtons()
+                return
+            }
+
+            // The tab bar can be rebuilt mid-drag (title/agent updates run on
+            // the main queue during event tracking); the captured button and
+            // index are stale then, so abort the drag.
+            guard !tabButtons.isEmpty, index < tabs.count,
+                  button === tabButtons[safe: index] || button.superview === self else {
+                rebuildTabButtons()
+                return
+            }
+
+            let point = convert(next.locationInWindow, from: nil)
+
+            if next.type == .leftMouseUp {
+                if dragging {
+                    let target = dragTargetIndex(for: button)
+                    if target != index, index < tabs.count {
+                        delegate?.tabBar(self, didMoveTab: index, to: target)
+                    } else {
+                        rebuildTabButtons()
+                    }
+                } else {
+                    delegate?.tabBar(self, didSelectTab: index)
+                }
+                return
+            }
+
+            let deltaX = point.x - startPoint.x
+            if dragging || abs(deltaX) > 6 {
+                if !dragging {
+                    dragging = true
+                    // Keep the dragged tab above its siblings while it slides.
+                    button.removeFromSuperview()
+                    addSubview(button)
+                }
+                let maxX = bounds.width - button.frame.width
+                button.frame.origin.x = min(max(0, originalX + deltaX), max(0, maxX))
+            }
+        }
+    }
+
+    private func dragTargetIndex(for button: NSButton) -> Int {
+        guard !tabs.isEmpty else { return 0 }
+        let slot = Int(round(button.frame.origin.x / (lastTabWidth + tabSpacing)))
+        return min(max(0, slot), tabs.count - 1)
+    }
+
+    // MARK: - Right-click menu (rename)
+
+    override func rightMouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let button = tabButtons.first(where: { $0.frame.contains(point) }) else {
+            super.rightMouseDown(with: event)
+            return
+        }
+
+        let menu = NSMenu()
+        let renameItem = NSMenuItem(title: "Rename Tab…", action: #selector(renameTabMenuClicked(_:)), keyEquivalent: "")
+        renameItem.target = self
+        renameItem.tag = button.tag
+        menu.addItem(renameItem)
+
+        let closeItem = NSMenuItem(title: "Close Tab", action: #selector(closeTabMenuClicked(_:)), keyEquivalent: "")
+        closeItem.target = self
+        closeItem.tag = button.tag
+        menu.addItem(closeItem)
+
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func renameTabMenuClicked(_ sender: NSMenuItem) {
+        let index = sender.tag
+        guard let tab = tabs[safe: index] else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Rename Tab"
+        alert.informativeText = "Leave empty to restore the automatic title."
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = tab.customTitle ?? ""
+        field.placeholderString = tab.title
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        delegate?.tabBar(self, didRenameTab: index, to: name.isEmpty ? nil : name)
+    }
+
+    @objc private func closeTabMenuClicked(_ sender: NSMenuItem) {
         delegate?.tabBar(self, didCloseTab: sender.tag)
     }
 

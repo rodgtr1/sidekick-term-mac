@@ -1,0 +1,50 @@
+import Foundation
+
+/// Snapshot of the open tabs/panes, persisted across launches.
+struct SessionPaneState: Codable, Equatable {
+    let type: String // "terminal" | "browser"
+    let cwd: String?
+    let url: String?
+}
+
+struct SessionTabState: Codable, Equatable {
+    let panes: [SessionPaneState]
+    let activePaneIndex: Int
+    let customTitle: String?
+}
+
+struct SessionState: Codable, Equatable {
+    let tabs: [SessionTabState]
+    let activeTabIndex: Int
+}
+
+enum SessionStore {
+    private static var fileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/sidekick/session.json")
+    }
+
+    static func save(_ state: SessionState) {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(state)
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            print("SessionStore: failed to save session: \(error)")
+        }
+    }
+
+    static func load() -> SessionState? {
+        guard let data = try? Data(contentsOf: fileURL),
+              let state = try? JSONDecoder().decode(SessionState.self, from: data),
+              !state.tabs.isEmpty else {
+            return nil
+        }
+        return state
+    }
+}

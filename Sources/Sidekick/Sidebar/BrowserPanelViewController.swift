@@ -14,6 +14,11 @@ class BrowserPanelViewController: NSViewController {
     // State
     private var currentURL: URL?
 
+    /// The page currently shown, for session persistence.
+    var pageURL: URL? {
+        webView?.url ?? currentURL
+    }
+
     override func loadView() {
         view = NSView()
         view.wantsLayer = true

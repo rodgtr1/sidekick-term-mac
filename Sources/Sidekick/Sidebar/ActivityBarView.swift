@@ -41,6 +41,7 @@ class ActivityBarView: NSView {
 
     private var selectedPanel: SidebarPanel = .files
     private var buttons: [NSButton] = []
+    private var agentsBadge: NSTextField?
     private let buttonSize: CGFloat = 40
     private let buttonSpacing: CGFloat = 4
     var topInset: CGFloat = 8 {
@@ -160,6 +161,47 @@ class ActivityBarView: NSView {
         updateSelectedButton(panel: panel)
     }
 
+    /// Shows a count badge on the Agents icon for agents waiting for input.
+    func updateAgentsBadge(count: Int) {
+        guard count > 0 else {
+            agentsBadge?.removeFromSuperview()
+            agentsBadge = nil
+            return
+        }
+
+        let badge: NSTextField
+        if let existing = agentsBadge {
+            badge = existing
+        } else {
+            badge = NSTextField(labelWithString: "")
+            badge.font = NSFont.systemFont(ofSize: 9, weight: .bold)
+            badge.textColor = .white
+            badge.alignment = .center
+            badge.wantsLayer = true
+            badge.layer?.backgroundColor = Theme.shared.current.red.cgColor
+            badge.layer?.cornerRadius = 7
+            addSubview(badge)
+            agentsBadge = badge
+        }
+
+        badge.stringValue = count > 9 ? "9+" : "\(count)"
+        positionAgentsBadge()
+    }
+
+    private func positionAgentsBadge() {
+        guard let badge = agentsBadge,
+              let agentsIndex = SidebarPanel.allCases.firstIndex(of: .agents),
+              let button = buttons[safe: agentsIndex] else { return }
+
+        let size: CGFloat = 14
+        badge.frame = NSRect(
+            x: button.frame.maxX - size + 2,
+            y: button.frame.maxY - size + 2,
+            width: size,
+            height: size
+        )
+    }
+
     override func layout() {
         super.layout()
 
@@ -171,5 +213,7 @@ class ActivityBarView: NSView {
             let x = (bounds.width - buttonSize) / 2
             button.frame = NSRect(x: x, y: y, width: buttonSize, height: buttonSize)
         }
+
+        positionAgentsBadge()
     }
 }

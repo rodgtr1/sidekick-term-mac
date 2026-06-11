@@ -63,8 +63,9 @@ class PaneSplitController: NSViewController {
             rootSplitView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        // Create initial pane
-        addInitialPane()
+        // No initial pane here: every owner immediately calls
+        // rebuildSplitView(for:) with the tab's real panes, and creating one
+        // would spawn a shell that is discarded without being terminated.
     }
 
     private func createSplitView(isVertical: Bool) -> NSSplitView {
@@ -74,20 +75,6 @@ class PaneSplitController: NSViewController {
         split.delegate = self
         allSplitViews.insert(split)
         return split
-    }
-
-    private func addInitialPane() {
-        let pane = PaneModel()
-        pane.createTerminalViewController(config: config)
-        panes.append(pane)
-        activePaneIndex = 0
-
-        if let paneView = pane.view {
-            let container = wrapPaneInContainer(pane, paneView: paneView)
-            rootSplitView.addArrangedSubview(container)
-            pane.focus()
-            addPaneBorder(to: paneView, isActive: true)
-        }
     }
 
     private func wrapPaneInContainer(_ pane: PaneModel, paneView: NSView) -> NSView {

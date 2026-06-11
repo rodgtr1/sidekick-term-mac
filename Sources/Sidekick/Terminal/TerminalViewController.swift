@@ -127,6 +127,24 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         startShell()
         startCWDTracking()
         setupAlternateScreenScrolling()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(fontZoomChanged),
+            name: FontZoom.didChangeNotification,
+            object: nil
+        )
+    }
+
+    @objc private func fontZoomChanged() {
+        terminalView.font = terminalFont(for: config)
+    }
+
+    /// The configured font with the app-wide zoom scale applied.
+    private func terminalFont(for config: Config) -> NSFont {
+        let size = CGFloat(Double(config.font.size) * FontZoom.shared.scale)
+        return NSFont(name: config.font.family, size: size)
+            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
     /// SwiftTerm's scrollWheel only ever scrolls the scrollback buffer.
@@ -137,16 +155,78 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     ///    no scrollback, so wheel events should become arrow keys.
     /// Plain shells still fall through to normal scrollback scrolling.
     private func setupAlternateScreenScrolling() {
-        scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+        scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseUp]) { [weak self] event in
             guard let self = self else { return event }
+            if event.type == .leftMouseUp {
+                return self.handleCommandMouseUp(event)
+            }
             return self.handleScrollWheelEvent(event)
         }
+    }
+
+    /// Owns all ⌘+click behavior over the terminal: file paths open in the
+    /// built-in editor, URLs open in the browser pane — and the event is
+    /// swallowed so SwiftTerm's default handler can't also open links in
+    /// the external browser (which made incidental ⌘-taps open pages).
+    private func handleCommandMouseUp(_ event: NSEvent) -> NSEvent? {
+        guard event.modifierFlags.contains(.command),
+              let window = view.window,
+              event.window === window,
+              let terminalView = terminalView,
+              // Hidden tabs share window coordinates with the visible one;
+              // without this, an invisible terminal swallows the click.
+              !terminalView.isHiddenOrHasHiddenAncestor else { return event }
+
+        let pointInView = terminalView.convert(event.locationInWindow, from: nil)
+        guard terminalView.bounds.contains(pointInView) else { return event }
+
+        let terminal = terminalView.getTerminal()
+        guard terminal.cols > 0, terminal.rows > 0 else { return nil }
+
+        let cellWidth = max(1, terminalView.bounds.width / CGFloat(terminal.cols))
+        let cellHeight = max(1, terminalView.bounds.height / CGFloat(terminal.rows))
+        let col = min(terminal.cols - 1, max(0, Int(pointInView.x / cellWidth)))
+        let row = min(terminal.rows - 1, max(0, Int((terminalView.bounds.height - pointInView.y) / cellHeight)))
+
+        if handleCommandClick(col: col, row: row) {
+            return nil
+        }
+        if let url = urlUnderClick(col: col, row: row) {
+            delegate?.terminalRequestsOpenURL(self, url: url)
+        }
+        // Swallow every ⌘+mouse-up over the terminal either way.
+        return nil
+    }
+
+    private static let clickableURLRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: "https?://[^\\s\"'<>\\)\\]]+")
+
+    private func urlUnderClick(col: Int, row: Int) -> URL? {
+        guard let line = terminalView.getTerminal().getLine(row: row) else { return nil }
+        let text = line.translateToString(trimRight: true)
+        guard !text.isEmpty, let regex = Self.clickableURLRegex else { return nil }
+
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        for match in matches {
+            guard match.range.location <= col, col < match.range.location + match.range.length else { continue }
+            var candidate = nsText.substring(with: match.range)
+            // Trim punctuation that commonly trails URLs in prose.
+            while let last = candidate.last, ".,;:!?".contains(last) {
+                candidate.removeLast()
+            }
+            return URL(string: candidate)
+        }
+        return nil
     }
 
     private func handleScrollWheelEvent(_ event: NSEvent) -> NSEvent? {
         guard let window = view.window,
               event.window === window,
-              let terminalView = terminalView else { return event }
+              let terminalView = terminalView,
+              // Hidden tabs share window coordinates with the visible one;
+              // without this, an invisible terminal handles the scroll.
+              !terminalView.isHiddenOrHasHiddenAncestor else { return event }
 
         let terminal = terminalView.getTerminal()
         let reportsMouse = terminal.mouseMode != .off
@@ -205,8 +285,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func setupTerminal() {
-        let font = NSFont(name: config.font.family, size: CGFloat(config.font.size))
-            ?? NSFont.monospacedSystemFont(ofSize: CGFloat(config.font.size), weight: .regular)
+        let font = terminalFont(for: config)
 
         print("🔤 Terminal font: \(font.fontName) size: \(font.pointSize)")
 
@@ -221,11 +300,6 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
                 self?.handleTerminalInput()
             }
         }
-        // Cmd+click opens file paths in the built-in editor. A gesture
-        // recognizer is used because SwiftTerm's mouseDown is not open.
-        let commandClickRecognizer = NSClickGestureRecognizer(target: self, action: #selector(terminalCommandClicked(_:)))
-        commandClickRecognizer.delaysPrimaryMouseButtonEvents = false
-        agentAwareTerminalView.addGestureRecognizer(commandClickRecognizer)
         terminalView = agentAwareTerminalView
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         terminalView.font = font
@@ -551,21 +625,6 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private static let filePathTokenRegex: NSRegularExpression? = try? NSRegularExpression(
         pattern: "((?:~|\\.{1,2})?/?[A-Za-z0-9_@+.\\-]+(?:/[A-Za-z0-9_@+.\\-]+)*)(?::(\\d+))?"
     )
-
-    @objc private func terminalCommandClicked(_ recognizer: NSClickGestureRecognizer) {
-        guard NSEvent.modifierFlags.contains(.command) else { return }
-        let terminal = terminalView.getTerminal()
-        guard terminal.cols > 0, terminal.rows > 0 else { return }
-
-        let point = recognizer.location(in: terminalView)
-        let cellWidth = terminalView.bounds.width / CGFloat(terminal.cols)
-        let cellHeight = terminalView.bounds.height / CGFloat(terminal.rows)
-        guard cellWidth > 0, cellHeight > 0 else { return }
-        let col = min(terminal.cols - 1, max(0, Int(point.x / cellWidth)))
-        let row = min(terminal.rows - 1, max(0, Int((terminalView.bounds.height - point.y) / cellHeight)))
-
-        _ = handleCommandClick(col: col, row: row)
-    }
 
     /// Cmd+click: if the clicked cell sits on a file path (optionally with
     /// `:line`), open it in the built-in editor. Returns true when handled.
@@ -959,6 +1018,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         view.window?.makeFirstResponder(terminalView)
     }
 
+    /// True when keyboard input is actually going to this terminal (not an
+    /// editor, browser, find bar, or sidebar field).
+    var isTerminalFocused: Bool {
+        guard let responder = view.window?.firstResponder as? NSView else { return false }
+        return responder === terminalView || responder.isDescendant(of: terminalView)
+    }
+
     // MARK: - Scrollback search
 
     func showFindBar() {
@@ -988,15 +1054,8 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         print("🔄 Applying config to terminal: font=\(newConfig.font.family) size=\(newConfig.font.size) blur=\(newConfig.window.enableBlur)")
         self.config = newConfig
 
-        // Update font
-        if let font = NSFont(name: newConfig.font.family, size: CGFloat(newConfig.font.size)) {
-            print("🔤 Setting font: \(font.fontName) size: \(font.pointSize)")
-            terminalView.font = font
-        } else {
-            let fallbackFont = NSFont.monospacedSystemFont(ofSize: CGFloat(newConfig.font.size), weight: .regular)
-            print("🔤 Using fallback font: \(fallbackFont.fontName) size: \(fallbackFont.pointSize)")
-            terminalView.font = fallbackFont
-        }
+        // Update font (respecting the current app-wide zoom)
+        terminalView.font = terminalFont(for: newConfig)
 
         applyTerminalAppearance(newConfig)
 

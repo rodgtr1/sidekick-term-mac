@@ -91,6 +91,8 @@ allow_hyperlinks = true
 # Hide mouse cursor while typing
 mouse_autohide = true
 audible_bell = false
+# Restore tabs and working directories from the previous session on launch
+restore_session = true
 
 [shell]
 # Shell program (leave empty to use $SHELL)
@@ -118,6 +120,7 @@ show_hidden_files = false
 # [[tasks]]
 # name = "My task"
 # cmd  = "echo hello"
+# open_browser = "http://localhost:3000"  # optional: open embedded browser when run
 """
 
         // Create directory if needed
@@ -223,6 +226,7 @@ public struct BehaviorConfig: Codable {
     public var allowHyperlinks: Bool
     public var mouseAutohide: Bool
     public var audibleBell: Bool
+    public var restoreSession: Bool
 
     enum CodingKeys: String, CodingKey {
         case scrollbackLines = "scrollback_lines"
@@ -231,6 +235,7 @@ public struct BehaviorConfig: Codable {
         case allowHyperlinks = "allow_hyperlinks"
         case mouseAutohide = "mouse_autohide"
         case audibleBell = "audible_bell"
+        case restoreSession = "restore_session"
     }
 
     public init() {
@@ -240,6 +245,21 @@ public struct BehaviorConfig: Codable {
         self.allowHyperlinks = true
         self.mouseAutohide = true
         self.audibleBell = false
+        self.restoreSession = true
+    }
+
+    // Tolerant decoding so configs written before a key existed still parse;
+    // missing keys keep the defaults from init() (stated once, there).
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scrollbackLines = try container.decodeIfPresent(Int.self, forKey: .scrollbackLines) ?? scrollbackLines
+        scrollOnOutput = try container.decodeIfPresent(Bool.self, forKey: .scrollOnOutput) ?? scrollOnOutput
+        scrollOnKeystroke = try container.decodeIfPresent(Bool.self, forKey: .scrollOnKeystroke) ?? scrollOnKeystroke
+        allowHyperlinks = try container.decodeIfPresent(Bool.self, forKey: .allowHyperlinks) ?? allowHyperlinks
+        mouseAutohide = try container.decodeIfPresent(Bool.self, forKey: .mouseAutohide) ?? mouseAutohide
+        audibleBell = try container.decodeIfPresent(Bool.self, forKey: .audibleBell) ?? audibleBell
+        restoreSession = try container.decodeIfPresent(Bool.self, forKey: .restoreSession) ?? restoreSession
     }
 }
 
@@ -307,18 +327,21 @@ public struct Task: Codable {
     public var cmd: String
     public var llmPrompt: String?
     public var hotkey: String?
+    public var openBrowser: String?
 
     enum CodingKeys: String, CodingKey {
         case name
         case cmd
         case llmPrompt = "llm_prompt"
         case hotkey
+        case openBrowser = "open_browser"
     }
 
-    public init(name: String, cmd: String, llmPrompt: String? = nil, hotkey: String? = nil) {
+    public init(name: String, cmd: String, llmPrompt: String? = nil, hotkey: String? = nil, openBrowser: String? = nil) {
         self.name = name
         self.cmd = cmd
         self.llmPrompt = llmPrompt
         self.hotkey = hotkey
+        self.openBrowser = openBrowser
     }
 }

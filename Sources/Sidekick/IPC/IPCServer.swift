@@ -41,7 +41,7 @@ enum IPCCommandType {
             guard let path = command.path,
                   let old = command.old,
                   let new = command.new,
-                  let validPath = Self.validatedFilePath(path) else { return nil }
+                  let validPath = Self.validatedDiffPath(path) else { return nil }
             return .showDiff(path: validPath, old: old, new: new)
         case "agent_ready":
             return .agentReady
@@ -56,13 +56,16 @@ enum IPCCommandType {
         }
     }
 
-    /// Resolves symlinks and requires an absolute path to an existing regular file.
-    private static func validatedFilePath(_ path: String) -> String? {
+    /// Resolves symlinks and requires an absolute path. The file may not
+    /// exist yet (a hook can ask to review the creation of a new file), but
+    /// an existing path must be a regular file.
+    private static func validatedDiffPath(_ path: String) -> String? {
         guard path.hasPrefix("/") else { return nil }
         let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory),
-              !isDirectory.boolValue else { return nil }
+        if FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory), isDirectory.boolValue {
+            return nil
+        }
         return resolved
     }
 
@@ -79,7 +82,14 @@ enum IPCCommandType {
 
 // MARK: - IPC Server Delegate
 protocol IPCServerDelegate: AnyObject {
-    func ipcServer(_ server: IPCServer, didReceiveCommand command: IPCCommandType) -> IPCResponse
+    /// Called on the main thread. The delegate may call `completion`
+    /// synchronously, or hold it and respond later (e.g. after the user
+    /// accepts/rejects a diff) — the client socket stays open until then.
+    func ipcServer(
+        _ server: IPCServer,
+        didReceiveCommand command: IPCCommandType,
+        completion: @escaping (IPCResponse) -> Void
+    )
 }
 
 // MARK: - IPC Server
@@ -91,7 +101,8 @@ class IPCServer {
     weak var delegate: IPCServerDelegate?
 
     /// Requests larger than this are rejected to bound memory per client.
-    private static let maxRequestBytes = 64 * 1024
+    /// Sized to fit show_diff payloads (two ~4MB file bodies, JSON-escaped).
+    private static let maxRequestBytes = 16 * 1024 * 1024
 
     static let shared = IPCServer()
 
@@ -237,6 +248,13 @@ class IPCServer {
                 continue
             }
 
+            // Responses can be deferred (diff approval), so the client may be
+            // gone by the time we write. Without this, write() to a closed
+            // peer raises SIGPIPE and kills the app; with it, write() just
+            // returns EPIPE.
+            var noSigpipe: Int32 = 1
+            setsockopt(clientFD, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, socklen_t(MemoryLayout<Int32>.size))
+
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 self?.handleClient(clientFD: clientFD)
             }
@@ -290,22 +308,27 @@ class IPCServer {
         }
 
         // Execute on the main thread without blocking this queue; the
-        // response is written (and the socket closed) once the delegate runs.
+        // response is written (and the socket closed) once the delegate calls
+        // the completion — which may be deferred (e.g. diff approval).
         DispatchQueue.main.async { [weak self] in
             guard let self = self else {
                 close(clientFD)
                 return
             }
 
-            let response: IPCResponse
-            if let delegate = self.delegate {
-                response = delegate.ipcServer(self, didReceiveCommand: commandType)
-            } else {
-                response = IPCResponse(ok: false, error: "No delegate")
+            guard let delegate = self.delegate else {
+                self.sendResponse(IPCResponse(ok: false, error: "No delegate"), to: clientFD)
+                close(clientFD)
+                return
             }
 
-            self.sendResponse(response, to: clientFD)
-            close(clientFD)
+            var responded = false
+            delegate.ipcServer(self, didReceiveCommand: commandType) { [weak self] response in
+                guard !responded else { return }
+                responded = true
+                self?.sendResponse(response, to: clientFD)
+                close(clientFD)
+            }
         }
     }
 
