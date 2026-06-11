@@ -67,6 +67,8 @@ struct GitFileItem {
 class GitStatusModel: ObservableObject {
     @Published var files: [GitFileItem] = []
     @Published var currentBranch: String = ""
+    @Published var aheadCount: Int = 0
+    @Published var behindCount: Int = 0
     @Published var isClean: Bool = true
     @Published var commitMessage: String = ""
     @Published var isLoading: Bool = false
@@ -100,6 +102,8 @@ class GitStatusModel: ObservableObject {
             refreshGeneration += 1
             _repositoryPath = ""
             currentBranch = ""
+            aheadCount = 0
+            behindCount = 0
             files = []
             isClean = true
             isLoading = false
@@ -128,12 +132,15 @@ class GitStatusModel: ObservableObject {
 
             let branch = self.getCurrentBranch(repositoryRoot: repositoryPath)
             let statusItems = self.getGitStatus(repositoryRoot: repositoryPath)
+            let counts = self.getAheadBehindCounts(repositoryRoot: repositoryPath)
 
             DispatchQueue.main.async {
                 guard self.refreshGeneration == generation,
                       self._repositoryPath == repositoryPath else { return }
 
                 self.currentBranch = branch
+                self.aheadCount = counts.ahead
+                self.behindCount = counts.behind
                 self.files = statusItems
                 self.isClean = statusItems.isEmpty
                 self.isLoading = false
@@ -216,6 +223,10 @@ class GitStatusModel: ObservableObject {
         } catch {
             return "unknown"
         }
+    }
+
+    private func getAheadBehindCounts(repositoryRoot: String) -> (ahead: Int, behind: Int) {
+        ((try? gitService.aheadBehindCounts(repositoryRoot: repositoryRoot)) ?? nil) ?? (ahead: 0, behind: 0)
     }
 
     private func getGitStatus(repositoryRoot: String) -> [GitFileItem] {

@@ -53,6 +53,27 @@ final class GitService {
         return "unknown"
     }
 
+    /// Commits ahead of / behind the current branch's upstream.
+    /// Returns nil when no upstream is configured (e.g. branch never pushed).
+    func aheadBehindCounts(repositoryRoot: String) throws -> (ahead: Int, behind: Int)? {
+        let result = try runGit(
+            ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+            repositoryRoot: repositoryRoot,
+            allowOptionalLocks: false
+        )
+
+        guard result.succeeded else { return nil }
+
+        let parts = result.stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "\t")
+        guard parts.count == 2,
+              let behind = Int(parts[0]),
+              let ahead = Int(parts[1]) else { return nil }
+
+        return (ahead: ahead, behind: behind)
+    }
+
     func status(repositoryRoot: String) throws -> [GitStatusEntry] {
         let result = try runGit(["status", "--porcelain"], repositoryRoot: repositoryRoot, allowOptionalLocks: false)
         guard result.succeeded else { return [] }

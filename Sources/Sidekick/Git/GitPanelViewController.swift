@@ -18,6 +18,7 @@ class GitPanelViewController: NSViewController {
     private var tableView: NSTableView!
     private var headerView: NSView!
     private var branchLabel: NSTextField!
+    private var syncLabel: NSTextField!
     private var statusLabel: NSTextField!
     private var commitMessageTextView: NSTextView!
     private var commitButton: NSButton!
@@ -61,6 +62,13 @@ class GitPanelViewController: NSViewController {
         branchLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(branchLabel)
 
+        // Ahead/behind upstream info
+        syncLabel = NSTextField(labelWithString: "")
+        syncLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        syncLabel.textColor = NSColor(hex: "#fab387")
+        syncLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerView.addSubview(syncLabel)
+
         // Status info
         statusLabel = NSTextField(labelWithString: "Clean")
         statusLabel.font = NSFont.systemFont(ofSize: 11)
@@ -81,6 +89,9 @@ class GitPanelViewController: NSViewController {
         NSLayoutConstraint.activate([
             branchLabel.leadingAnchor.constraint(equalTo: headerView.leadingAnchor, constant: 12),
             branchLabel.topAnchor.constraint(equalTo: headerView.topAnchor, constant: 8),
+
+            syncLabel.leadingAnchor.constraint(equalTo: branchLabel.trailingAnchor, constant: 6),
+            syncLabel.centerYAnchor.constraint(equalTo: branchLabel.centerYAnchor),
 
             statusLabel.leadingAnchor.constraint(equalTo: branchLabel.leadingAnchor),
             statusLabel.topAnchor.constraint(equalTo: branchLabel.bottomAnchor, constant: 2),
@@ -291,6 +302,22 @@ class GitPanelViewController: NSViewController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] branch in
                 self?.branchLabel.stringValue = branch.isEmpty ? "No repository" : branch
+            }
+            .store(in: &cancellables)
+
+        gitStatusModel.$aheadCount
+            .combineLatest(gitStatusModel.$behindCount)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] ahead, behind in
+                guard let self = self else { return }
+                var parts: [String] = []
+                if ahead > 0 { parts.append("\u{2191}\(ahead)") }
+                if behind > 0 { parts.append("\u{2193}\(behind)") }
+                self.syncLabel.stringValue = parts.joined(separator: " ")
+                self.syncLabel.toolTip = parts.isEmpty ? nil :
+                    "\(ahead) commit(s) to push, \(behind) to pull"
+                self.pushButton.title = ahead > 0 ? "Push (\(ahead))" : "Push"
+                self.pullButton.title = behind > 0 ? "Pull (\(behind))" : "Pull"
             }
             .store(in: &cancellables)
 
