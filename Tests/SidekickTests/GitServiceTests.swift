@@ -70,6 +70,48 @@ final class GitServiceTests: XCTestCase {
         XCTAssertNil(GitService.parseStatusLine(""))
     }
 
+    func testParsesUnmergedStatusAsConflicted() {
+        let bothModified = GitService.parseStatusLine("UU src/conflicted.swift")
+
+        XCTAssertEqual(bothModified?.path, "src/conflicted.swift")
+        XCTAssertEqual(bothModified?.isConflicted, true)
+
+        XCTAssertEqual(GitService.parseStatusLine("AA both-added.txt")?.isConflicted, true)
+        XCTAssertEqual(GitService.parseStatusLine("DD both-deleted.txt")?.isConflicted, true)
+        XCTAssertEqual(GitService.parseStatusLine("DU deleted-by-us.txt")?.isConflicted, true)
+        XCTAssertEqual(GitService.parseStatusLine("UA added-by-them.txt")?.isConflicted, true)
+
+        XCTAssertEqual(GitService.parseStatusLine("M  staged.txt")?.isConflicted, false)
+        XCTAssertEqual(GitService.parseStatusLine(" M unstaged.txt")?.isConflicted, false)
+        XCTAssertEqual(GitService.parseStatusLine("?? untracked.txt")?.isConflicted, false)
+    }
+
+    func testConflictMarkerDiffShowsWorkingTreeWithMarkers() {
+        let content = """
+        one
+        <<<<<<< HEAD
+        main-change
+        =======
+        feature-change
+        >>>>>>> b81eefa (feat)
+        three
+
+        """
+
+        let diff = GitService.conflictMarkerDiff(relativePath: "f.txt", content: content)
+        let lines = diff.components(separatedBy: "\n")
+
+        XCTAssertEqual(lines[0], "diff --git a/f.txt b/f.txt")
+        XCTAssertEqual(lines[1], "conflict")
+        XCTAssertEqual(lines[4], "@@ -1,7 +1,7 @@")
+        // Every content line is emitted as context (leading space) so the
+        // renderer numbers it; conflict markers survive verbatim.
+        XCTAssertEqual(lines[5], " one")
+        XCTAssertEqual(lines[6], " <<<<<<< HEAD")
+        XCTAssertEqual(lines[8], " =======")
+        XCTAssertEqual(lines[10], " >>>>>>> b81eefa (feat)")
+    }
+
     func testSplitDiffByFileSeparatesFiles() {
         let diff = """
         diff --git a/foo.swift b/foo.swift

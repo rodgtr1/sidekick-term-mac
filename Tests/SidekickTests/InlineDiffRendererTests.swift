@@ -87,6 +87,72 @@ final class InlineDiffRendererTests: XCTestCase {
         XCTAssertEqual(new?.length, 1)
     }
 
+    func testConflictDiffRendersMarkersAndNumbersAllLines() {
+        let conflictDiff = """
+        diff --git a/f.txt b/f.txt
+        conflict
+        --- a/f.txt
+        +++ b/f.txt
+        @@ -1,7 +1,7 @@
+         one
+         <<<<<<< HEAD
+         main-change
+         =======
+         feature-change
+         >>>>>>> b81eefa (feat)
+         three
+        """
+
+        let rendered = InlineDiffRenderer.render(conflictDiff)
+        let lines = rendered.string.components(separatedBy: "\n")
+
+        // The "conflict" metadata line is hidden, the markers are not.
+        XCTAssertFalse(lines[0].contains("conflict"))
+        XCTAssertTrue(lines[0].hasSuffix("one"))
+        XCTAssertTrue(lines[0].contains("1"))
+        XCTAssertTrue(lines[1].hasSuffix("<<<<<<< HEAD"))
+        XCTAssertTrue(lines[3].hasSuffix("======="))
+        XCTAssertTrue(lines[5].hasSuffix(">>>>>>> b81eefa (feat)"))
+        XCTAssertTrue(lines[6].hasSuffix("three"))
+        XCTAssertTrue(lines[6].contains("7"))
+
+        // Ours/theirs sections carry distinct background tints; lines
+        // outside the conflict carry none.
+        func backgroundColor(ofLineContaining needle: String) -> NSColor? {
+            let nsString = rendered.string as NSString
+            let location = nsString.range(of: needle).location
+            guard location != NSNotFound else { return nil }
+            return rendered.attribute(.backgroundColor, at: location, effectiveRange: nil) as? NSColor
+        }
+
+        let oursBG = backgroundColor(ofLineContaining: "main-change")
+        let theirsBG = backgroundColor(ofLineContaining: "feature-change")
+        XCTAssertNotNil(oursBG)
+        XCTAssertNotNil(theirsBG)
+        XCTAssertNotEqual(oursBG, theirsBG)
+        XCTAssertNil(backgroundColor(ofLineContaining: "three"))
+        XCTAssertNotNil(backgroundColor(ofLineContaining: "<<<<<<< HEAD"))
+    }
+
+    func testNonConflictDiffDoesNotTintMarkerLookalikes() {
+        // A normal diff whose context happens to contain a marker-like line
+        // must render untinted: conflict handling is opt-in via "conflict".
+        let diff = """
+        diff --git a/doc.md b/doc.md
+        index 111..222 100644
+        --- a/doc.md
+        +++ b/doc.md
+        @@ -1,3 +1,3 @@
+         <<<<<<< HEAD
+        -old
+        +new
+        """
+
+        let rendered = InlineDiffRenderer.render(diff)
+        let location = (rendered.string as NSString).range(of: "<<<<<<<").location
+        XCTAssertNil(rendered.attribute(.backgroundColor, at: location, effectiveRange: nil) as? NSColor)
+    }
+
     func testUntrackedFileDiffRendersAllAddedWithNumbers() {
         let newFileDiff = """
         diff --git a/new.txt b/new.txt

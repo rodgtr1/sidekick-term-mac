@@ -22,6 +22,7 @@ enum KeyboardCommand: Equatable {
     case zoomOut
     case zoomReset
     case pasteIntoTerminal
+    case focusAgentAttention
 }
 
 struct KeyboardCommandRouter {
@@ -54,6 +55,7 @@ struct KeyboardCommandRouter {
             case 47: return .toggleHiddenFiles
             case 35: return .commandPalette
             case 24: return .zoomIn // Cmd+Shift+= is Cmd+"+"
+            case 38: return .focusAgentAttention // Cmd+Shift+J
             default: break
             }
         }

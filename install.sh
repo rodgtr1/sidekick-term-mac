@@ -28,14 +28,15 @@ if pgrep -x "Sidekick" > /dev/null; then
     fi
 fi
 
-# Remove existing installation if present
+# Remove existing installation if present (sudo only when a previous
+# install is root-owned).
 if [ -d "/Applications/${APP_NAME}" ]; then
     echo "📦 Removing existing Sidekick installation..."
-    sudo rm -rf "/Applications/${APP_NAME}"
+    rm -rf "/Applications/${APP_NAME}" 2>/dev/null || sudo rm -rf "/Applications/${APP_NAME}"
 fi
 
 # Copy to Applications
-sudo cp -r "${BUILD_DIR}/${APP_NAME}" /Applications/
+cp -r "${BUILD_DIR}/${APP_NAME}" /Applications/ 2>/dev/null || sudo cp -r "${BUILD_DIR}/${APP_NAME}" /Applications/
 
 echo "✅ Sidekick installed to /Applications/"
 
@@ -45,6 +46,7 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-ctl" /usr/local/bin/sidekick-ctl
     sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-agent-status" /usr/local/bin/sidekick-agent-status
+    sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-hook" /usr/local/bin/sidekick-hook
     echo "✅ CLI tools installed"
 fi
 

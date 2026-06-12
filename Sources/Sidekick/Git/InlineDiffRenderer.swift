@@ -17,6 +17,15 @@ enum InlineDiffRenderer {
     private static let removedEmphasisBG = (NSColor(hex: "#f38ba8") ?? .systemRed).withAlphaComponent(0.42)
     private static let addedLineBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.13)
     private static let addedEmphasisBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.38)
+    private static let conflictMarkerText = NSColor(hex: "#f9e2af") ?? .systemYellow
+    private static let conflictMarkerBG = (NSColor(hex: "#f9e2af") ?? .systemYellow).withAlphaComponent(0.15)
+    private static let conflictOursBG = (NSColor(hex: "#94e2d5") ?? .systemTeal).withAlphaComponent(0.12)
+    private static let conflictBaseBG = (NSColor(hex: "#6c7086") ?? .systemGray).withAlphaComponent(0.12)
+    private static let conflictTheirsBG = (NSColor(hex: "#89b4fa") ?? .systemBlue).withAlphaComponent(0.12)
+
+    private enum ConflictSection {
+        case none, ours, base, theirs
+    }
 
     private static let gutterWidth = 5
     private static var blankGutter: String { String(repeating: " ", count: gutterWidth) + "  " }
@@ -31,6 +40,8 @@ enum InlineDiffRenderer {
         var newLineNumber = 0
         var insideHunk = false
         var renderedAnyHunk = false
+        var conflictMode = false
+        var conflictSection = ConflictSection.none
         var index = 0
 
         while index < lines.count {
@@ -38,6 +49,8 @@ enum InlineDiffRenderer {
 
             if line.hasPrefix("diff --git") {
                 insideHunk = false
+                conflictMode = false
+                conflictSection = .none
                 index += 1
                 continue
             }
@@ -54,7 +67,12 @@ enum InlineDiffRenderer {
             }
 
             if !insideHunk {
-                // Everything between "diff --git" and the first @@ is metadata.
+                // Everything between "diff --git" and the first @@ is
+                // metadata; a bare "conflict" line (emitted by
+                // GitService.conflictMarkerDiff) flags the file as unmerged.
+                if line == "conflict" {
+                    conflictMode = true
+                }
                 index += 1
                 continue
             }
@@ -92,7 +110,11 @@ enum InlineDiffRenderer {
 
             // Context line (leading space in unified format).
             let content = line.hasPrefix(" ") ? String(line.dropFirst()) : line
-            appendLine(content, number: newLineNumber, lineBG: nil, emphasis: nil, emphasisBG: nil, to: result)
+            if conflictMode {
+                appendConflictLine(content, number: newLineNumber, section: &conflictSection, to: result)
+            } else {
+                appendLine(content, number: newLineNumber, lineBG: nil, emphasis: nil, emphasisBG: nil, to: result)
+            }
             newLineNumber += 1
             index += 1
         }
@@ -134,6 +156,47 @@ enum InlineDiffRenderer {
             appendLine(addedLine, number: newLineNumber, lineBG: addedLineBG, emphasis: emphasis, emphasisBG: addedEmphasisBG, to: result)
             newLineNumber += 1
         }
+    }
+
+    /// Renders one line of a conflicted file, highlighting the
+    /// <<<<<<< / ||||||| / ======= / >>>>>>> markers and tinting the
+    /// ours/base/theirs sections so the conflict reads at a glance.
+    private static func appendConflictLine(
+        _ content: String,
+        number: Int,
+        section: inout ConflictSection,
+        to result: NSMutableAttributedString
+    ) {
+        let isMarker: Bool
+        if content.hasPrefix("<<<<<<<") {
+            section = .ours
+            isMarker = true
+        } else if content.hasPrefix("|||||||"), section == .ours {
+            section = .base
+            isMarker = true
+        } else if content.hasPrefix("======="), section == .ours || section == .base {
+            section = .theirs
+            isMarker = true
+        } else if content.hasPrefix(">>>>>>>"), section == .theirs {
+            section = .none
+            isMarker = true
+        } else {
+            isMarker = false
+        }
+
+        if isMarker {
+            appendLine(content, number: number, lineBG: conflictMarkerBG, emphasis: nil, emphasisBG: nil, to: result, foreground: conflictMarkerText)
+            return
+        }
+
+        let sectionBG: NSColor?
+        switch section {
+        case .none: sectionBG = nil
+        case .ours: sectionBG = conflictOursBG
+        case .base: sectionBG = conflictBaseBG
+        case .theirs: sectionBG = conflictTheirsBG
+        }
+        appendLine(content, number: number, lineBG: sectionBG, emphasis: nil, emphasisBG: nil, to: result)
     }
 
     /// Common-prefix/suffix character diff between a removed and added line,
@@ -180,7 +243,8 @@ enum InlineDiffRenderer {
         lineBG: NSColor?,
         emphasis: NSRange?,
         emphasisBG: NSColor?,
-        to result: NSMutableAttributedString
+        to result: NSMutableAttributedString,
+        foreground: NSColor? = nil
     ) {
         let gutter: String
         if let number = number {
@@ -192,7 +256,7 @@ enum InlineDiffRenderer {
         let lineStart = result.length
         var attributes: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: textColor
+            .foregroundColor: foreground ?? textColor
         ]
         if let lineBG = lineBG {
             attributes[.backgroundColor] = lineBG

@@ -212,6 +212,12 @@ class SidebarContainerView: NSView {
         }
     }
 
+    func setShowTeleportHosts(_ show: Bool) {
+        if let hostsPanelVC = panelControllers[.hosts] as? HostsPanelViewController {
+            hostsPanelVC.setShowTeleport(show)
+        }
+    }
+
     func refreshFileTree() {
         if let fileTreeVC = panelControllers[.files] as? FileTreeViewController {
             fileTreeVC.refresh()

@@ -126,6 +126,11 @@ final class AgentDashboardViewController: NSViewController {
                 since: tab.agentStateChangedAt
             )
         }
+        // Actionable tabs first: needs-input, then working, then done.
+        rows.sort { lhs, rhs in
+            let l = Self.sortPriority(lhs.state), r = Self.sortPriority(rhs.state)
+            return l == r ? lhs.tabIndex < rhs.tabIndex : l < r
+        }
 
         emptyLabel.isHidden = !rows.isEmpty
         tableView.reloadData()
@@ -135,6 +140,15 @@ final class AgentDashboardViewController: NSViewController {
         let row = tableView.clickedRow
         guard row >= 0 && row < rows.count else { return }
         delegate?.agentDashboard(self, didSelectTabAt: rows[row].tabIndex)
+    }
+
+    private static func sortPriority(_ state: AgentState) -> Int {
+        switch state {
+        case .ready: return 0
+        case .working: return 1
+        case .done: return 2
+        case .idle: return 3
+        }
     }
 
     fileprivate static func describe(_ state: AgentState) -> (label: String, color: NSColor) {

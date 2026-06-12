@@ -8,6 +8,7 @@ enum GitFileStatus: String, CaseIterable {
     case deleted = "D"
     case renamed = "R"
     case copied = "C"
+    case unmerged = "U"
     case untracked = "?"
     case ignored = "!"
     case unmodified = " "
@@ -19,6 +20,7 @@ enum GitFileStatus: String, CaseIterable {
         case .deleted: return "Deleted"
         case .renamed: return "Renamed"
         case .copied: return "Copied"
+        case .unmerged: return "Conflict"
         case .untracked: return "Untracked"
         case .ignored: return "Ignored"
         case .unmodified: return ""
@@ -32,6 +34,7 @@ enum GitFileStatus: String, CaseIterable {
         case .deleted: return NSColor(hex: "#f38ba8") ?? .red
         case .renamed: return NSColor(hex: "#89b4fa") ?? .blue
         case .copied: return NSColor(hex: "#89b4fa") ?? .blue
+        case .unmerged: return NSColor(hex: "#f9e2af") ?? .yellow
         case .untracked: return NSColor(hex: "#cdd6f4") ?? .white
         case .ignored: return NSColor(hex: "#6c7086") ?? .gray
         case .unmodified: return NSColor(hex: "#cdd6f4") ?? .white
@@ -45,6 +48,7 @@ struct GitFileItem {
     let stagedStatus: GitFileStatus
     let unstagedStatus: GitFileStatus
     let isStaged: Bool
+    let isConflicted: Bool
     let isDirectory: Bool
 
     init(path: String, stagedChar: Character, unstagedChar: Character) {
@@ -52,11 +56,17 @@ struct GitFileItem {
         self.filename = URL(fileURLWithPath: path).lastPathComponent
         self.stagedStatus = GitFileStatus(rawValue: String(stagedChar)) ?? .unmodified
         self.unstagedStatus = GitFileStatus(rawValue: String(unstagedChar)) ?? .unmodified
-        self.isStaged = stagedChar != " " && stagedChar != "?"
+        self.isConflicted = GitStatusEntry(path: path, stagedStatus: stagedChar, unstagedStatus: unstagedChar).isConflicted
+        // A conflicted file isn't "staged" in any useful sense; the action
+        // that makes sense for it is Stage, which marks it resolved.
+        self.isStaged = !isConflicted && stagedChar != " " && stagedChar != "?"
         self.isDirectory = false // We'll enhance this later if needed
     }
 
     var displayStatus: GitFileStatus {
+        if isConflicted {
+            return .unmerged
+        }
         if stagedStatus != .unmodified {
             return stagedStatus
         }

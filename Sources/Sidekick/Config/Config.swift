@@ -11,6 +11,7 @@ public struct Config: Codable {
     public var shell: ShellConfig
     public var diff: DiffConfig
     public var editor: EditorConfig?  // Make optional for backwards compatibility
+    public var hosts: HostsConfig?  // Make optional for backwards compatibility
 
     public init() {
         self.theme = ThemeConfig()
@@ -22,6 +23,7 @@ public struct Config: Codable {
         self.shell = ShellConfig()
         self.diff = DiffConfig()
         self.editor = EditorConfig()
+        self.hosts = HostsConfig()
     }
 
     public static func load(from path: String = "~/.config/sidekick/config.toml") -> Config {
@@ -115,6 +117,10 @@ file_open_mode = "terminal"
 word_wrap = true
 # Show hidden files and gitignored files in the file tree (rendered dimmed)
 show_hidden_files = false
+
+[hosts]
+# Show Teleport nodes (from `tsh ls`) in the Hosts sidebar panel
+show_teleport = false
 
 # Global run-panel tasks (available in every project)
 # [[tasks]]
@@ -318,6 +324,24 @@ public struct EditorConfig: Codable {
         self.fileOpenMode = try container.decodeIfPresent(String.self, forKey: .fileOpenMode) ?? "terminal"
         self.wordWrap = try container.decodeIfPresent(Bool.self, forKey: .wordWrap) ?? true
         self.showHiddenFiles = try container.decodeIfPresent(Bool.self, forKey: .showHiddenFiles) ?? false
+    }
+}
+
+// MARK: - Hosts Panel Configuration
+public struct HostsConfig: Codable {
+    public var showTeleport: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case showTeleport = "show_teleport"
+    }
+
+    public init() {
+        self.showTeleport = false
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.showTeleport = try container.decodeIfPresent(Bool.self, forKey: .showTeleport) ?? false
     }
 }
 

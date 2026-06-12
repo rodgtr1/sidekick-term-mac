@@ -49,10 +49,13 @@ class GitIgnoreChecker {
 
         do {
             try task.run()
+            // Drain stdout before waiting: large repos exceed the 64KB pipe
+            // buffer, and git blocks on write until someone reads — waiting
+            // first deadlocks both processes forever.
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             task.waitUntilExit()
 
             if task.terminationStatus == 0 {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 if let output = String(data: data, encoding: .utf8) {
                     ignoredFiles = Set(output.split(separator: "\n").map { String($0) })
                 }

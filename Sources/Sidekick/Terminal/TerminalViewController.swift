@@ -66,6 +66,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var recentOutput = ""
     private var agentStatusSequenceBuffer = ""
     private var lastDetectedAgentState: AgentState = .idle
+    // Once the session reports state via OSC 666 (Claude/Codex hooks), those
+    // reports are authoritative and the text heuristics stand down.
+    private var hasExplicitAgentStatus = false
     private var agentDoneTimer: Timer?
     private var pendingDetectionOutput = ""
     private var detectionFlushScheduled = false
@@ -506,6 +509,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private func handleProcessTerminated() {
         cwdTimer?.invalidate()
         cwdTimer = nil
+        resetAgentState()
     }
 
     // MARK: - LocalProcessTerminalViewDelegate Methods
@@ -612,6 +616,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             agentDoneTimer?.invalidate()
             agentDoneTimer = nil
             notifyDetectedAgentState(.ready)
+        } else if hasExplicitAgentStatus {
+            // Working/done come from the agent's hooks; guessing them from
+            // output here would fabricate "done" (quiet period) while a
+            // permission dialog is still waiting for the user.
         } else if containsAgentWorkingCue(normalizedCurrentOutput) {
             notifyDetectedAgentState(.working)
             scheduleDoneAfterQuietPeriod()
@@ -846,6 +854,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
                 self,
                 status: TerminalCommandStatus(exitCode: exitCode, duration: duration)
             )
+            // The foreground command exited and the shell is back at its
+            // prompt — whatever agent was running here (Ctrl+C'd, quit, or
+            // crashed) is gone, so drop the tab from the agents panel.
+            resetAgentState()
         default:
             break
         }
@@ -935,7 +947,19 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
     }
 
+    /// Returns agent tracking to a clean slate (state idle, heuristics
+    /// re-armed) once the agent process is known to be gone.
+    private func resetAgentState() {
+        guard lastDetectedAgentState != .idle else { return }
+        hasExplicitAgentStatus = false
+        recentOutput = ""
+        agentDoneTimer?.invalidate()
+        agentDoneTimer = nil
+        notifyDetectedAgentState(.idle)
+    }
+
     private func applyExplicitAgentState(_ state: AgentState) {
+        hasExplicitAgentStatus = true
         recentOutput = ""
         agentDoneTimer?.invalidate()
         agentDoneTimer = nil
@@ -968,6 +992,17 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         recentOutput = ""
         agentDoneTimer?.invalidate()
         agentDoneTimer = nil
+
+        if hasExplicitAgentStatus {
+            // Answering a dialog resumes work (the prompt-detection above
+            // restores .ready if the dialog merely redrew), but "done" only
+            // ever comes from the agent's Stop hook — and typing a new
+            // prompt stays "done" until UserPromptSubmit reports busy.
+            if lastDetectedAgentState == .ready {
+                notifyDetectedAgentState(.working)
+            }
+            return
+        }
 
         if lastDetectedAgentState == .ready || lastDetectedAgentState == .done {
             notifyDetectedAgentState(.working)

@@ -42,7 +42,11 @@ def add_hook(event, command, matcher=None):
 
 add_hook("UserPromptSubmit", f"{status_bin} busy")
 add_hook("PermissionRequest", f"{status_bin} ready")
+# Flips "ready" back to "busy" as soon as an approved tool starts running.
+add_hook("PreToolUse", f"{status_bin} busy")
 add_hook("Stop", f"{status_bin} done")
+# Clears the tab from the agents panel when the session ends.
+add_hook("SessionEnd", f"{status_bin} idle")
 # Show file edits in Sidekick for accept/reject before they're applied.
 add_hook("PreToolUse", hook_bin, matcher="Write|Edit|MultiEdit")
 
@@ -102,14 +106,23 @@ for event, command in commands.items():
 path.write_text(text)
 PY
 
+# Pi coding agent: install the status extension when pi is set up.
+pi_note=""
+if [ -d "${HOME}/.pi/agent" ]; then
+    mkdir -p "${HOME}/.pi/agent/extensions"
+    install -m 0644 "$repo/scripts/pi-sidekick-status.ts" "${HOME}/.pi/agent/extensions/sidekick-status.ts"
+    pi_note="  ${HOME}/.pi/agent/extensions/sidekick-status.ts"
+fi
+
 cat <<EOF
 Installed:
   $status_bin
   $hook_bin (PreToolUse edit review)
+${pi_note}
 
 Updated:
   $HOME/.claude/settings.json
   $HOME/.codex/config.toml
 
-Restart Claude Code/Codex sessions for hook changes to take effect.
+Restart Claude Code/Codex/pi sessions for hook changes to take effect.
 EOF

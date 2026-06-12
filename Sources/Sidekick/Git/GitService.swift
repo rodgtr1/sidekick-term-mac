@@ -16,6 +16,14 @@ struct GitStatusEntry: Equatable {
     var hasUnstagedChanges: Bool {
         unstagedStatus != " " && unstagedStatus != "?"
     }
+
+    /// Unmerged entry from a conflicted merge/rebase/cherry-pick:
+    /// UU, AU, UA, DU, UD, AA or DD in porcelain output.
+    var isConflicted: Bool {
+        stagedStatus == "U" || unstagedStatus == "U"
+            || (stagedStatus == "A" && unstagedStatus == "A")
+            || (stagedStatus == "D" && unstagedStatus == "D")
+    }
 }
 
 final class GitService {
@@ -100,6 +108,10 @@ final class GitService {
             return try untrackedFileDiff(relativePath: relativePath, repositoryRoot: repositoryRoot)
         }
 
+        if entry.isConflicted {
+            return conflictedFileDiff(relativePath: relativePath, repositoryRoot: repositoryRoot)
+        }
+
         var output = ""
         if entry.hasStagedChanges {
             output += try gitOutput(["diff", "--cached", "--", relativePath], repositoryRoot: repositoryRoot)
@@ -125,6 +137,11 @@ final class GitService {
         for entry in entries {
             if entry.isUntracked {
                 combined[entry.path] = (try? untrackedFileDiff(relativePath: entry.path, repositoryRoot: repositoryRoot)) ?? "No changes"
+                continue
+            }
+
+            if entry.isConflicted {
+                combined[entry.path] = conflictedFileDiff(relativePath: entry.path, repositoryRoot: repositoryRoot)
                 continue
             }
 
@@ -284,6 +301,35 @@ final class GitService {
             currentDirectoryURL: URL(fileURLWithPath: repositoryRoot),
             environment: environment
         )
+    }
+
+    /// Unmerged paths can't be diffed against the index (`git diff --cached`
+    /// prints "* Unmerged path" and `git diff` emits combined-diff format),
+    /// so show the working-tree contents, which carry the <<<<<<< / =======
+    /// / >>>>>>> conflict markers the user needs to resolve.
+    private func conflictedFileDiff(relativePath: String, repositoryRoot: String) -> String {
+        let filePath = URL(fileURLWithPath: repositoryRoot).appendingPathComponent(relativePath).path
+        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else {
+            return "Conflicted: file not present in working tree"
+        }
+        return Self.conflictMarkerDiff(relativePath: relativePath, content: content)
+    }
+
+    static func conflictMarkerDiff(relativePath: String, content: String) -> String {
+        var lines = content.components(separatedBy: .newlines)
+        if lines.last == "" {
+            lines.removeLast()
+        }
+
+        var diffOutput = "diff --git a/\(relativePath) b/\(relativePath)\n"
+        diffOutput += "conflict\n"
+        diffOutput += "--- a/\(relativePath)\n"
+        diffOutput += "+++ b/\(relativePath)\n"
+        diffOutput += "@@ -1,\(lines.count) +1,\(lines.count) @@\n"
+        for line in lines {
+            diffOutput += " \(line)\n"
+        }
+        return diffOutput
     }
 
     private func untrackedFileDiff(relativePath: String, repositoryRoot: String) throws -> String {

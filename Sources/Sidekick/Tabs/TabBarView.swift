@@ -455,8 +455,40 @@ class TabBarView: NSView {
 
     override func layout() {
         super.layout()
+        // Only move existing buttons here. Rebuilding (remove/add subviews)
+        // during a layout pass dirties constraints and re-enters layout,
+        // which AppKit eventually kills with an NSInternalInconsistencyException
+        // ("too many Update Constraints in Window passes").
         if !tabs.isEmpty {
-            rebuildTabButtons()
+            repositionTabButtons()
+        }
+    }
+
+    /// Recomputes tab widths for the current bounds and updates frames of the
+    /// existing buttons without touching the view hierarchy.
+    private func repositionTabButtons() {
+        let availableWidth = bounds.width - 40 // Leave space for new tab button
+        let tabCount = CGFloat(tabs.count)
+        var tabWidth = tabCount > 0 ? availableWidth / tabCount : tabMinWidth
+        tabWidth = max(tabMinWidth, min(tabMaxWidth, tabWidth))
+        lastTabWidth = tabWidth
+
+        for (index, button) in tabButtons.enumerated() {
+            let x = CGFloat(index) * (tabWidth + tabSpacing)
+            button.frame = NSRect(x: x, y: 0, width: tabWidth, height: tabHeight)
+            if index < closeButtons.count {
+                closeButtons[index].frame = NSRect(
+                    x: x + tabWidth - closeButtonSize - 8,
+                    y: (tabHeight - closeButtonSize) / 2,
+                    width: closeButtonSize,
+                    height: closeButtonSize
+                )
+            }
+        }
+
+        if let indicator = activeIndicators.first, activeTabIndex < tabButtons.count {
+            let x = CGFloat(activeTabIndex) * (tabWidth + tabSpacing)
+            indicator.frame = NSRect(x: x, y: 0, width: tabWidth, height: 2)
         }
     }
 }

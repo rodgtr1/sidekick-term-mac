@@ -69,7 +69,19 @@ echo "📋 Adding sidekick-agent-status CLI..."
 cp ".build/release/sidekick-agent-status" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status"
 chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status"
 
+# Create sidekick-hook CLI tool in bundle (PreToolUse edit review)
+echo "📋 Adding sidekick-hook CLI..."
+cp ".build/release/sidekick-hook" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-hook"
+chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-hook"
+
+# Zip for handing to another Mac. scp/USB transfers skip the quarantine
+# flag entirely; browser/AirDrop transfers need right-click -> Open (or
+# System Settings -> Privacy & Security -> Open Anyway) on first launch.
+echo "📦 Creating distribution zip..."
+ditto -c -k --keepParent "${BUILD_DIR}/${BUNDLE_NAME}" "${BUILD_DIR}/Sidekick.zip"
+
 echo "✅ App bundle created at: ${BUILD_DIR}/${BUNDLE_NAME}"
+echo "✅ Distribution zip at:   ${BUILD_DIR}/Sidekick.zip"
 echo ""
 echo "📱 To install:"
 echo "   cp -r ${BUILD_DIR}/${BUNDLE_NAME} /Applications/"

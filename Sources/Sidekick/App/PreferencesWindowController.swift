@@ -12,6 +12,7 @@ class PreferencesWindowController: NSWindowController {
     private var opacitySlider: NSSlider!
     private var opacityLabel: NSTextField!
     private var blurCheckbox: NSButton!
+    private var showTeleportCheckbox: NSButton!
     private var rawConfigButton: NSButton!
 
     // Terminal Tab
@@ -28,6 +29,8 @@ class PreferencesWindowController: NSWindowController {
     private var fileOpenModePopup: NSPopUpButton!
     private var wordWrapCheckbox: NSButton!
     private var showHiddenFilesCheckbox: NSButton!
+    private var agentStatusLabels: [AgentIntegrationInstaller.AgentID: NSTextField] = [:]
+    private var agentInstallButtons: [AgentIntegrationInstaller.AgentID: NSButton] = [:]
 
     init(config: Config, mainWindowController: MainWindowController? = nil) {
         self.config = config
@@ -74,6 +77,7 @@ class PreferencesWindowController: NSWindowController {
         setupGeneralTab()
         setupTerminalTab()
         setupEditorTab()
+        setupAgentsTab()
         setupAppearanceTab()
         layoutViews()
     }
@@ -116,6 +120,14 @@ class PreferencesWindowController: NSWindowController {
         blurCheckbox.font = NSFont.systemFont(ofSize: 13)
         blurCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
+        showTeleportCheckbox = NSButton(
+            checkboxWithTitle: "Show Teleport hosts (tsh) in Hosts panel",
+            target: self,
+            action: #selector(showTeleportChanged(_:))
+        )
+        showTeleportCheckbox.font = NSFont.systemFont(ofSize: 13)
+        showTeleportCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
         let rawConfigLabel = NSTextField(labelWithString: "Raw Config File:")
         rawConfigLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         rawConfigLabel.textColor = AppTheme.primaryText
@@ -129,6 +141,7 @@ class PreferencesWindowController: NSWindowController {
         generalView.addSubview(opacitySlider)
         generalView.addSubview(opacityLabel)
         generalView.addSubview(blurCheckbox)
+        generalView.addSubview(showTeleportCheckbox)
         generalView.addSubview(rawConfigLabel)
         generalView.addSubview(rawConfigButton)
 
@@ -147,7 +160,10 @@ class PreferencesWindowController: NSWindowController {
             blurCheckbox.topAnchor.constraint(equalTo: opacitySlider.bottomAnchor, constant: 20),
             blurCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
 
-            rawConfigLabel.topAnchor.constraint(equalTo: blurCheckbox.bottomAnchor, constant: 30),
+            showTeleportCheckbox.topAnchor.constraint(equalTo: blurCheckbox.bottomAnchor, constant: 12),
+            showTeleportCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
+
+            rawConfigLabel.topAnchor.constraint(equalTo: showTeleportCheckbox.bottomAnchor, constant: 30),
             rawConfigLabel.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
 
             rawConfigButton.topAnchor.constraint(equalTo: rawConfigLabel.bottomAnchor, constant: 10),
@@ -274,6 +290,80 @@ class PreferencesWindowController: NSWindowController {
         tabView.addTabViewItem(terminalTabItem)
     }
 
+    private func setupAgentsTab() {
+        let agentsView = NSView()
+        agentsView.wantsLayer = true
+        agentsView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+
+        let blurbLabel = NSTextField(
+            labelWithString: "Wire up agent CLIs to report Working / Needs input / Done to the agents panel. Detected from each tool's config directory; safe to re-run."
+        )
+        blurbLabel.font = NSFont.systemFont(ofSize: 12)
+        blurbLabel.textColor = AppTheme.secondaryText
+        blurbLabel.lineBreakMode = .byWordWrapping
+        blurbLabel.maximumNumberOfLines = 3
+        blurbLabel.translatesAutoresizingMaskIntoConstraints = false
+        agentsView.addSubview(blurbLabel)
+
+        NSLayoutConstraint.activate([
+            blurbLabel.topAnchor.constraint(equalTo: agentsView.topAnchor, constant: 20),
+            blurbLabel.leadingAnchor.constraint(equalTo: agentsView.leadingAnchor, constant: 20),
+            blurbLabel.trailingAnchor.constraint(equalTo: agentsView.trailingAnchor, constant: -20)
+        ])
+
+        var previousAnchor = blurbLabel.bottomAnchor
+        for (index, agent) in AgentIntegrationInstaller.AgentID.allCases.enumerated() {
+            let nameLabel = NSTextField(labelWithString: agent.displayName)
+            nameLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+            nameLabel.textColor = AppTheme.primaryText
+            nameLabel.translatesAutoresizingMaskIntoConstraints = false
+
+            let statusLabel = NSTextField(labelWithString: "")
+            statusLabel.font = NSFont.systemFont(ofSize: 12)
+            statusLabel.textColor = AppTheme.secondaryText
+            statusLabel.lineBreakMode = .byWordWrapping
+            statusLabel.maximumNumberOfLines = 2
+            statusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+            let installButton = NSButton(
+                title: "Install",
+                target: self,
+                action: #selector(installAgentIntegrationClicked(_:))
+            )
+            installButton.bezelStyle = .rounded
+            installButton.tag = index
+            installButton.translatesAutoresizingMaskIntoConstraints = false
+
+            agentsView.addSubview(nameLabel)
+            agentsView.addSubview(statusLabel)
+            agentsView.addSubview(installButton)
+
+            NSLayoutConstraint.activate([
+                nameLabel.topAnchor.constraint(equalTo: previousAnchor, constant: 22),
+                nameLabel.leadingAnchor.constraint(equalTo: agentsView.leadingAnchor, constant: 20),
+
+                installButton.centerYAnchor.constraint(equalTo: nameLabel.centerYAnchor),
+                installButton.trailingAnchor.constraint(equalTo: agentsView.trailingAnchor, constant: -20),
+                installButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
+
+                statusLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 4),
+                statusLabel.leadingAnchor.constraint(equalTo: agentsView.leadingAnchor, constant: 20),
+                statusLabel.trailingAnchor.constraint(equalTo: agentsView.trailingAnchor, constant: -20)
+            ])
+
+            agentStatusLabels[agent] = statusLabel
+            agentInstallButtons[agent] = installButton
+            previousAnchor = statusLabel.bottomAnchor
+        }
+
+        updateAgentIntegrationStatuses()
+
+        let agentsTabItem = NSTabViewItem(identifier: "agents")
+        agentsTabItem.label = "Agents"
+        agentsTabItem.view = agentsView
+        tabView.addTabViewItem(agentsTabItem)
+    }
+
     private func setupAppearanceTab() {
         let appearanceView = NSView()
         appearanceView.wantsLayer = true
@@ -380,6 +470,9 @@ class PreferencesWindowController: NSWindowController {
         // Load blur setting
         blurCheckbox.state = config.window.enableBlur ? .on : .off
 
+        // Load Teleport hosts setting
+        showTeleportCheckbox.state = (config.hosts?.showTeleport ?? false) ? .on : .off
+
         // Load font family
         let currentFont = config.font.family
         for i in 0..<fontFamilyPopup.numberOfItems {
@@ -428,6 +521,15 @@ class PreferencesWindowController: NSWindowController {
         config.window.enableBlur = sender.state == .on
         config.save()
         showRestartAlert()
+    }
+
+    @objc private func showTeleportChanged(_ sender: NSButton) {
+        if config.hosts == nil {
+            config.hosts = HostsConfig()
+        }
+        config.hosts?.showTeleport = sender.state == .on
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
     }
 
     @objc private func fontFamilyChanged(_ sender: NSPopUpButton) {
@@ -485,6 +587,47 @@ class PreferencesWindowController: NSWindowController {
         alert.addButton(withTitle: "OK")
         alert.runModal()
         updateShellIntegrationStatus()
+    }
+
+    private func updateAgentIntegrationStatuses() {
+        for agent in AgentIntegrationInstaller.AgentID.allCases {
+            let status = AgentIntegrationInstaller.status(of: agent)
+            agentStatusLabels[agent]?.stringValue = status.description
+
+            let button = agentInstallButtons[agent]
+            switch status {
+            case .installed:
+                button?.title = "Installed ✓"
+                button?.isEnabled = false
+            case .available:
+                button?.title = "Install"
+                button?.isEnabled = true
+            case .notDetected, .helperMissing:
+                button?.title = "Install"
+                button?.isEnabled = false
+            }
+        }
+    }
+
+    @objc private func installAgentIntegrationClicked(_ sender: NSButton) {
+        let agents = AgentIntegrationInstaller.AgentID.allCases
+        guard sender.tag >= 0 && sender.tag < agents.count else { return }
+        let agent = agents[sender.tag]
+
+        let alert = NSAlert()
+        do {
+            try AgentIntegrationInstaller.install(agent)
+            alert.messageText = "\(agent.displayName) Integration Installed"
+            alert.informativeText = "Restart any running \(agent.displayName) sessions to pick up the change."
+            alert.alertStyle = .informational
+        } catch {
+            alert.messageText = "Installation Failed"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+        }
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        updateAgentIntegrationStatuses()
     }
 
     @objc private func rawConfigButtonClicked(_ sender: NSButton) {

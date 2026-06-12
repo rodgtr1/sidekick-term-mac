@@ -18,8 +18,9 @@ final class HostsPanelViewController: NSViewController {
 
     private var items: [Item] = []
     private var sshHosts: [String] = []
-    private var teleportNodes: [(name: String, detail: String?)] = []
+    private var teleportNodes: [(name: String, detail: String?, command: String)] = []
     private var teleportMessage: String?
+    private var showTeleport = false
 
     private var tableView: NSTableView!
     private var scrollView: NSScrollView!
@@ -91,11 +92,27 @@ final class HostsPanelViewController: NSViewController {
         refresh()
     }
 
+    /// Enables or disables the Teleport section. When disabled, tsh is never
+    /// invoked at all.
+    func setShowTeleport(_ show: Bool) {
+        guard show != showTeleport else { return }
+        showTeleport = show
+        if !show {
+            teleportNodes = []
+            teleportMessage = nil
+        }
+        if isViewLoaded {
+            refresh()
+        }
+    }
+
     func refresh() {
         sshHosts = Self.parseSSHConfigHosts()
         rebuildItems()
 
-        loadTeleportNodes()
+        if showTeleport {
+            loadTeleportNodes()
+        }
     }
 
     private func rebuildItems() {
@@ -110,12 +127,14 @@ final class HostsPanelViewController: NSViewController {
             }
         }
 
-        newItems.append(.header("TELEPORT"))
-        if let message = teleportMessage {
-            newItems.append(.message(message))
-        } else {
-            for node in teleportNodes {
-                newItems.append(.host(name: node.name, detail: node.detail, command: "tsh ssh \(node.name)"))
+        if showTeleport {
+            newItems.append(.header("TELEPORT"))
+            if let message = teleportMessage {
+                newItems.append(.message(message))
+            } else {
+                for node in teleportNodes {
+                    newItems.append(.host(name: node.name, detail: node.detail, command: node.command))
+                }
             }
         }
 
@@ -165,7 +184,7 @@ final class HostsPanelViewController: NSViewController {
         rebuildItems()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            var nodes: [(String, String?)] = []
+            var nodes: [(String, String?, String)] = []
             var message: String?
 
             // `tsh ls` with an expired profile tries to reauthenticate
@@ -185,11 +204,26 @@ final class HostsPanelViewController: NSViewController {
                         let metadata = entry["metadata"] as? [String: Any]
                         guard let hostname = spec?["hostname"] as? String
                                 ?? metadata?["name"] as? String else { continue }
-                        let labels = (metadata?["labels"] as? [String: Any])?
+                        let labels = metadata?["labels"] as? [String: Any]
+
+                        // Beam instances list as nodes with a beam-<uuid>
+                        // hostname, but tsh ssh can't dial that — they connect
+                        // via `tsh beams ssh <alias>` using the friendly alias
+                        // from their labels.
+                        if let alias = labels?["teleport.internal/beams/alias"] as? String {
+                            nodes.append((alias, "Teleport Beam", "tsh beams ssh \(alias)"))
+                            continue
+                        }
+
+                        let labelText = labels?
                             .map { "\($0.key)=\($0.value)" }
                             .sorted()
                             .joined(separator: " ")
-                        nodes.append((hostname, labels?.isEmpty == false ? labels : nil))
+                        nodes.append((
+                            hostname,
+                            labelText?.isEmpty == false ? labelText : nil,
+                            "tsh ssh \(hostname)"
+                        ))
                     }
                     nodes.sort { $0.0 < $1.0 }
                 } else {
@@ -198,7 +232,7 @@ final class HostsPanelViewController: NSViewController {
             }
 
             DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
+                guard let self = self, self.showTeleport else { return }
                 self.teleportNodes = nodes
                 self.teleportMessage = nodes.isEmpty ? (message ?? "No nodes") : nil
                 self.rebuildItems()
@@ -228,23 +262,53 @@ final class HostsPanelViewController: NSViewController {
         task.standardError = Pipe()
         task.standardInput = FileHandle.nullDevice
 
+        // Collect output with a readability handler instead of a blocking
+        // read-to-EOF: pipe FDs are inherited by any child process the app
+        // spawns while tsh runs (shells, git), and a long-lived child holding
+        // the write end means EOF never arrives even after tsh exits.
+        let bufferLock = NSLock()
+        var buffer = Data()
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+            } else {
+                bufferLock.lock()
+                buffer.append(chunk)
+                bufferLock.unlock()
+            }
+        }
+
+        let exited = DispatchSemaphore(value: 0)
+        task.terminationHandler = { _ in exited.signal() }
+
         do {
             try task.run()
         } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
             return TshResult(exitCode: -1, stdout: Data(), timedOut: false)
         }
 
-        let killWork = DispatchWorkItem { [weak task] in
-            task?.terminate()
+        // Wait on process exit, not pipe EOF, so the timeout always holds.
+        var timedOut = false
+        if exited.wait(timeout: .now() + timeout) == .timedOut {
+            timedOut = true
+            task.terminate()
+            if exited.wait(timeout: .now() + 2) == .timedOut {
+                kill(task.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 2)
+            }
         }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: killWork)
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        let timedOut = killWork.isCancelled == false && task.terminationReason == .uncaughtSignal
-        killWork.cancel()
+        // Brief grace period so the handler drains any final output.
+        usleep(100_000)
+        pipe.fileHandleForReading.readabilityHandler = nil
+        bufferLock.lock()
+        let data = buffer
+        bufferLock.unlock()
 
-        return TshResult(exitCode: task.terminationStatus, stdout: data, timedOut: timedOut)
+        let exitCode = task.isRunning ? -1 : task.terminationStatus
+        return TshResult(exitCode: exitCode, stdout: data, timedOut: timedOut)
     }
 
     @objc private func rowDoubleClicked() {

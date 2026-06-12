@@ -372,6 +372,7 @@ class MainWindowController: NSWindowController {
         sidebarContainerView = SidebarContainerView()
         sidebarContainerView.delegate = self
         sidebarContainerView.setVisible(false)
+        sidebarContainerView.setShowTeleportHosts(config.hosts?.showTeleport ?? false)
         sidebarContainerView.translatesAutoresizingMaskIntoConstraints = false
         window?.contentView?.addSubview(sidebarContainerView)
     }
@@ -444,6 +445,7 @@ class MainWindowController: NSWindowController {
         configureWindowBackgroundEffect()
         activityBarView?.topInset = CGFloat(newConfig.window.padding)
         sidebarContainerView?.setShowHiddenFiles(newConfig.editor?.showHiddenFiles ?? false)
+        sidebarContainerView?.setShowTeleportHosts(newConfig.hosts?.showTeleport ?? false)
 
         for tab in tabs {
             for pane in tab.panes {
@@ -1421,6 +1423,23 @@ extension MainWindowController {
             FontZoom.shared.reset()
         case .pasteIntoTerminal:
             break // handled in handleKeyDown
+        case .focusAgentAttention:
+            jumpToNextAttentionTab()
+        }
+    }
+
+    /// Cmd+Shift+J: cycles through tabs whose agent wants attention, most
+    /// urgent state first — needs-input tabs, then finished ones, then
+    /// working ones. Repeated presses walk all tabs in that state.
+    private func jumpToNextAttentionTab() {
+        for state in [AgentState.ready, .done, .working] {
+            let candidates = tabs.indices.filter { tabs[$0].agentState == state }
+            guard !candidates.isEmpty else { continue }
+            let next = candidates.first(where: { $0 > activeTabIndex }) ?? candidates[0]
+            if next != activeTabIndex {
+                switchToTab(index: next)
+            }
+            return
         }
     }
 

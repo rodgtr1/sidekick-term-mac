@@ -83,6 +83,7 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - `Ctrl+Tab` - Next tab
 - `Ctrl+Shift+Tab` - Previous tab
 - `Cmd+1-9` - Switch to tab by index
+- `Cmd+Shift+J` - Jump to next tab whose agent wants attention (needs-input first, then done, then working)
 
 ### Splits
 - `Cmd+D` - Split right (horizontal)
@@ -212,13 +213,36 @@ echo '{"action":"ping"}' | nc -U ~/.config/sidekick/sidekick.sock
 ```
 Sidekick.app/
 ├── Contents/
-│   ├── Info.plist          # App metadata
+│   ├── Info.plist                  # App metadata
 │   ├── MacOS/
-│   │   ├── Sidekick        # Main GUI application
-│   │   └── sidekick-ctl    # CLI utility
+│   │   ├── Sidekick                # Main GUI application
+│   │   ├── sidekick-ctl            # CLI utility
+│   │   ├── sidekick-agent-status   # Agent state reporter (used by hooks)
+│   │   └── sidekick-hook           # Claude PreToolUse edit review
 │   └── Resources/
-│       └── AppIcon.png     # App icon
+│       └── AppIcon.icns            # App icon
 ```
+
+### Handing It to Another Mac
+
+The bundle is self-contained — no source checkout or Swift toolchain needed
+on the receiving end:
+
+1. `./build-app.sh` produces `build/Sidekick.zip` alongside the bundle.
+2. Transfer it. `scp`/USB skips macOS quarantine entirely; browser or
+   AirDrop transfers will need right-click → Open (or System Settings →
+   Privacy & Security → "Open Anyway") on first launch, since the app is
+   not notarized.
+3. Recipient unzips and drags `Sidekick.app` to `/Applications`.
+4. In-app setup (all optional, each one button):
+   - **Preferences → Terminal → Install for zsh** — shell integration
+     (prompt marks, cwd tracking, agent-exit cleanup).
+   - **Preferences → Agents** — detects Claude Code, Codex, and Pi and
+     wires whichever are present to the agents panel, using the binaries
+     inside the app bundle. Safe to re-run; existing config is preserved.
+
+Note: the app is Apple Silicon (arm64) only as built; Intel Macs would
+need a universal build (`swift build --arch arm64 --arch x86_64`).
 
 ### Installation Options
 
