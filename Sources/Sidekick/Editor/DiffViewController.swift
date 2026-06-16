@@ -57,7 +57,7 @@ class DiffViewController: NSViewController {
         textContainer.widthTracksTextView = true
         textContainer.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
 
-        let layoutManager = NSLayoutManager()
+        let layoutManager = DiffLineBackgroundLayoutManager()
         layoutManager.addTextContainer(textContainer)
 
         let textStorage = NSTextStorage()

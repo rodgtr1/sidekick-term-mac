@@ -83,14 +83,23 @@ final class GitService {
     }
 
     func status(repositoryRoot: String) throws -> [GitStatusEntry] {
-        let result = try runGit(["status", "--porcelain"], repositoryRoot: repositoryRoot, allowOptionalLocks: false)
+        // --untracked-files=all lists each untracked file individually instead
+        // of collapsing a fully-untracked directory into a single "?? dir/"
+        // entry, so files like .claude/skills/.../SKILL.md show up the way they
+        // do in Zed. (Nested git repos such as content/15.x still come back as
+        // a single "?? content/15.x/" directory entry; git won't recurse them.)
+        let result = try runGit(
+            ["status", "--porcelain", "--untracked-files=all"],
+            repositoryRoot: repositoryRoot,
+            allowOptionalLocks: false
+        )
         guard result.succeeded else { return [] }
         return Self.parseStatusOutput(result.stdout)
     }
 
     func status(forRelativePath relativePath: String, repositoryRoot: String) throws -> GitStatusEntry? {
         let result = try runGit(
-            ["status", "--porcelain", "--", relativePath],
+            ["status", "--porcelain", "--untracked-files=all", "--", relativePath],
             repositoryRoot: repositoryRoot,
             allowOptionalLocks: false
         )
@@ -173,6 +182,12 @@ final class GitService {
             if line.hasPrefix("diff --git ") {
                 flush()
                 currentPath = parsePathFromDiffHeader(line)
+            }
+            // Unmerged paths emit a bare "* Unmerged path <file>" line with no
+            // diff --git header; skip it so it doesn't get appended to the
+            // previous file's diff.
+            if line.hasPrefix("* Unmerged path ") {
+                continue
             }
             if currentPath != nil {
                 currentLines.append(line)
@@ -315,7 +330,7 @@ final class GitService {
         return Self.conflictMarkerDiff(relativePath: relativePath, content: content)
     }
 
-    static func conflictMarkerDiff(relativePath: String, content: String) -> String {
+    static func conflictMarkerDiff(relativePath: String, content: String, contextLines: Int = 3) -> String {
         var lines = content.components(separatedBy: .newlines)
         if lines.last == "" {
             lines.removeLast()
@@ -325,22 +340,72 @@ final class GitService {
         diffOutput += "conflict\n"
         diffOutput += "--- a/\(relativePath)\n"
         diffOutput += "+++ b/\(relativePath)\n"
-        diffOutput += "@@ -1,\(lines.count) +1,\(lines.count) @@\n"
-        for line in lines {
-            diffOutput += " \(line)\n"
+
+        // Only emit the regions around conflict markers (plus a few context
+        // lines) instead of the whole file, so a conflict deep in a large file
+        // isn't pushed past the diff view's height cap and hidden.
+        let markerIndices = lines.indices.filter { index in
+            let line = lines[index]
+            return line.hasPrefix("<<<<<<<") || line.hasPrefix("|||||||")
+                || line.hasPrefix("=======") || line.hasPrefix(">>>>>>>")
+        }
+
+        guard !markerIndices.isEmpty else {
+            diffOutput += "@@ -1,\(lines.count) +1,\(lines.count) @@\n"
+            for line in lines {
+                diffOutput += " \(line)\n"
+            }
+            return diffOutput
+        }
+
+        var regions: [(start: Int, end: Int)] = []
+        for index in markerIndices {
+            let start = max(0, index - contextLines)
+            let end = min(lines.count - 1, index + contextLines)
+            if let last = regions.last, start <= last.end + 1 {
+                regions[regions.count - 1].end = max(last.end, end)
+            } else {
+                regions.append((start, end))
+            }
+        }
+
+        for region in regions {
+            let count = region.end - region.start + 1
+            diffOutput += "@@ -\(region.start + 1),\(count) +\(region.start + 1),\(count) @@\n"
+            for index in region.start...region.end {
+                diffOutput += " \(lines[index])\n"
+            }
         }
         return diffOutput
     }
 
     private func untrackedFileDiff(relativePath: String, repositoryRoot: String) throws -> String {
-        let filePath = URL(fileURLWithPath: repositoryRoot).appendingPathComponent(relativePath).path
+        let trimmedPath = relativePath.hasSuffix("/") ? String(relativePath.dropLast()) : relativePath
+        let filePath = URL(fileURLWithPath: repositoryRoot).appendingPathComponent(trimmedPath).path
+
+        // A fully-untracked directory (e.g. a nested git repo git won't recurse
+        // into) arrives as a single "?? dir/" entry. There's no file to read, so
+        // surface a note instead of throwing and falling back to a blank
+        // "No changes" the user can't interpret.
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: filePath, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            var diffOutput = "diff --git a/\(trimmedPath) b/\(trimmedPath)\n"
+            diffOutput += "new file\n"
+            diffOutput += "--- /dev/null\n"
+            diffOutput += "+++ b/\(trimmedPath)\n"
+            diffOutput += "@@ -0,0 +1,1 @@\n"
+            diffOutput += "+(untracked directory — likely a nested repository; open it to view its contents)\n"
+            return diffOutput
+        }
+
         let content = try String(contentsOfFile: filePath, encoding: .utf8)
         let lines = content.components(separatedBy: .newlines)
 
-        var diffOutput = "diff --git a/\(relativePath) b/\(relativePath)\n"
+        var diffOutput = "diff --git a/\(trimmedPath) b/\(trimmedPath)\n"
         diffOutput += "new file\n"
         diffOutput += "--- /dev/null\n"
-        diffOutput += "+++ b/\(relativePath)\n"
+        diffOutput += "+++ b/\(trimmedPath)\n"
         diffOutput += "@@ -0,0 +1,\(lines.count) @@\n"
         for line in lines {
             diffOutput += "+\(line)\n"

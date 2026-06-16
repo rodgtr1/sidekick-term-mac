@@ -134,6 +134,39 @@ final class GitServiceTests: XCTestCase {
         XCTAssertFalse(byFile["foo.swift"]?.contains("+added") ?? true)
     }
 
+    func testConflictMarkerDiffTrimsToConflictRegionInLargeFile() {
+        var lines = (1...50).map { "line\($0)" }
+        lines.insert(">>>>>>> branch", at: 30)
+        lines.insert("incoming", at: 30)
+        lines.insert("=======", at: 30)
+        lines.insert("current", at: 30)
+        lines.insert("<<<<<<< HEAD", at: 30)
+        let content = lines.joined(separator: "\n") + "\n"
+
+        let diff = GitService.conflictMarkerDiff(relativePath: "f.txt", content: content)
+
+        // Only the conflict region is emitted, not the whole 55-line file.
+        XCTAssertTrue(diff.contains("<<<<<<< HEAD"))
+        XCTAssertTrue(diff.contains(">>>>>>> branch"))
+        XCTAssertFalse(diff.contains(" line1\n"))
+        XCTAssertFalse(diff.contains(" line50\n"))
+        XCTAssertTrue(diff.contains(" line28\n")) // within 3 lines of context
+    }
+
+    func testSplitDiffByFileIgnoresUnmergedPathLine() {
+        let diff = """
+        diff --git a/foo.swift b/foo.swift
+        @@ -1 +1 @@
+        -old
+        +new
+        * Unmerged path bar.swift
+        """
+
+        let byFile = GitService.splitDiffByFile(diff)
+
+        XCTAssertFalse(byFile["foo.swift"]?.contains("Unmerged path") ?? true)
+    }
+
     func testParsePathFromQuotedDiffHeader() {
         let path = GitService.parsePathFromDiffHeader("diff --git \"a/my file.txt\" \"b/my file.txt\"")
 

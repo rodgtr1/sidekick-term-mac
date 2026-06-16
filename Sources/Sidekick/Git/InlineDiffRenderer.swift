@@ -1,5 +1,38 @@
 import Cocoa
 
+/// Paints a full-width background behind any line carrying the
+/// `InlineDiffRenderer.lineFillColor` attribute, so added/removed lines read as
+/// solid Zed-style bars even when the line is empty (a blank-line deletion).
+/// `NSAttributedString`'s own `.backgroundColor` only paints behind glyphs, so
+/// an empty removed line would otherwise be invisible.
+final class DiffLineBackgroundLayoutManager: NSLayoutManager {
+    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        if let storage = textStorage {
+            enumerateLineFragments(forGlyphRange: glyphsToShow) { [weak self] rect, _, container, glyphRange, _ in
+                guard let self = self else { return }
+                let charRange = self.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+                guard charRange.length > 0,
+                      charRange.location < storage.length,
+                      let color = storage.attribute(
+                          InlineDiffRenderer.lineFillColor,
+                          at: charRange.location,
+                          effectiveRange: nil
+                      ) as? NSColor else { return }
+                color.setFill()
+                let fillRect = NSRect(
+                    x: origin.x,
+                    y: origin.y + rect.minY,
+                    width: container.size.width,
+                    height: rect.height
+                )
+                NSBezierPath(rect: fillRect).fill()
+            }
+        }
+        // Draw glyph-level backgrounds (intraline emphasis) on top of the fill.
+        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+    }
+}
+
 /// Renders unified git diff text as a Zed-style inline diff:
 /// - file metadata (diff --git, index, ---, +++) is hidden
 /// - removed lines sit directly above their replacements with a light red
@@ -10,12 +43,17 @@ import Cocoa
 enum InlineDiffRenderer {
     static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
 
+    /// Whole-line background, painted full-width by
+    /// `DiffLineBackgroundLayoutManager` (use this for added/removed/conflict
+    /// lines; reserve `.backgroundColor` for intraline emphasis only).
+    static let lineFillColor = NSAttributedString.Key("InlineDiffLineFillColor")
+
     private static let textColor = NSColor(hex: "#cdd6f4") ?? .textColor
     private static let gutterColor = NSColor(hex: "#6c7086") ?? .secondaryLabelColor
     private static let separatorColor = NSColor(hex: "#45475a") ?? .separatorColor
-    private static let removedLineBG = (NSColor(hex: "#f38ba8") ?? .systemRed).withAlphaComponent(0.13)
+    private static let removedLineBG = (NSColor(hex: "#f38ba8") ?? .systemRed).withAlphaComponent(0.25)
     private static let removedEmphasisBG = (NSColor(hex: "#f38ba8") ?? .systemRed).withAlphaComponent(0.42)
-    private static let addedLineBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.13)
+    private static let addedLineBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.22)
     private static let addedEmphasisBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.38)
     private static let conflictMarkerText = NSColor(hex: "#f9e2af") ?? .systemYellow
     private static let conflictMarkerBG = (NSColor(hex: "#f9e2af") ?? .systemYellow).withAlphaComponent(0.15)
@@ -259,7 +297,9 @@ enum InlineDiffRenderer {
             .foregroundColor: foreground ?? textColor
         ]
         if let lineBG = lineBG {
-            attributes[.backgroundColor] = lineBG
+            // Full-width fill (incl. empty lines), drawn by the custom layout
+            // manager rather than the glyph-bound .backgroundColor.
+            attributes[InlineDiffRenderer.lineFillColor] = lineBG
         }
 
         let lineString = NSMutableAttributedString(string: gutter + content + "\n", attributes: attributes)

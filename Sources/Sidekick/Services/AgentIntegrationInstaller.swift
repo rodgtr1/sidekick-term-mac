@@ -139,15 +139,11 @@ enum AgentIntegrationInstaller {
         for (event, state) in statusHooks + claudeOnlyStatusHooks {
             addClaudeHook(to: &hooks, event: event, command: "\(statusBinary.path) \(state)")
         }
-        if let hookBinary = helperURL(named: "sidekick-hook") {
-            // Edit review: shows Write/Edit diffs in Sidekick before they apply.
-            addClaudeHook(
-                to: &hooks,
-                event: "PreToolUse",
-                command: hookBinary.path,
-                matcher: "Write|Edit|MultiEdit"
-            )
-        }
+        // The sidekick-hook PreToolUse diff popup duplicated Claude Code's own
+        // approval prompt (the hook never emitted a permission decision, so the
+        // harness still asked), so it's no longer installed. Strip any copy a
+        // previous version left behind.
+        removeClaudeHook(from: &hooks, event: "PreToolUse", signature: "sidekick-hook")
         settings["hooks"] = hooks
 
         let data = try JSONSerialization.data(
@@ -188,6 +184,35 @@ enum AgentIntegrationInstaller {
         }
         groups.append(group)
         hooks[event] = groups
+    }
+
+    /// Removes any hook group under `event` that invokes a command whose path
+    /// ends in `signature` (the binary name), dropping groups left empty. Used
+    /// to retire integrations a previous install added. Internal for tests.
+    static func removeClaudeHook(
+        from hooks: inout [String: Any],
+        event: String,
+        signature: String
+    ) {
+        guard var groups = hooks[event] as? [[String: Any]] else { return }
+
+        groups = groups.compactMap { group in
+            let kept = (group["hooks"] as? [[String: Any]] ?? []).filter { hook in
+                guard let command = hook["command"] as? String else { return true }
+                let name = command.split(separator: " ").first.map(String.init) ?? command
+                return !(name == signature || name.hasSuffix("/\(signature)"))
+            }
+            if kept.isEmpty { return nil }
+            var updated = group
+            updated["hooks"] = kept
+            return updated
+        }
+
+        if groups.isEmpty {
+            hooks.removeValue(forKey: event)
+        } else {
+            hooks[event] = groups
+        }
     }
 
     private static func installCodex() throws {

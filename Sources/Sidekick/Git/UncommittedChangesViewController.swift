@@ -106,7 +106,8 @@ final class UncommittedChangesViewController: NSViewController {
                 let sections = entries.map { entry in
                     ChangeSection(
                         relativePath: entry.path,
-                        diff: diffs[entry.path] ?? "No changes"
+                        diff: diffs[entry.path] ?? "No changes",
+                        isConflicted: entry.isConflicted
                     )
                 }
 
@@ -164,6 +165,10 @@ final class UncommittedChangesViewController: NSViewController {
     }
 
     private func makeSectionView(_ section: ChangeSection) -> NSView {
+        if section.isConflicted {
+            return makeConflictSectionView(section)
+        }
+
         let container = NSView()
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
@@ -243,7 +248,19 @@ final class UncommittedChangesViewController: NSViewController {
     }
 
     private func makeDiffColumn(text: NSAttributedString) -> NSTextView {
-        let textView = NSTextView()
+        // Build a manual TextKit 1 stack so the custom layout manager (which
+        // paints full-width line backgrounds, incl. empty deleted lines) is
+        // used instead of NSTextView's default TextKit 2 layout.
+        let textContainer = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = true
+
+        let layoutManager = DiffLineBackgroundLayoutManager()
+        layoutManager.addTextContainer(textContainer)
+
+        let textStorage = NSTextStorage()
+        textStorage.addLayoutManager(layoutManager)
+
+        let textView = NSTextView(frame: .zero, textContainer: textContainer)
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.isEditable = false
         textView.isSelectable = true
@@ -254,11 +271,6 @@ final class UncommittedChangesViewController: NSViewController {
         textView.textContainerInset = NSSize(width: 12, height: 7)
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.containerSize = NSSize(
-            width: 0,
-            height: CGFloat.greatestFiniteMagnitude
-        )
         textView.textStorage?.setAttributedString(text)
         return textView
     }
@@ -266,6 +278,234 @@ final class UncommittedChangesViewController: NSViewController {
     @objc private func openFileClicked(_ sender: NSButton) {
         guard let path = sender.identifier?.rawValue else { return }
         onOpenFile?(path)
+    }
+
+    // MARK: - Conflict resolution
+
+    private enum ConflictColors {
+        static let currentBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.16)
+        static let currentHeaderBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.30)
+        static let incomingBG = (NSColor(hex: "#89b4fa") ?? .systemBlue).withAlphaComponent(0.16)
+        static let incomingHeaderBG = (NSColor(hex: "#89b4fa") ?? .systemBlue).withAlphaComponent(0.30)
+        static let separatorBG = (NSColor(hex: "#6c7086") ?? .systemGray).withAlphaComponent(0.22)
+        static let context = NSColor(hex: "#6c7086") ?? .secondaryLabelColor
+        static let text = NSColor(hex: "#cdd6f4") ?? .textColor
+        static let current = NSColor(hex: "#a6e3a1") ?? .systemGreen
+        static let incoming = NSColor(hex: "#89b4fa") ?? .systemBlue
+    }
+
+    /// Builds the section for a conflicted file: one block per conflict with
+    /// Use current / incoming / both buttons, plus a "stage to continue" prompt
+    /// once all markers are gone. Resolution rewrites the file on disk; the file
+    /// is never opened in the editor, so a marker-laden file is never surfaced.
+    private func makeConflictSectionView(_ section: ChangeSection) -> NSView {
+        let absolutePath = section.absolutePath(repositoryPath: repositoryPath)
+
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
+        container.layer?.borderColor = (NSColor(hex: "#f9e2af") ?? .systemYellow).withAlphaComponent(0.6).cgColor
+        container.layer?.borderWidth = 1
+        container.layer?.cornerRadius = 4
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.identifier = NSUserInterfaceItemIdentifier(absolutePath)
+
+        let header = makeHeaderView(section)
+        container.addSubview(header)
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        let content = (try? String(contentsOfFile: absolutePath, encoding: .utf8)) ?? ""
+        let conflicts = MergeConflictParser.conflicts(in: content)
+
+        if conflicts.isEmpty {
+            stack.addArrangedSubview(makeResolvedPrompt(relativePath: section.relativePath))
+        } else {
+            let ns = content as NSString
+            for (index, conflict) in conflicts.enumerated() {
+                stack.addArrangedSubview(makeConflictBlock(
+                    absolutePath: absolutePath,
+                    index: index,
+                    total: conflicts.count,
+                    conflict: conflict,
+                    content: ns
+                ))
+            }
+        }
+
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: container.topAnchor),
+            header.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            header.heightAnchor.constraint(equalToConstant: Metrics.headerHeight),
+
+            stack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12)
+        ])
+
+        return container
+    }
+
+    private func makeConflictBlock(
+        absolutePath: String,
+        index: Int,
+        total: Int,
+        conflict: MergeConflict,
+        content: NSString
+    ) -> NSView {
+        let block = NSView()
+        block.translatesAutoresizingMaskIntoConstraints = false
+
+        let buttonRow = NSStackView()
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 8
+        buttonRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let counter = NSTextField(labelWithString: total > 1 ? "Conflict \(index + 1)/\(total)" : "Conflict")
+        counter.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        counter.textColor = NSColor(hex: "#f9e2af") ?? .systemYellow
+        buttonRow.addArrangedSubview(counter)
+
+        let currentTitle = conflict.currentLabel.isEmpty ? "Current" : conflict.currentLabel
+        let incomingTitle = conflict.incomingLabel.isEmpty ? "Incoming" : conflict.incomingLabel
+        buttonRow.addArrangedSubview(makeResolveButton("Use \(currentTitle)", absolutePath: absolutePath, index: index, choice: .current))
+        buttonRow.addArrangedSubview(makeResolveButton("Use \(incomingTitle)", absolutePath: absolutePath, index: index, choice: .incoming))
+        buttonRow.addArrangedSubview(makeResolveButton("Use Both", absolutePath: absolutePath, index: index, choice: .both))
+
+        let (text, lineCount) = conflictAttributedText(content: content, conflict: conflict)
+        let textView = makeDiffColumn(text: text)
+        let textHeight = CGFloat(max(1, lineCount)) * Metrics.diffLineHeight + 14
+
+        block.addSubview(buttonRow)
+        block.addSubview(textView)
+
+        NSLayoutConstraint.activate([
+            buttonRow.topAnchor.constraint(equalTo: block.topAnchor),
+            buttonRow.leadingAnchor.constraint(equalTo: block.leadingAnchor),
+            buttonRow.trailingAnchor.constraint(lessThanOrEqualTo: block.trailingAnchor),
+            buttonRow.heightAnchor.constraint(equalToConstant: 22),
+
+            textView.topAnchor.constraint(equalTo: buttonRow.bottomAnchor, constant: 6),
+            textView.leadingAnchor.constraint(equalTo: block.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: block.trailingAnchor),
+            textView.bottomAnchor.constraint(equalTo: block.bottomAnchor),
+            textView.heightAnchor.constraint(equalToConstant: min(textHeight, Metrics.maxDiffHeight))
+        ])
+
+        return block
+    }
+
+    private func makeResolveButton(_ title: String, absolutePath: String, index: Int, choice: MergeConflictResolution) -> NSButton {
+        let button = ConflictResolveButton(title: title, target: self, action: #selector(resolveClicked(_:)))
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.filePath = absolutePath
+        button.conflictIndex = index
+        button.resolution = choice
+        return button
+    }
+
+    private func makeResolvedPrompt(relativePath: String) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = NSTextField(labelWithString: "✓ All conflicts resolved")
+        label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        label.textColor = ConflictColors.current
+        row.addArrangedSubview(label)
+
+        let stage = ConflictResolveButton(title: "Stage (mark resolved)", target: self, action: #selector(stageResolvedClicked(_:)))
+        stage.bezelStyle = .rounded
+        stage.controlSize = .small
+        stage.filePath = relativePath
+        row.addArrangedSubview(stage)
+
+        return row
+    }
+
+    /// One conflict rendered as colored segments with a few lines of context.
+    private func conflictAttributedText(content: NSString, conflict: MergeConflict, contextLines: Int = 3) -> (NSAttributedString, Int) {
+        let result = NSMutableAttributedString()
+        var lineCount = 0
+
+        func append(_ line: String, bg: NSColor?, fg: NSColor) {
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: InlineDiffRenderer.font,
+                .foregroundColor: fg
+            ]
+            if let bg { attributes[.backgroundColor] = bg }
+            result.append(NSAttributedString(string: line + "\n", attributes: attributes))
+            lineCount += 1
+        }
+
+        func lines(_ range: NSRange) -> [String] {
+            guard range.length > 0 else { return [] }
+            var out = content.substring(with: range).components(separatedBy: "\n")
+            if out.last == "" { out.removeLast() }
+            return out
+        }
+
+        // Context preceding the conflict.
+        let before = NSRange(location: 0, length: conflict.fullRange.location)
+        for line in lines(before).suffix(contextLines) {
+            append(line, bg: nil, fg: ConflictColors.context)
+        }
+
+        append(content.substring(with: conflict.openingMarkerLineRange), bg: ConflictColors.currentHeaderBG, fg: ConflictColors.current)
+        for line in lines(conflict.currentRange) { append(line, bg: ConflictColors.currentBG, fg: ConflictColors.text) }
+        append(content.substring(with: conflict.separatorMarkerLineRange), bg: ConflictColors.separatorBG, fg: ConflictColors.context)
+        for line in lines(conflict.incomingRange) { append(line, bg: ConflictColors.incomingBG, fg: ConflictColors.text) }
+        append(content.substring(with: conflict.closingMarkerLineRange), bg: ConflictColors.incomingHeaderBG, fg: ConflictColors.incoming)
+
+        // Context following the conflict.
+        let afterStart = NSMaxRange(conflict.fullRange)
+        let after = NSRange(location: afterStart, length: content.length - afterStart)
+        for line in lines(after).prefix(contextLines) {
+            append(line, bg: nil, fg: ConflictColors.context)
+        }
+
+        return (result, lineCount)
+    }
+
+    @objc private func resolveClicked(_ sender: ConflictResolveButton) {
+        guard let resolution = sender.resolution else { return }
+        let filePath = sender.filePath
+        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else { return }
+
+        // Re-parse at click time so the right block is hit even if the file
+        // changed since the view was built.
+        let conflicts = MergeConflictParser.conflicts(in: content)
+        guard sender.conflictIndex < conflicts.count else { loadChanges(); return }
+        let conflict = conflicts[sender.conflictIndex]
+        let replacement = MergeConflictParser.resolvedText(for: conflict, in: content, choice: resolution)
+        let resolved = (content as NSString).replacingCharacters(in: conflict.fullRange, with: replacement)
+
+        do {
+            try resolved.write(toFile: filePath, atomically: true, encoding: .utf8)
+        } catch {
+            showMessage("Failed to write \(filePath): \(error.localizedDescription)")
+            return
+        }
+        loadChanges()
+    }
+
+    @objc private func stageResolvedClicked(_ sender: ConflictResolveButton) {
+        let relativePath = sender.filePath
+        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService] in
+            _ = try? gitService.stage(path: relativePath, repositoryRoot: repositoryPath)
+            DispatchQueue.main.async { [weak self] in
+                self?.loadChanges()
+            }
+        }
     }
 
     private func scrollToFocusedFile(_ filePath: String) {
@@ -291,9 +531,18 @@ final class UncommittedChangesViewController: NSViewController {
 
 }
 
+/// Button carrying the file + conflict it resolves (or the relative path to
+/// stage, for the "mark resolved" prompt).
+private final class ConflictResolveButton: NSButton {
+    var filePath: String = ""
+    var conflictIndex: Int = 0
+    var resolution: MergeConflictResolution?
+}
+
 private struct ChangeSection {
     let relativePath: String
     let diff: String
+    let isConflicted: Bool
 
     func absolutePath(repositoryPath: String) -> String {
         URL(fileURLWithPath: repositoryPath).appendingPathComponent(relativePath).path
