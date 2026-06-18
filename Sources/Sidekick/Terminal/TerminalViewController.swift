@@ -158,22 +158,37 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     ///    no scrollback, so wheel events should become arrow keys.
     /// Plain shells still fall through to normal scrollback scrolling.
     private func setupAlternateScreenScrolling() {
-        scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseUp]) { [weak self] event in
+        scrollEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.scrollWheel, .leftMouseUp, .leftMouseDragged]
+        ) { [weak self] event in
             guard let self = self else { return event }
-            if event.type == .leftMouseUp {
-                return self.handleCommandMouseUp(event)
+            switch event.type {
+            case .leftMouseDragged:
+                self.sawLeftMouseDrag = true
+                return event
+            case .leftMouseUp:
+                return self.handleTerminalMouseUp(event)
+            default:
+                return self.handleScrollWheelEvent(event)
             }
-            return self.handleScrollWheelEvent(event)
         }
     }
 
-    /// Owns all ⌘+click behavior over the terminal: file paths open in the
-    /// built-in editor, URLs open in the browser pane — and the event is
-    /// swallowed so SwiftTerm's default handler can't also open links in
-    /// the external browser (which made incidental ⌘-taps open pages).
-    private func handleCommandMouseUp(_ event: NSEvent) -> NSEvent? {
-        guard event.modifierFlags.contains(.command),
-              let window = view.window,
+    /// Tracks whether the in-flight left-button gesture involved a drag — a
+    /// drag is a text selection and must never be treated as a link click.
+    private var sawLeftMouseDrag = false
+
+    /// Owns link/file activation over the terminal. ⌘+click opens file paths
+    /// in the built-in editor and URLs in the browser pane. When the release
+    /// lands on a link/file the event is swallowed so SwiftTerm's own handler
+    /// can't ALSO open it — that handler opens links in the *external* browser
+    /// (NSWorkspace.open) and fired even on stray clicks that SwiftTerm
+    /// resolved to a URL, which is what made links open seemingly on hover.
+    private func handleTerminalMouseUp(_ event: NSEvent) -> NSEvent? {
+        let wasDrag = sawLeftMouseDrag
+        sawLeftMouseDrag = false
+
+        guard let window = view.window,
               event.window === window,
               let terminalView = terminalView,
               // Hidden tabs share window coordinates with the visible one;
@@ -183,44 +198,51 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let pointInView = terminalView.convert(event.locationInWindow, from: nil)
         guard terminalView.bounds.contains(pointInView) else { return event }
 
+        // A drag is a selection — let SwiftTerm finish it normally.
+        guard !wasDrag else { return event }
+
         let terminal = terminalView.getTerminal()
-        guard terminal.cols > 0, terminal.rows > 0 else { return nil }
+        guard terminal.cols > 0, terminal.rows > 0 else { return event }
 
         let cellWidth = max(1, terminalView.bounds.width / CGFloat(terminal.cols))
         let cellHeight = max(1, terminalView.bounds.height / CGFloat(terminal.rows))
         let col = min(terminal.cols - 1, max(0, Int(pointInView.x / cellWidth)))
         let row = min(terminal.rows - 1, max(0, Int((terminalView.bounds.height - pointInView.y) / cellHeight)))
 
-        if handleCommandClick(col: col, row: row) {
+        let hasCommand = event.modifierFlags.contains(.command)
+
+        if hasCommand, handleCommandClick(col: col, row: row) {
             return nil
         }
         if let url = urlUnderClick(col: col, row: row) {
-            delegate?.terminalRequestsOpenURL(self, url: url)
+            // Only a deliberate ⌘+click opens the link; a plain click is
+            // swallowed so the link never opens on its own.
+            if hasCommand {
+                delegate?.terminalRequestsOpenURL(self, url: url)
+            }
+            return nil
         }
-        // Swallow every ⌘+mouse-up over the terminal either way.
-        return nil
+        // Not on a link/file: let SwiftTerm handle the click normally.
+        return event
     }
 
-    private static let clickableURLRegex: NSRegularExpression? =
-        try? NSRegularExpression(pattern: "https?://[^\\s\"'<>\\)\\]]+")
-
     private func urlUnderClick(col: Int, row: Int) -> URL? {
-        guard let line = terminalView.getTerminal().getLine(row: row) else { return nil }
-        let text = line.translateToString(trimRight: true)
-        guard !text.isEmpty, let regex = Self.clickableURLRegex else { return nil }
+        // Ask SwiftTerm for the link at this cell: it spans wrapped rows (so a
+        // URL broken across lines is returned whole, not just the clicked
+        // fragment) and understands OSC 8 hyperlinks.
+        guard var candidate = terminalView.getTerminal().link(
+            at: .screen(Position(col: col, row: row)),
+            mode: .explicitAndImplicit
+        ), !candidate.isEmpty else { return nil }
 
-        let nsText = text as NSString
-        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-        for match in matches {
-            guard match.range.location <= col, col < match.range.location + match.range.length else { continue }
-            var candidate = nsText.substring(with: match.range)
-            // Trim punctuation that commonly trails URLs in prose.
-            while let last = candidate.last, ".,;:!?".contains(last) {
-                candidate.removeLast()
-            }
-            return URL(string: candidate)
+        // Trim punctuation that commonly trails URLs in prose.
+        while let last = candidate.last, ".,;:!?".contains(last) {
+            candidate.removeLast()
         }
-        return nil
+        guard let url = URL(string: candidate),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        return url
     }
 
     private func handleScrollWheelEvent(_ event: NSEvent) -> NSEvent? {
