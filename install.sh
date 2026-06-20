@@ -44,6 +44,10 @@ echo "✅ Sidekick installed to /Applications/"
 read -p "📦 Install CLI tools to /usr/local/bin? (y/n): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
+    if [ ! -d /usr/local/bin ]; then
+        echo "📁 Creating /usr/local/bin..."
+        sudo mkdir -p /usr/local/bin
+    fi
     sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-ctl" /usr/local/bin/sidekick-ctl
     sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-agent-status" /usr/local/bin/sidekick-agent-status
     sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-hook" /usr/local/bin/sidekick-hook

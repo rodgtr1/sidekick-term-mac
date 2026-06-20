@@ -20,6 +20,7 @@ final class AgentDashboardViewController: NSViewController {
         let title: String
         let state: AgentState
         let since: Date
+        let isActive: Bool
     }
 
     private var rows: [Row] = []
@@ -123,7 +124,8 @@ final class AgentDashboardViewController: NSViewController {
                 tabIndex: index,
                 title: tab.title,
                 state: tab.agentState,
-                since: tab.agentStateChangedAt
+                since: tab.agentStateChangedAt,
+                isActive: tab.isActive
             )
         }
         // Actionable tabs first: needs-input, then working, then done.
@@ -182,6 +184,24 @@ extension AgentDashboardViewController: NSTableViewDelegate {
         let (stateLabel, stateColor) = Self.describe(rowData.state)
 
         let cell = NSTableCellView()
+        cell.wantsLayer = true
+
+        if rowData.isActive {
+            cell.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.04).cgColor
+
+            let accent = NSView()
+            accent.wantsLayer = true
+            accent.layer?.backgroundColor = stateColor.withAlphaComponent(0.7).cgColor
+            accent.layer?.cornerRadius = 1
+            accent.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(accent)
+            NSLayoutConstraint.activate([
+                accent.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+                accent.topAnchor.constraint(equalTo: cell.topAnchor, constant: 6),
+                accent.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -6),
+                accent.widthAnchor.constraint(equalToConstant: 2)
+            ])
+        }
 
         let dot = NSTextField(labelWithString: "●")
         dot.font = NSFont.systemFont(ofSize: 10)

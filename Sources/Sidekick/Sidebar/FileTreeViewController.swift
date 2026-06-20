@@ -121,6 +121,7 @@ class FileTreeViewController: NSViewController {
             gitIgnoreChecker?.onLoadComplete = { [weak self] in
                 guard let self = self else { return }
                 print("🔄 GitIgnore data loaded, refreshing tree")
+                let expandedPaths = self.expandedDirectoryPaths()
                 // Reload the root node to apply git ignore filtering
                 self.rootNode?.isLoaded = false
                 guard let rootNode = self.rootNode else { return }
@@ -128,10 +129,20 @@ class FileTreeViewController: NSViewController {
                 let gitIgnoreChecker = self.gitIgnoreChecker
                 DispatchQueue.global(qos: .userInitiated).async { [weak self, weak rootNode] in
                     rootNode?.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) {
+                        if let rootNode {
+                            self?.loadExpandedDescendants(
+                                from: rootNode,
+                                expandedPaths: expandedPaths,
+                                showHidden: showHidden,
+                                gitIgnoreChecker: gitIgnoreChecker
+                            )
+                        }
                         DispatchQueue.main.async {
-                            guard let self = self else { return }
+                            guard let self = self,
+                                  let rootNode = rootNode,
+                                  self.rootNode === rootNode else { return }
                             self.outlineView.reloadData()
-                            self.outlineView.expandItem(self.rootNode)
+                            self.expandLoadedItems(from: rootNode)
                         }
                     }
                 }

@@ -115,6 +115,7 @@ private final class TitlebarBackgroundView: NSView {
 }
 
 class MainWindowController: NSWindowController {
+    private static let sidebarWidthDefaultsKey = "sidebarWidth"
     private var config: Config = Config.load()
     private var titlebarBackgroundView: TitlebarBackgroundView!
     private var tabBarSpacerView: TitlebarBackgroundView!
@@ -123,6 +124,11 @@ class MainWindowController: NSWindowController {
     private var sidebarContainerView: SidebarContainerView!
     private var mainContentView: NSView!
     private var sidebarWidthConstraint: NSLayoutConstraint!
+    private var sidebarResizeHandle: SidebarResizeHandle!
+    private var sidebarPreferredWidth: CGFloat = {
+        let saved = UserDefaults.standard.double(forKey: MainWindowController.sidebarWidthDefaultsKey)
+        return saved > 0 ? CGFloat(saved) : 240
+    }()
     private var editorViewController: EditorViewController?
     private var tabs: [TabModel] = []
     private var activeTabIndex: Int = 0
@@ -375,6 +381,14 @@ class MainWindowController: NSWindowController {
         sidebarContainerView.setShowTeleportHosts(config.hosts?.showTeleport ?? false)
         sidebarContainerView.translatesAutoresizingMaskIntoConstraints = false
         window?.contentView?.addSubview(sidebarContainerView)
+
+        sidebarResizeHandle = SidebarResizeHandle()
+        sidebarResizeHandle.isHidden = true
+        sidebarResizeHandle.onDrag = { [weak self] delta in
+            self?.resizeSidebar(by: delta)
+        }
+        sidebarResizeHandle.translatesAutoresizingMaskIntoConstraints = false
+        window?.contentView?.addSubview(sidebarResizeHandle)
     }
 
     private func setupMainContent() {
@@ -385,6 +399,9 @@ class MainWindowController: NSWindowController {
         mainContentView.layer?.isOpaque = false
         mainContentView.translatesAutoresizingMaskIntoConstraints = false
         window?.contentView?.addSubview(mainContentView)
+        if let sidebarResizeHandle {
+            window?.contentView?.addSubview(sidebarResizeHandle, positioned: .above, relativeTo: mainContentView)
+        }
     }
 
     private func layoutViews() {
@@ -423,6 +440,11 @@ class MainWindowController: NSWindowController {
             sidebarContainerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             sidebarWidthConstraint,
 
+            sidebarResizeHandle.topAnchor.constraint(equalTo: sidebarContainerView.topAnchor),
+            sidebarResizeHandle.bottomAnchor.constraint(equalTo: sidebarContainerView.bottomAnchor),
+            sidebarResizeHandle.centerXAnchor.constraint(equalTo: sidebarContainerView.trailingAnchor),
+            sidebarResizeHandle.widthAnchor.constraint(equalToConstant: 8),
+
             // Main content starts below tab bar, to the right of sidebar
             mainContentView.topAnchor.constraint(equalTo: tabBarView.bottomAnchor),
             mainContentView.leadingAnchor.constraint(equalTo: sidebarContainerView.trailingAnchor),
@@ -450,6 +472,7 @@ class MainWindowController: NSWindowController {
         for tab in tabs {
             for pane in tab.panes {
                 pane.terminalViewController?.applyConfig(newConfig)
+                pane.editorViewController?.applyConfig(newConfig)
             }
         }
     }
@@ -1340,7 +1363,8 @@ extension MainWindowController {
         // Only intercept when keyboard focus is really on the terminal;
         // otherwise Cmd+V belongs to the editor/find bar/sidebar field.
         guard let terminal = tabs[safe: activeTabIndex]?.activePane?.terminalViewController,
-              terminal.isTerminalFocused else {
+              terminal.isTerminalFocused,
+              !terminal.isCommandRunning else {
             return false
         }
 
@@ -1503,10 +1527,41 @@ extension MainWindowController {
     }
 
     private func updateSidebarLayout() {
-        sidebarWidthConstraint.constant = sidebarContainerView.visible ? 240 : 0
+        sidebarWidthConstraint.constant = sidebarContainerView.visible ? sidebarPreferredWidth : 0
+        sidebarResizeHandle.isHidden = !sidebarContainerView.visible
         window?.contentView?.layoutSubtreeIfNeeded()
     }
 
+    private func resizeSidebar(by delta: CGFloat) {
+        guard sidebarContainerView.visible, let contentWidth = window?.contentView?.bounds.width else { return }
+
+        let maximumWidth = max(180, min(600, contentWidth - 48 - 240))
+        sidebarPreferredWidth = min(maximumWidth, max(180, sidebarPreferredWidth + delta))
+        sidebarWidthConstraint.constant = sidebarPreferredWidth
+        UserDefaults.standard.set(Double(sidebarPreferredWidth), forKey: Self.sidebarWidthDefaultsKey)
+        window?.contentView?.layoutSubtreeIfNeeded()
+    }
+
+}
+
+private final class SidebarResizeHandle: NSView {
+    var onDrag: ((CGFloat) -> Void)?
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        NSCursor.resizeLeftRight.push()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        onDrag?(event.deltaX)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        NSCursor.pop()
+    }
 }
 
 // MARK: - IPCServerDelegate

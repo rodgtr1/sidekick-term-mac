@@ -70,6 +70,8 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     // reports are authoritative and the text heuristics stand down.
     private var hasExplicitAgentStatus = false
     private var agentDoneTimer: Timer?
+    private var blockedPollingTimer: Timer?
+    private var suppressedPromptMarkers: Set<String> = []
     private var pendingDetectionOutput = ""
     private var detectionFlushScheduled = false
 
@@ -633,8 +635,16 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         let normalizedRecentOutput = normalizeTerminalOutput(recentOutput)
         let normalizedCurrentOutput = normalizeTerminalOutput(output)
+        let actionablePromptMarkers = agentPromptMarkers(in: normalizedRecentOutput)
+            .subtracting(suppressedPromptMarkers)
 
-        if containsAgentPrompt(normalizedRecentOutput) {
+        if !actionablePromptMarkers.isEmpty,
+           // When explicit hooks are active, only let text heuristics signal
+           // .ready while we're in a known-working state (catching a permission
+           // dialog that rendered after the OSC hook fired). If the last
+           // authoritative signal was .done or .idle, trailing UI output like
+           // "tab to add additional instructions" must not override it.
+           !hasExplicitAgentStatus || lastDetectedAgentState == .working {
             agentDoneTimer?.invalidate()
             agentDoneTimer = nil
             notifyDetectedAgentState(.ready)
@@ -642,7 +652,8 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             // Working/done come from the agent's hooks; guessing them from
             // output here would fabricate "done" (quiet period) while a
             // permission dialog is still waiting for the user.
-        } else if containsAgentWorkingCue(normalizedCurrentOutput) {
+        } else if containsAgentWorkingCue(normalizedCurrentOutput),
+                  lastDetectedAgentState != .ready {
             notifyDetectedAgentState(.working)
             scheduleDoneAfterQuietPeriod()
         } else if lastDetectedAgentState == .working {
@@ -977,6 +988,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         recentOutput = ""
         agentDoneTimer?.invalidate()
         agentDoneTimer = nil
+        stopBlockedPolling()
         notifyDetectedAgentState(.idle)
     }
 
@@ -995,12 +1007,25 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             .lowercased()
     }
 
-    private func containsAgentPrompt(_ output: String) -> Bool {
-        return output.contains("do you want to proceed?")
-            || output.contains("do you want to continue?")
-            || output.contains("esc to cancel")
-            || output.contains("tab to add additional instructions")
-            || output.contains("don't ask again")
+    private func agentPromptMarkers(in output: String) -> Set<String> {
+        // Claude Code — specific dialog/prompt phrases only.
+        // "esc to cancel" alone is intentionally excluded: it appears in the
+        // normal running-spinner footer ("Running... (esc to cancel)") and
+        // causes constant Working↔NeedsInput flicker when the poller reads it.
+        // "tab to add additional instructions" is also excluded: it is the
+        // normal input footer Claude renders after Stop, not a request that is
+        // blocking an active run.
+        let markers = [
+            "do you want to proceed?",
+            "do you want to continue?",
+            "don't ask again",
+            // Codex
+            "allow command?",
+            "press enter to confirm or esc to cancel",
+            "enter to submit answer",
+            "enter to submit all"
+        ]
+        return Set(markers.filter { output.contains($0) })
     }
 
     private func containsAgentWorkingCue(_ output: String) -> Bool {
@@ -1042,12 +1067,76 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     private func notifyDetectedAgentState(_ state: AgentState) {
         guard state != lastDetectedAgentState else { return }
+        let previousState = lastDetectedAgentState
         lastDetectedAgentState = state
+
+        if state == .working {
+            startBlockedPolling(suppressingVisiblePrompt: previousState == .ready)
+        } else {
+            stopBlockedPolling()
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.delegate?.terminalDidDetectAgentState(self, state: state)
         }
+    }
+
+    // MARK: - Blocked-state polling
+
+    // Polls the visible screen content while the agent is working so we can
+    // detect permission dialogs even when no new PTY data arrives after the UI
+    // renders (the OSC hook fires before the dialog, then data stops flowing).
+    private func startBlockedPolling(suppressingVisiblePrompt: Bool) {
+        stopBlockedPolling()
+        if suppressingVisiblePrompt {
+            let screen = normalizeTerminalOutput(readVisibleScreenText())
+            suppressedPromptMarkers = agentPromptMarkers(in: screen)
+        }
+        blockedPollingTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            self?.pollForBlockedState()
+        }
+    }
+
+    private func stopBlockedPolling() {
+        blockedPollingTimer?.invalidate()
+        blockedPollingTimer = nil
+        suppressedPromptMarkers.removeAll()
+    }
+
+    private func pollForBlockedState() {
+        guard lastDetectedAgentState == .working else {
+            stopBlockedPolling()
+            return
+        }
+        let screen = readVisibleScreenText()
+        let normalized = normalizeTerminalOutput(screen)
+        let visibleMarkers = agentPromptMarkers(in: normalized)
+
+        // When a user answers a permission dialog, its text can remain in the
+        // terminal for another redraw. Ignore those same markers until they
+        // disappear; otherwise polling changes ready -> working -> ready using
+        // stale cells from the dialog that was just answered.
+        suppressedPromptMarkers.formIntersection(visibleMarkers)
+        if !visibleMarkers.subtracting(suppressedPromptMarkers).isEmpty {
+            agentDoneTimer?.invalidate()
+            agentDoneTimer = nil
+            notifyDetectedAgentState(.ready)
+        }
+    }
+
+    private func readVisibleScreenText() -> String {
+        let terminal = terminalView.getTerminal()
+        var lines: [String] = []
+        // Interactive dialogs live at the bottom. Restricting the scan keeps a
+        // prompt higher in the viewport's scrollback from looking current.
+        let firstRow = max(0, terminal.rows - 12)
+        for row in firstRow..<terminal.rows {
+            if let line = terminal.getLine(row: row) {
+                lines.append(line.translateToString(trimRight: true))
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     func getCurrentWorkingDirectory() -> String {
@@ -1080,6 +1169,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     var isTerminalFocused: Bool {
         guard let responder = view.window?.firstResponder as? NSView else { return false }
         return responder === terminalView || responder.isDescendant(of: terminalView)
+    }
+
+    /// True when shell integration is active and a command (e.g. nvim) is
+    /// running in the foreground — image paste should not fire in this state.
+    var isCommandRunning: Bool {
+        hasShellIntegration && commandStartDate != nil
     }
 
     // MARK: - Scrollback search
@@ -1147,6 +1242,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         MainActor.assumeIsolated {
             cwdTimer?.invalidate()
             agentDoneTimer?.invalidate()
+            blockedPollingTimer?.invalidate()
             if let scrollEventMonitor {
                 NSEvent.removeMonitor(scrollEventMonitor)
             }

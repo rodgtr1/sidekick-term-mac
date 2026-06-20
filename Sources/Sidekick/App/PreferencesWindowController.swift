@@ -27,6 +27,8 @@ class PreferencesWindowController: NSWindowController {
 
     // Editor Tab
     private var fileOpenModePopup: NSPopUpButton!
+    private var editorFontSizeSlider: NSSlider!
+    private var editorFontSizeLabel: NSTextField!
     private var wordWrapCheckbox: NSButton!
     private var showHiddenFilesCheckbox: NSButton!
     private var agentStatusLabels: [AgentIntegrationInstaller.AgentID: NSTextField] = [:]
@@ -415,6 +417,26 @@ class PreferencesWindowController: NSWindowController {
         fileOpenModePopup.action = #selector(fileOpenModeChanged(_:))
         fileOpenModePopup.translatesAutoresizingMaskIntoConstraints = false
 
+        let editorFontSizeTitleLabel = NSTextField(labelWithString: "Text Size:")
+        editorFontSizeTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        editorFontSizeTitleLabel.textColor = AppTheme.primaryText
+        editorFontSizeTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        editorFontSizeSlider = NSSlider()
+        editorFontSizeSlider.minValue = 8
+        editorFontSizeSlider.maxValue = 32
+        editorFontSizeSlider.numberOfTickMarks = 25
+        editorFontSizeSlider.allowsTickMarkValuesOnly = true
+        editorFontSizeSlider.target = self
+        editorFontSizeSlider.action = #selector(editorFontSizeChanged(_:))
+        editorFontSizeSlider.translatesAutoresizingMaskIntoConstraints = false
+
+        editorFontSizeLabel = NSTextField(labelWithString: "13pt")
+        editorFontSizeLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        editorFontSizeLabel.textColor = AppTheme.secondaryText
+        editorFontSizeLabel.alignment = .right
+        editorFontSizeLabel.translatesAutoresizingMaskIntoConstraints = false
+
         wordWrapCheckbox = NSButton(checkboxWithTitle: "Wrap long lines", target: self, action: #selector(wordWrapChanged(_:)))
         wordWrapCheckbox.font = NSFont.systemFont(ofSize: 13)
         wordWrapCheckbox.translatesAutoresizingMaskIntoConstraints = false
@@ -429,6 +451,9 @@ class PreferencesWindowController: NSWindowController {
 
         editorView.addSubview(fileOpenModeLabel)
         editorView.addSubview(fileOpenModePopup)
+        editorView.addSubview(editorFontSizeTitleLabel)
+        editorView.addSubview(editorFontSizeSlider)
+        editorView.addSubview(editorFontSizeLabel)
         editorView.addSubview(wordWrapCheckbox)
         editorView.addSubview(showHiddenFilesCheckbox)
 
@@ -440,7 +465,18 @@ class PreferencesWindowController: NSWindowController {
             fileOpenModePopup.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
             fileOpenModePopup.widthAnchor.constraint(equalToConstant: 200),
 
-            wordWrapCheckbox.topAnchor.constraint(equalTo: fileOpenModePopup.bottomAnchor, constant: 24),
+            editorFontSizeTitleLabel.topAnchor.constraint(equalTo: fileOpenModePopup.bottomAnchor, constant: 24),
+            editorFontSizeTitleLabel.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
+
+            editorFontSizeSlider.topAnchor.constraint(equalTo: editorFontSizeTitleLabel.bottomAnchor, constant: 10),
+            editorFontSizeSlider.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
+            editorFontSizeSlider.trailingAnchor.constraint(equalTo: editorFontSizeLabel.leadingAnchor, constant: -10),
+
+            editorFontSizeLabel.topAnchor.constraint(equalTo: editorFontSizeSlider.topAnchor),
+            editorFontSizeLabel.trailingAnchor.constraint(equalTo: editorView.trailingAnchor, constant: -20),
+            editorFontSizeLabel.widthAnchor.constraint(equalToConstant: 50),
+
+            wordWrapCheckbox.topAnchor.constraint(equalTo: editorFontSizeSlider.bottomAnchor, constant: 24),
             wordWrapCheckbox.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
 
             showHiddenFilesCheckbox.topAnchor.constraint(equalTo: wordWrapCheckbox.bottomAnchor, constant: 12),
@@ -488,6 +524,8 @@ class PreferencesWindowController: NSWindowController {
 
         let editorConfig = config.editor ?? EditorConfig()
         fileOpenModePopup.selectItem(at: editorConfig.fileOpenMode == "builtin" ? 1 : 0)
+        editorFontSizeSlider.doubleValue = Double(editorConfig.fontSize)
+        updateEditorFontSizeLabel()
         wordWrapCheckbox.state = editorConfig.wordWrap ? .on : .off
         showHiddenFilesCheckbox.state = editorConfig.showHiddenFiles ? .on : .off
 
@@ -550,6 +588,14 @@ class PreferencesWindowController: NSWindowController {
     @objc private func fileOpenModeChanged(_ sender: NSPopUpButton) {
         ensureEditorConfig()
         config.editor?.fileOpenMode = sender.indexOfSelectedItem == 1 ? "builtin" : "terminal"
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
+    }
+
+    @objc private func editorFontSizeChanged(_ sender: NSSlider) {
+        ensureEditorConfig()
+        config.editor?.fontSize = Int(sender.doubleValue)
+        updateEditorFontSizeLabel()
         mainWindowController?.applyRuntimeConfig(config)
         config.save()
     }
@@ -649,6 +695,10 @@ class PreferencesWindowController: NSWindowController {
     private func updateFontSizeLabel() {
         let size = Int(fontSizeSlider.doubleValue)
         fontSizeLabel.stringValue = "\(size)pt"
+    }
+
+    private func updateEditorFontSizeLabel() {
+        editorFontSizeLabel.stringValue = "\(Int(editorFontSizeSlider.doubleValue))pt"
     }
 
     private func applyOpacityChange() {

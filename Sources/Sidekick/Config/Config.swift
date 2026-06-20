@@ -115,6 +115,8 @@ context_lines = 3
 file_open_mode = "terminal"
 # Wrap long lines in the editor (true = word wrap, false = horizontal scroll)
 word_wrap = true
+# Built-in editor text size in points
+font_size = 13
 # Show hidden files and gitignored files in the file tree (rendered dimmed)
 show_hidden_files = false
 
@@ -305,17 +307,20 @@ public struct DiffConfig: Codable {
 public struct EditorConfig: Codable {
     public var fileOpenMode: String
     public var wordWrap: Bool
+    public var fontSize: Int
     public var showHiddenFiles: Bool
 
     enum CodingKeys: String, CodingKey {
         case fileOpenMode = "file_open_mode"
         case wordWrap = "word_wrap"
+        case fontSize = "font_size"
         case showHiddenFiles = "show_hidden_files"
     }
 
     public init() {
         self.fileOpenMode = "terminal"
         self.wordWrap = true
+        self.fontSize = 13
         self.showHiddenFiles = false
     }
 
@@ -323,6 +328,7 @@ public struct EditorConfig: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.fileOpenMode = try container.decodeIfPresent(String.self, forKey: .fileOpenMode) ?? "terminal"
         self.wordWrap = try container.decodeIfPresent(Bool.self, forKey: .wordWrap) ?? true
+        self.fontSize = try container.decodeIfPresent(Int.self, forKey: .fontSize) ?? 13
         self.showHiddenFiles = try container.decodeIfPresent(Bool.self, forKey: .showHiddenFiles) ?? false
     }
 }

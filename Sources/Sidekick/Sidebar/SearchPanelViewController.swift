@@ -67,7 +67,7 @@ class SearchPanelViewController: NSViewController {
         searchField.placeholderString = "Search files..."
         searchField.target = self
         searchField.action = #selector(searchFieldChanged(_:))
-        searchField.sendsSearchStringImmediately = false
+        searchField.sendsSearchStringImmediately = true
         searchField.translatesAutoresizingMaskIntoConstraints = false
 
         // Status label
@@ -197,9 +197,10 @@ class SearchPanelViewController: NSViewController {
                 "--no-heading",
                 "--line-number",
                 "--column",
+                "--fixed-strings",
                 "--max-count", "10", // Limit matches per file
                 "--max-filesize", "2M", // Skip large files
-                "--type-not", "binary",
+                "--",
                 searchText,
                 currentWorkingDirectory
             ]
@@ -209,12 +210,14 @@ class SearchPanelViewController: NSViewController {
                 "-R",
                 "-n",
                 "-I",
+                "-F",
                 "-m", "1000",
                 "--exclude-dir=.git",
                 "--exclude-dir=node_modules",
                 "--exclude-dir=.build",
                 "--exclude-dir=target",
                 "--exclude-dir=Library",
+                "--",
                 searchText,
                 currentWorkingDirectory
             ]
@@ -245,8 +248,10 @@ class SearchPanelViewController: NSViewController {
                     self.searchTimeoutWorkItem?.cancel()
                     self.searchTimeoutWorkItem = nil
 
-                    if task.terminationStatus != 0 && data.isEmpty {
-                        self.statusLabel.stringValue = "Search stopped"
+                    // ripgrep and grep both use status 1 for a successful search
+                    // with no matches. Higher statuses indicate an actual failure.
+                    if task.terminationStatus > 1 && data.isEmpty {
+                        self.statusLabel.stringValue = "Search failed"
                         return
                     }
 

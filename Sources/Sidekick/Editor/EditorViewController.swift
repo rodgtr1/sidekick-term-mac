@@ -66,7 +66,10 @@ class EditorViewController: NSViewController {
         textView.isEditable = true
         textView.isSelectable = true
         textView.isRichText = false
-        textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.font = NSFont.monospacedSystemFont(
+            ofSize: CGFloat(config.editor?.fontSize ?? 13),
+            weight: .regular
+        )
         textView.backgroundColor = NSColor(hex: "#1e1e2e") ?? .textBackgroundColor
         textView.textColor = NSColor(hex: "#cdd6f4") ?? .textColor
         textView.insertionPointColor = NSColor(hex: "#f5e0dc") ?? .textColor
@@ -121,6 +124,24 @@ class EditorViewController: NSViewController {
             name: NSText.didChangeNotification,
             object: textView
         )
+    }
+
+    func applyConfig(_ config: Config) {
+        guard isViewLoaded else { return }
+
+        let editorConfig = config.editor ?? EditorConfig()
+        textView.font = NSFont.monospacedSystemFont(
+            ofSize: CGFloat(editorConfig.fontSize),
+            weight: .regular
+        )
+
+        textView.isHorizontallyResizable = !editorConfig.wordWrap
+        textView.textContainer?.widthTracksTextView = editorConfig.wordWrap
+        textView.textContainer?.containerSize = NSSize(
+            width: editorConfig.wordWrap ? 0 : CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        lineNumberRuler?.needsDisplay = true
     }
 
     @objc private func textDidChange() {
