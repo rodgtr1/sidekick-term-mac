@@ -7,6 +7,7 @@ class PreferencesWindowController: NSWindowController {
     // UI Elements
     private var contentView: NSView!
     private var tabView: NSTabView!
+    private var themeObserver: ThemeObserver?
 
     // General Tab
     private var opacitySlider: NSSlider!
@@ -50,6 +51,35 @@ class PreferencesWindowController: NSWindowController {
         setupWindow()
         setupUI()
         loadCurrentSettings()
+
+        themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
+    }
+
+    /// Re-theme the Preferences window itself when the theme changes (e.g. the
+    /// user picks a theme from the Appearance tab while this window is open).
+    private func applyThemeColors() {
+        window?.backgroundColor = AppTheme.windowBackground
+        contentView?.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        for item in tabView.tabViewItems {
+            item.view?.wantsLayer = true
+            item.view?.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        }
+        // Default every label to primary, then restore the secondary value labels.
+        recolorLabels(in: contentView, color: AppTheme.primaryText)
+        [opacityLabel, fontSizeLabel, editorFontSizeLabel, shellIntegrationStatusLabel].forEach {
+            $0?.textColor = AppTheme.secondaryText
+        }
+        agentStatusLabels.values.forEach { $0.textColor = AppTheme.secondaryText }
+    }
+
+    private func recolorLabels(in view: NSView?, color: NSColor) {
+        guard let view else { return }
+        for sub in view.subviews {
+            if let label = sub as? NSTextField, !label.isEditable, !label.drawsBackground {
+                label.textColor = color
+            }
+            recolorLabels(in: sub, color: color)
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -366,6 +396,18 @@ class PreferencesWindowController: NSWindowController {
         tabView.addTabViewItem(agentsTabItem)
     }
 
+    // Theme picker model: every available theme, then an "Auto" entry that
+    // follows the macOS light/dark setting. Index aligns with themeMenuTitles.
+    private var themeSelectionNames: [String] {
+        Theme.shared.available.map { $0.name } + [Theme.autoSelection]
+    }
+
+    private var themeMenuTitles: [String] {
+        Theme.shared.available.map { def in
+            def.displayName + (def.appearance == .light ? " (Light)" : " (Dark)")
+        } + ["Auto (Follow System)"]
+    }
+
     private func setupAppearanceTab() {
         let appearanceView = NSView()
         appearanceView.wantsLayer = true
@@ -378,9 +420,9 @@ class PreferencesWindowController: NSWindowController {
         themeLabel.translatesAutoresizingMaskIntoConstraints = false
 
         themePopup = NSPopUpButton()
-        themePopup.addItems(withTitles: ["Catppuccin Mocha"])
-        themePopup.selectItem(at: 0)
-        themePopup.isEnabled = false // Only one theme for now
+        themePopup.addItems(withTitles: themeMenuTitles)
+        themePopup.target = self
+        themePopup.action = #selector(themeChanged(_:))
         themePopup.translatesAutoresizingMaskIntoConstraints = false
 
         appearanceView.addSubview(themeLabel)
@@ -529,6 +571,13 @@ class PreferencesWindowController: NSWindowController {
         wordWrapCheckbox.state = editorConfig.wordWrap ? .on : .off
         showHiddenFilesCheckbox.state = editorConfig.showHiddenFiles ? .on : .off
 
+        // Select the active theme (or "Auto") in the Appearance popup
+        if let themeIndex = themeSelectionNames.firstIndex(of: config.theme.name) {
+            themePopup.selectItem(at: themeIndex)
+        } else {
+            themePopup.selectItem(at: 0)
+        }
+
         updateShellIntegrationStatus()
     }
 
@@ -552,6 +601,17 @@ class PreferencesWindowController: NSWindowController {
         config.window.opacity = sender.doubleValue
         updateOpacityLabel()
         applyOpacityChange()
+        config.save()
+    }
+
+    @objc private func themeChanged(_ sender: NSPopUpButton) {
+        let names = themeSelectionNames
+        let index = sender.indexOfSelectedItem
+        guard index >= 0 && index < names.count else { return }
+        config.theme.name = names[index]
+        // Posts .themeDidChange, which every window observes to repaint live
+        // (chrome + open terminals) and sets the matching NSApp appearance.
+        Theme.shared.setSelection(names[index])
         config.save()
     }
 

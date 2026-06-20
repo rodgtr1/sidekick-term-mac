@@ -22,13 +22,13 @@ class DiffViewController: NSViewController {
     }
 
     struct DiffColors {
-        static let background = NSColor(hex: "#1e1e2e") ?? .textBackgroundColor
-        static let text = NSColor(hex: "#cdd6f4") ?? .textColor
-        static let added = NSColor(hex: "#a6e3a1") ?? .systemGreen
-        static let removed = NSColor(hex: "#f38ba8") ?? .systemRed
-        static let context = NSColor(hex: "#6c7086") ?? .secondaryLabelColor
-        static let hunkHeader = NSColor(hex: "#89b4fa") ?? .systemBlue
-        static let fileHeader = NSColor(hex: "#f9e2af") ?? .systemYellow
+        static var background: NSColor { AppTheme.windowBackground }
+        static var text: NSColor { AppTheme.primaryText }
+        static var added: NSColor { AppTheme.success }
+        static var removed: NSColor { AppTheme.error }
+        static var context: NSColor { AppTheme.mutedText }
+        static var hunkHeader: NSColor { AppTheme.accent }
+        static var fileHeader: NSColor { AppTheme.warning }
     }
 
     override func loadView() {
@@ -345,9 +345,9 @@ class HunkButton: NSButton {
 
         switch action {
         case .accept:
-            self.contentTintColor = NSColor(hex: "#a6e3a1")
+            self.contentTintColor = AppTheme.success
         case .reject:
-            self.contentTintColor = NSColor(hex: "#f38ba8")
+            self.contentTintColor = AppTheme.error
         }
     }
 

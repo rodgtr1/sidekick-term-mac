@@ -63,6 +63,8 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         terminalView?.process?.shellPid ?? 0
     }
     private var initialDirectory: String?
+    private let paneID: UUID
+    private let initialCommand: [String]?
     private var recentOutput = ""
     private var agentStatusSequenceBuffer = ""
     private var lastDetectedAgentState: AgentState = .idle
@@ -74,6 +76,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var suppressedPromptMarkers: Set<String> = []
     private var pendingDetectionOutput = ""
     private var detectionFlushScheduled = false
+    private var automationOutput = ""
 
     private var findBar: TerminalFindBar?
     private var scrollEventMonitor: Any?
@@ -111,9 +114,16 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private static let ansiEscapeRegex: NSRegularExpression? =
         try? NSRegularExpression(pattern: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]")
 
-    init(config: Config, initialDirectory: String? = nil) {
+    init(
+        config: Config,
+        initialDirectory: String? = nil,
+        paneID: UUID = UUID(),
+        command: [String]? = nil
+    ) {
         self.config = config
         self.initialDirectory = initialDirectory
+        self.paneID = paneID
+        self.initialCommand = command?.isEmpty == false ? command : nil
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -129,7 +139,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     override func viewDidLoad() {
         super.viewDidLoad()
         setupTerminal()
-        startShell()
+        startConfiguredProcess()
         startCWDTracking()
         setupAlternateScreenScrolling()
 
@@ -319,6 +329,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let agentAwareTerminalView = AgentAwareTerminalView(frame: view.bounds)
         agentAwareTerminalView.onOutput = { [weak self] output in
             DispatchQueue.main.async {
+                self?.appendAutomationOutput(output)
                 self?.queueAgentDetection(output)
             }
         }
@@ -335,17 +346,11 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // Keep the first 16 ANSI colors themed, but leave 256-color indexes on
         // the standard xterm cube so CLI theme pickers render selected colors faithfully.
         terminalView.terminal.ansi256PaletteStrategy = .xterm
-        terminalView.installColors(ColorPalette.catppuccinMocha)
-
-        // Set terminal foreground and background colors
-        terminalView.nativeForegroundColor = NSColor(hex: "#cdd6f4")!  // Catppuccin text
+        applyThemeColors()
 
         // Apply background based on blur configuration
         terminalView.wantsLayer = true
         applyTerminalAppearance(config)
-
-        // Set caret (cursor) color
-        terminalView.caretColor = NSColor(hex: "#f5e0dc")!  // Catppuccin rosewater
 
         // Set delegate to receive process events
         terminalView.processDelegate = self
@@ -364,7 +369,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         ])
     }
 
-    private func startShell() {
+    private func startConfiguredProcess() {
         let shell = getShell()
         let shellIdiom = "-" + NSString(string: shell).lastPathComponent
         let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
@@ -387,21 +392,46 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // TERM_PROGRAM so the shell-integration script can detect Sidekick.
         var environment = Terminal.getEnvironmentVariables()
         environment.append("TERM_PROGRAM=\(ShellIntegration.termProgram)")
+        environment.append("SIDEKICK_ENV=1")
+        environment.append("SIDEKICK_PANE_ID=\(paneID.uuidString.lowercased())")
+        environment.append("SIDEKICK_SOCKET_PATH=\(Self.socketPath)")
         if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
             environment.append("TERM_PROGRAM_VERSION=\(version)")
         }
-        terminalView.startProcess(
-            executable: shell,
-            environment: environment,
-            execName: shellIdiom,
-            currentDirectory: startDirectory
-        )
+        if let command = initialCommand {
+            // Launch the worker through the user's login+interactive shell so
+            // it inherits the same PATH and version-manager setup a normal pane
+            // gets (e.g. ~/.local/bin, nvm). The command string is the fixed
+            // literal `exec "$@"`; the requested argv arrives as positional
+            // parameters, so the shell never re-parses it — no interpolation or
+            // command-injection. `exec` replaces the shell so the worker is the
+            // pane's root process and its exit transitions the pane to .done.
+            terminalView.startProcess(
+                executable: shell,
+                args: ["-i", "-c", "exec \"$@\"", shellIdiom] + command,
+                environment: environment,
+                execName: shellIdiom,
+                currentDirectory: startDirectory
+            )
+        } else {
+            terminalView.startProcess(
+                executable: shell,
+                environment: environment,
+                execName: shellIdiom,
+                currentDirectory: startDirectory
+            )
+        }
 
         // Publish the initial title/CWD once the process is up
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.currentCWD = startDirectory
             self?.updateTitle()
         }
+    }
+
+    private static var socketPath: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/sidekick/sidekick.sock").path
     }
 
     // Returns the shell associated with the current account
@@ -533,7 +563,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private func handleProcessTerminated() {
         cwdTimer?.invalidate()
         cwdTimer = nil
-        resetAgentState()
+        if initialCommand != nil {
+            // A directly launched worker has no parent shell to return to.
+            // Keep the finished pane actionable for waiters and the dashboard.
+            notifyDetectedAgentState(.done)
+        } else {
+            resetAgentState()
+        }
     }
 
     // MARK: - LocalProcessTerminalViewDelegate Methods
@@ -617,6 +653,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             self.pendingDetectionOutput = ""
             guard !chunk.isEmpty else { return }
             self.detectAgentState(from: chunk)
+        }
+    }
+
+    private func appendAutomationOutput(_ output: String) {
+        automationOutput += output
+        if automationOutput.count > 64_000 {
+            automationOutput = String(automationOutput.suffix(64_000))
         }
     }
 
@@ -758,10 +801,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         let banner = NSView()
         banner.wantsLayer = true
-        banner.layer?.backgroundColor = NSColor(hex: "#313244")?.cgColor
+        banner.layer?.backgroundColor = Theme.shared.palette.surface0.cgColor
         banner.layer?.cornerRadius = 6
         banner.layer?.borderWidth = 1
-        banner.layer?.borderColor = NSColor(hex: "#45475a")?.cgColor
+        banner.layer?.borderColor = Theme.shared.palette.surface1.cgColor
         banner.translatesAutoresizingMaskIntoConstraints = false
 
         let host = url.host ?? "localhost"
@@ -773,7 +816,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         )
         openButton.bezelStyle = .inline
         openButton.isBordered = false
-        openButton.contentTintColor = NSColor(hex: "#89b4fa")
+        openButton.contentTintColor = AppTheme.accent
         openButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         openButton.translatesAutoresizingMaskIntoConstraints = false
 
@@ -784,7 +827,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         )
         closeButton.bezelStyle = .inline
         closeButton.isBordered = false
-        closeButton.contentTintColor = NSColor(hex: "#6c7086")
+        closeButton.contentTintColor = AppTheme.mutedText
         closeButton.font = NSFont.systemFont(ofSize: 11)
         closeButton.translatesAutoresizingMaskIntoConstraints = false
 
@@ -1001,10 +1044,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func normalizeTerminalOutput(_ output: String) -> String {
-        guard let regex = Self.ansiEscapeRegex else { return output.lowercased() }
+        stripANSIEscapes(output).lowercased()
+    }
+
+    private func stripANSIEscapes(_ output: String) -> String {
+        guard let regex = Self.ansiEscapeRegex else { return output }
         let range = NSRange(output.startIndex..<output.endIndex, in: output)
         return regex.stringByReplacingMatches(in: output, range: range, withTemplate: "")
-            .lowercased()
     }
 
     private func agentPromptMarkers(in output: String) -> Set<String> {
@@ -1160,6 +1206,46 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         terminalView.send(txt: text)
     }
 
+    @discardableResult
+    func send(key: String) -> Bool {
+        let sequence: String
+        switch key.lowercased() {
+        case "enter", "return": sequence = "\r"
+        case "tab": sequence = "\t"
+        case "escape", "esc": sequence = "\u{1B}"
+        case "backspace": sequence = "\u{7F}"
+        case "ctrl-c", "control-c": sequence = "\u{03}"
+        case "ctrl-d", "control-d": sequence = "\u{04}"
+        case "up": sequence = terminalView.getTerminal().applicationCursor ? "\u{1B}OA" : "\u{1B}[A"
+        case "down": sequence = terminalView.getTerminal().applicationCursor ? "\u{1B}OB" : "\u{1B}[B"
+        case "right": sequence = terminalView.getTerminal().applicationCursor ? "\u{1B}OC" : "\u{1B}[C"
+        case "left": sequence = terminalView.getTerminal().applicationCursor ? "\u{1B}OD" : "\u{1B}[D"
+        default: return false
+        }
+        terminalView.send(txt: sequence)
+        return true
+    }
+
+    var shellProcessID: pid_t {
+        shellPID
+    }
+
+    func visibleScreenText(lineLimit: Int? = nil) -> String {
+        let text = readVisibleScreenText()
+        guard let lineLimit, lineLimit > 0 else { return text }
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+            .suffix(lineLimit)
+            .joined(separator: "\n")
+    }
+
+    func recentOutputText(lineLimit: Int? = nil) -> String {
+        let text = stripANSIEscapes(automationOutput)
+        guard let lineLimit, lineLimit > 0 else { return text }
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+            .suffix(lineLimit)
+            .joined(separator: "\n")
+    }
+
     func focusTerminal() {
         view.window?.makeFirstResponder(terminalView)
     }
@@ -1209,14 +1295,23 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // Update font (respecting the current app-wide zoom)
         terminalView.font = terminalFont(for: newConfig)
 
+        applyThemeColors()
         applyTerminalAppearance(newConfig)
 
         // Force terminal to refresh
         terminalView.setNeedsDisplay(terminalView.bounds)
     }
 
+    /// Install the active theme's ANSI palette, foreground and cursor colors.
+    /// Called at setup and again whenever the theme changes.
+    private func applyThemeColors() {
+        terminalView.installColors(Theme.shared.ansiColors)
+        terminalView.nativeForegroundColor = Theme.shared.palette.text
+        terminalView.caretColor = Theme.shared.palette.rosewater
+    }
+
     private func applyTerminalAppearance(_ config: Config) {
-        let baseColor = NSColor(hex: "#1e1e2e")!
+        let baseColor = Theme.shared.palette.base
 
         if config.window.enableBlur {
             let alpha = CGFloat(max(0.0, min(1.0, config.window.opacity)))

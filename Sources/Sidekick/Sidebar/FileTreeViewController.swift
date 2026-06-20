@@ -33,9 +33,12 @@ class FileTreeViewController: NSViewController {
         view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
     }
 
+    private var themeObserver: ThemeObserver?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         setupOutlineView()
+        themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
         showHidden = Config.load().editor?.showHiddenFiles ?? false
         // Start with home directory instead of root
         let initialPath = FileManager.default.homeDirectoryForCurrentUser.path
@@ -84,6 +87,14 @@ class FileTreeViewController: NSViewController {
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+    }
+
+    private func applyThemeColors() {
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        scrollView?.backgroundColor = AppTheme.sidebarBackground
+        scrollView?.contentView.backgroundColor = AppTheme.sidebarBackground
+        outlineView?.backgroundColor = AppTheme.sidebarBackground
+        outlineView?.reloadData()
     }
 
     private func setupContextMenu() {
@@ -451,13 +462,13 @@ extension FileTreeViewController: NSOutlineViewDelegate {
         // Style based on file state: hidden and gitignored entries render
         // dimmed (name and icon) so they're distinguishable at a glance.
         if node.isGitIgnored {
-            view?.textField?.textColor = NSColor(hex: "#6c7086") // Dimmed for ignored files
+            view?.textField?.textColor = AppTheme.mutedText // Dimmed for ignored files
             view?.imageView?.alphaValue = 0.4
         } else if node.isHidden {
-            view?.textField?.textColor = NSColor(hex: "#9399b2") // Slightly dimmed for hidden files
+            view?.textField?.textColor = AppTheme.dimText // Slightly dimmed for hidden files
             view?.imageView?.alphaValue = 0.55
         } else {
-            view?.textField?.textColor = NSColor(hex: "#cdd6f4") // Normal text color
+            view?.textField?.textColor = AppTheme.primaryText // Normal text color
             view?.imageView?.alphaValue = 1.0
         }
 

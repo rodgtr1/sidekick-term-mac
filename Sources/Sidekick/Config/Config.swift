@@ -57,7 +57,9 @@ public struct Config: Codable {
     private static func createDefaultConfig(at url: URL) {
         let defaultConfig = """
 [theme]
-# Available themes: catppuccin-mocha
+# Themes: catppuccin-mocha (dark), catppuccin-latte (light), or "auto" to
+# follow the macOS light/dark setting. Drop custom palettes (same JSON schema)
+# into ~/.config/sidekick/themes/ to add your own.
 name = "catppuccin-mocha"
 
 [font]
@@ -170,10 +172,18 @@ show_teleport = false
 
 // MARK: - Theme Configuration
 public struct ThemeConfig: Codable {
+    // Theme name ("catppuccin-mocha", "catppuccin-latte", a user theme's name)
+    // or "auto" to follow the macOS light/dark setting.
     public var name: String
 
     public init() {
         self.name = "catppuccin-mocha"
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? name
     }
 }
 

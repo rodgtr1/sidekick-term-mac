@@ -1,9 +1,11 @@
 import Cocoa
+import SwiftTerm
 
-enum ThemeType: String, Codable {
-    case system = "system"
-    case catppuccin = "catppuccin"
-}
+// MARK: - Role Vocabulary
+//
+// ThemeColors is the role vocabulary consumed by views (tabs, terminal chrome,
+// status colors). It is theme-agnostic: the mapping from role → palette slot
+// below is the same for every theme; only the underlying palette changes.
 
 protocol ThemeColors {
     // UI Elements
@@ -40,101 +42,150 @@ protocol ThemeColors {
     var blue: NSColor { get }
 }
 
-// System theme uses native macOS colors
-struct SystemTheme: ThemeColors {
-    var windowBackground: NSColor { .windowBackgroundColor }
-    var controlBackground: NSColor { .controlBackgroundColor }
-    var textBackground: NSColor { .textBackgroundColor }
+/// Maps the ThemeColors roles onto a resolved palette. This is the same mapping
+/// the old CatppuccinTheme used, so role colors are unchanged for Mocha.
+struct PaletteThemeColors: ThemeColors {
+    let p: ResolvedPalette
 
-    var primaryText: NSColor { .labelColor }
-    var secondaryText: NSColor { .secondaryLabelColor }
-    var labelText: NSColor { .labelColor }
+    var windowBackground: NSColor { p.mantle }
+    var controlBackground: NSColor { p.crust }
+    var textBackground: NSColor { p.base }
 
-    var accent: NSColor { .controlAccentColor }
-    var border: NSColor { .separatorColor }
-    var separator: NSColor { .separatorColor }
+    var primaryText: NSColor { p.text }
+    var secondaryText: NSColor { p.overlay0 }
+    var labelText: NSColor { p.text }
 
-    var activeTabBackground: NSColor { .controlBackgroundColor }
-    var inactiveTabBackground: NSColor { .unemphasizedSelectedContentBackgroundColor }
-    var activeTabText: NSColor { .controlTextColor }
-    var inactiveTabText: NSColor { .secondaryLabelColor }
-    var activeTabBorder: NSColor { .controlAccentColor }
+    var accent: NSColor { p.blue }
+    var border: NSColor { p.surface1 }
+    var separator: NSColor { p.surface1 }
 
-    var terminalBackground: NSColor { .textBackgroundColor }
-    var terminalForeground: NSColor { .textColor }
-    var terminalCursor: NSColor { .controlAccentColor }
+    var activeTabBackground: NSColor { p.surface0 }
+    var inactiveTabBackground: NSColor { p.crust }
+    var activeTabText: NSColor { p.text }
+    var inactiveTabText: NSColor { p.overlay0 }
+    var activeTabBorder: NSColor { p.blue }
 
-    var green: NSColor { .systemGreen }
-    var red: NSColor { .systemRed }
-    var yellow: NSColor { .systemYellow }
-    var blue: NSColor { .systemBlue }
+    var terminalBackground: NSColor { p.base }
+    var terminalForeground: NSColor { p.text }
+    var terminalCursor: NSColor { p.rosewater }
+
+    var green: NSColor { p.green }
+    var red: NSColor { p.red }
+    var yellow: NSColor { p.yellow }
+    var blue: NSColor { p.blue }
 }
 
-// Catppuccin theme uses custom colors
-struct CatppuccinTheme: ThemeColors {
-    var windowBackground: NSColor { CatppuccinMocha.mantle }
-    var controlBackground: NSColor { CatppuccinMocha.crust }
-    var textBackground: NSColor { CatppuccinMocha.base }
-
-    var primaryText: NSColor { CatppuccinMocha.text }
-    var secondaryText: NSColor { CatppuccinMocha.overlay0 }
-    var labelText: NSColor { CatppuccinMocha.text }
-
-    var accent: NSColor { CatppuccinMocha.blue }
-    var border: NSColor { CatppuccinMocha.surface1 }
-    var separator: NSColor { CatppuccinMocha.surface1 }
-
-    var activeTabBackground: NSColor { CatppuccinMocha.surface0 }
-    var inactiveTabBackground: NSColor { CatppuccinMocha.crust }
-    var activeTabText: NSColor { CatppuccinMocha.text }
-    var inactiveTabText: NSColor { CatppuccinMocha.overlay0 }
-    var activeTabBorder: NSColor { CatppuccinMocha.blue }
-
-    var terminalBackground: NSColor { CatppuccinMocha.base }
-    var terminalForeground: NSColor { CatppuccinMocha.text }
-    var terminalCursor: NSColor { CatppuccinMocha.rosewater }
-
-    var green: NSColor { CatppuccinMocha.green }
-    var red: NSColor { CatppuccinMocha.red }
-    var yellow: NSColor { CatppuccinMocha.yellow }
-    var blue: NSColor { CatppuccinMocha.blue }
-}
+// MARK: - Theme Engine
 
 class Theme {
     static let shared = Theme()
 
+    /// The resolved theme currently in effect (after auto resolution).
+    private(set) var definition: ThemeDefinition
+    private(set) var palette: ResolvedPalette
     private(set) var current: ThemeColors
-    private(set) var type: ThemeType
+
+    /// All selectable themes: built-ins plus any user JSON files.
+    private(set) var available: [ThemeDefinition]
+
+    /// What the user picked: a theme name, or "auto" to follow the system.
+    static let autoSelection = "auto"
+    private(set) var selection: String
+
+    /// Convenience for the terminal's 16-color ANSI install.
+    var ansiColors: [SwiftTerm.Color] { palette.ansi16 }
 
     private init() {
-        // Default to system theme
-        self.type = .system
-        self.current = SystemTheme()
+        let userThemes = Theme.loadUserThemes()
+        self.available = ThemeDefinition.builtIns + userThemes
+        self.selection = ThemeDefinition.catppuccinMocha.name
+        let initial = ThemeDefinition.catppuccinMocha
+        self.definition = initial
+        self.palette = ResolvedPalette(initial.palette)
+        self.current = PaletteThemeColors(p: ResolvedPalette(initial.palette))
+
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(systemAppearanceChanged),
+            name: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil
+        )
     }
 
-    func setTheme(_ type: ThemeType) {
-        self.type = type
+    /// Apply the selection stored in config (a theme name or "auto").
+    func loadFromConfig(_ config: Config) {
+        setSelection(config.theme.name)
+    }
 
-        switch type {
-        case .system:
-            self.current = SystemTheme()
-        case .catppuccin:
-            self.current = CatppuccinTheme()
-        }
+    /// Change the active selection and apply the resolved theme.
+    func setSelection(_ name: String) {
+        selection = name
+        applyResolved()
+    }
 
-        // Post notification to update UI
+    private func applyResolved() {
+        let resolved = resolve(selection)
+        definition = resolved
+        palette = ResolvedPalette(resolved.palette)
+        current = PaletteThemeColors(p: palette)
+        applyAppAppearance()
         NotificationCenter.default.post(name: .themeDidChange, object: nil)
     }
 
-    func loadFromConfig(_ config: Config) {
-        switch config.theme.name {
-        case "catppuccin", "catppuccin-mocha":
-            setTheme(.catppuccin)
-        case "system":
-            setTheme(.system)
-        default:
-            setTheme(.catppuccin)
+    /// Resolve a selection string to a concrete theme.
+    private func resolve(_ name: String) -> ThemeDefinition {
+        if name == Theme.autoSelection {
+            let wantDark = systemIsDark()
+            if let match = available.first(where: { $0.appearance == (wantDark ? .dark : .light) }) {
+                return match
+            }
         }
+        return available.first(where: { $0.name == name }) ?? ThemeDefinition.catppuccinMocha
+    }
+
+    private func applyAppAppearance() {
+        guard let app = NSApp else { return }
+        if selection == Theme.autoSelection {
+            app.appearance = nil  // follow the system
+        } else {
+            app.appearance = NSAppearance(named: definition.appearance == .dark ? .darkAqua : .aqua)
+        }
+    }
+
+    private func systemIsDark() -> Bool {
+        if let appearance = NSApp?.effectiveAppearance,
+           let match = appearance.bestMatch(from: [.aqua, .darkAqua]) {
+            return match == .darkAqua
+        }
+        return UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+    }
+
+    @objc private func systemAppearanceChanged() {
+        guard selection == Theme.autoSelection else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.applyResolved()
+        }
+    }
+
+    private static func loadUserThemes() -> [ThemeDefinition] {
+        let dir = NSString(string: "~/.config/sidekick/themes").expandingTildeInPath
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
+            return []
+        }
+        let decoder = JSONDecoder()
+        var themes: [ThemeDefinition] = []
+        for file in files where file.hasSuffix(".json") {
+            let url = URL(fileURLWithPath: dir).appendingPathComponent(file)
+            guard let data = try? Data(contentsOf: url),
+                  let theme = try? decoder.decode(ThemeDefinition.self, from: data) else {
+                print("⚠️ Skipping unreadable theme file: \(file)")
+                continue
+            }
+            // Don't let a user file shadow a built-in name.
+            if ThemeDefinition.builtIns.contains(where: { $0.name == theme.name }) { continue }
+            themes.append(theme)
+        }
+        return themes
     }
 }
 

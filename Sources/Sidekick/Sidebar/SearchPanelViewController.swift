@@ -54,11 +54,23 @@ class SearchPanelViewController: NSViewController {
         view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
     }
 
+    private var themeObserver: ThemeObserver?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
         setupTableView()
         layoutViews()
+        themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
+    }
+
+    private func applyThemeColors() {
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        statusLabel?.textColor = AppTheme.mutedText
+        tableView?.backgroundColor = AppTheme.sidebarBackground
+        scrollView?.backgroundColor = AppTheme.sidebarBackground
+        scrollView?.contentView.backgroundColor = AppTheme.sidebarBackground
+        tableView?.reloadData()
     }
 
     private func setupUI() {
@@ -72,7 +84,7 @@ class SearchPanelViewController: NSViewController {
 
         // Status label
         statusLabel = NSTextField(labelWithString: "Type to search files")
-        statusLabel.textColor = NSColor(hex: "#6c7086")
+        statusLabel.textColor = AppTheme.mutedText
         statusLabel.font = NSFont.systemFont(ofSize: 11)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -474,25 +486,25 @@ class SearchResultCellView: NSTableCellView {
 
         fileLabel = NSTextField(labelWithString: "")
         fileLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        fileLabel.textColor = NSColor(hex: "#cdd6f4")
+        fileLabel.textColor = AppTheme.primaryText
         fileLabel.lineBreakMode = .byTruncatingTail
         fileLabel.translatesAutoresizingMaskIntoConstraints = false
 
         pathLabel = NSTextField(labelWithString: "")
         pathLabel.font = NSFont.systemFont(ofSize: 10)
-        pathLabel.textColor = NSColor(hex: "#6c7086")
+        pathLabel.textColor = AppTheme.mutedText
         pathLabel.lineBreakMode = .byTruncatingMiddle
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
 
         lineLabel = NSTextField(labelWithString: "")
         lineLabel.font = NSFont.systemFont(ofSize: 10)
-        lineLabel.textColor = NSColor(hex: "#f38ba8")
+        lineLabel.textColor = AppTheme.error
         lineLabel.translatesAutoresizingMaskIntoConstraints = false
         lineLabel.alignment = .right
 
         textLabel = NSTextField(labelWithString: "")
         textLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        textLabel.textColor = NSColor(hex: "#a6adc8")
+        textLabel.textColor = AppTheme.secondaryText
         textLabel.translatesAutoresizingMaskIntoConstraints = false
         textLabel.lineBreakMode = .byTruncatingTail
 

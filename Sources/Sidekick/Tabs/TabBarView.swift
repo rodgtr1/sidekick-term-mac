@@ -307,10 +307,10 @@ class TabBarView: NSView {
 
     private var workingAgentIndicatorColor: NSColor {
         if workingPulseIsBright {
-            return NSColor(hex: "#f9e2af") ?? Theme.shared.current.yellow
+            return AppTheme.warning
         }
 
-        return NSColor(hex: "#c9a96a") ?? Theme.shared.current.yellow.blended(withFraction: 0.3, of: .black) ?? Theme.shared.current.yellow
+        return AppTheme.warning.blended(withFraction: 0.3, of: .black) ?? AppTheme.warning
     }
 
     @objc private func closeButtonClicked(_ sender: NSButton) {

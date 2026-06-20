@@ -26,10 +26,10 @@ final class TerminalFindBar: NSView {
 
     private func setupUI() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor(hex: "#313244")?.cgColor
+        layer?.backgroundColor = Theme.shared.palette.surface0.cgColor
         layer?.cornerRadius = 6
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor(hex: "#45475a")?.cgColor
+        layer?.borderColor = Theme.shared.palette.surface1.cgColor
 
         searchField.placeholderString = "Find in terminal"
         searchField.font = NSFont.systemFont(ofSize: 12)
@@ -91,7 +91,7 @@ final class TerminalFindBar: NSView {
         button.isBordered = false
         button.target = self
         button.action = action
-        button.contentTintColor = NSColor(hex: "#cdd6f4")
+        button.contentTintColor = AppTheme.primaryText
         button.translatesAutoresizingMaskIntoConstraints = false
         return button
     }

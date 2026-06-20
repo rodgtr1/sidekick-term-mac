@@ -57,12 +57,12 @@ class LineNumberRulerView: NSRulerView {
         }
 
         // Clear background
-        let backgroundColor = NSColor(hex: "#181825") ?? NSColor.controlBackgroundColor
+        let backgroundColor = AppTheme.sidebarBackground
         backgroundColor.setFill()
         context.fill(bounds)
 
         // Draw separator line
-        let separatorColor = NSColor(hex: "#313244") ?? NSColor.separatorColor
+        let separatorColor = Theme.shared.palette.surface0
         separatorColor.setStroke()
         let separatorRect = NSRect(x: bounds.width - 1, y: 0, width: 1, height: bounds.height)
         context.stroke(separatorRect)
@@ -85,7 +85,7 @@ class LineNumberRulerView: NSRulerView {
 
         // Draw line numbers for visible lines
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        let textColor = NSColor(hex: "#6c7086") ?? NSColor.secondaryLabelColor
+        let textColor = AppTheme.mutedText
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: textColor

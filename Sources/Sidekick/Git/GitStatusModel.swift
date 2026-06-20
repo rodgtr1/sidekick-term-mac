@@ -29,15 +29,15 @@ enum GitFileStatus: String, CaseIterable {
 
     var color: NSColor {
         switch self {
-        case .modified: return NSColor(hex: "#fab387") ?? .orange
-        case .added: return NSColor(hex: "#a6e3a1") ?? .green
-        case .deleted: return NSColor(hex: "#f38ba8") ?? .red
-        case .renamed: return NSColor(hex: "#89b4fa") ?? .blue
-        case .copied: return NSColor(hex: "#89b4fa") ?? .blue
-        case .unmerged: return NSColor(hex: "#f9e2af") ?? .yellow
-        case .untracked: return NSColor(hex: "#cdd6f4") ?? .white
-        case .ignored: return NSColor(hex: "#6c7086") ?? .gray
-        case .unmodified: return NSColor(hex: "#cdd6f4") ?? .white
+        case .modified: return AppTheme.peach
+        case .added: return AppTheme.success
+        case .deleted: return AppTheme.error
+        case .renamed: return AppTheme.accent
+        case .copied: return AppTheme.accent
+        case .unmerged: return AppTheme.warning
+        case .untracked: return AppTheme.primaryText
+        case .ignored: return AppTheme.mutedText
+        case .unmodified: return AppTheme.primaryText
         }
     }
 }

@@ -172,33 +172,51 @@ class PaneSplitController: NSViewController {
         return nil
     }
 
-    func splitPane(direction: SplitDirection) {
-        guard panes.count < Limits.maxPanesPerTab else { return }
-        guard activePaneIndex >= 0 && activePaneIndex < panes.count else { return }
+    @discardableResult
+    func splitPane(
+        direction: SplitDirection,
+        targetPaneID: UUID? = nil,
+        initialDirectory: String? = nil,
+        command: [String]? = nil,
+        focus: Bool = true
+    ) -> PaneModel? {
+        guard panes.count < Limits.maxPanesPerTab else { return nil }
+        let targetIndex: Int
+        if let targetPaneID {
+            guard let index = panes.firstIndex(where: { $0.id == targetPaneID }) else { return nil }
+            targetIndex = index
+        } else {
+            guard activePaneIndex >= 0 && activePaneIndex < panes.count else { return nil }
+            targetIndex = activePaneIndex
+        }
 
         print("🔧 Splitting pane in \(direction) direction, current panes: \(panes.count)")
 
-        let activePane = panes[activePaneIndex]
+        let activePane = panes[targetIndex]
         guard let activePaneContainer = paneContainers[activePane],
               let parentSplit = findParentSplitView(for: activePane) else {
             print("⚠️ Cannot find active pane container or parent split")
-            return
+            return nil
         }
 
         print("🔧 Parent split isVertical: \(parentSplit.isVertical), arrangedSubviews: \(parentSplit.arrangedSubviews.count)")
 
         // Get the current directory from the active pane to use for the new terminal.
-        let currentDirectory = activePane.resolvedWorkingDirectory()
+        let currentDirectory = initialDirectory ?? activePane.resolvedWorkingDirectory()
         print("🔧 Starting new pane in directory: \(currentDirectory ?? "home")")
 
         let newPane = PaneModel()
-        newPane.createTerminalViewController(config: config, initialDirectory: currentDirectory)
+        newPane.createTerminalViewController(
+            config: config,
+            initialDirectory: currentDirectory,
+            command: command
+        )
         panes.append(newPane)
         delegate?.paneSplitController(self, didAddPane: newPane, at: panes.count - 1)
 
         guard let newPaneView = newPane.view else {
             print("⚠️ New pane has no view!")
-            return
+            return nil
         }
 
         let newContainer = wrapPaneInContainer(newPane, paneView: newPaneView)
@@ -220,7 +238,7 @@ class PaneSplitController: NSViewController {
             // Find the index of the active pane's container in parent
             guard let containerIndex = parentSplit.arrangedSubviews.firstIndex(of: activePaneContainer) else {
                 print("⚠️ Cannot find container index")
-                return
+                return nil
             }
 
             print("🔧 Container index in parent: \(containerIndex)")
@@ -261,7 +279,7 @@ class PaneSplitController: NSViewController {
 
             guard let containerIndex = parentSplit.arrangedSubviews.firstIndex(of: activePaneContainer) else {
                 print("⚠️ Cannot find container index")
-                return
+                return nil
             }
 
             print("🔧 Inserting at index \(containerIndex + 1)")
@@ -278,8 +296,11 @@ class PaneSplitController: NSViewController {
             }
         }
 
-        setActivePane(index: panes.count - 1)
+        if focus {
+            setActivePane(index: panes.count - 1)
+        }
         updatePaneCloseButtons()
+        return newPane
     }
 
     func splitWithBrowser(direction: SplitDirection, initialURL: URL? = nil) {
@@ -444,6 +465,22 @@ class PaneSplitController: NSViewController {
         return true
     }
 
+    @discardableResult
+    func closePane(id: UUID) -> Bool {
+        guard let index = panes.firstIndex(where: { $0.id == id }), panes.count > 1 else {
+            return false
+        }
+        closePane(index: index)
+        return true
+    }
+
+    @discardableResult
+    func focusPane(id: UUID) -> Bool {
+        guard let index = panes.firstIndex(where: { $0.id == id }) else { return false }
+        setActivePane(index: index)
+        return true
+    }
+
     func setActivePane(index: Int) {
         guard index >= 0 && index < panes.count else {
             print("⚠️ setActivePane: invalid index \(index), pane count: \(panes.count)")
@@ -510,10 +547,10 @@ class PaneSplitController: NSViewController {
         borderView.wantsLayer = true
 
         let borderColor = isActive ?
-            NSColor(hex: "#89b4fa") : // Blue for active
-            NSColor(hex: "#313244")   // Dim for inactive
+            AppTheme.accent :                 // Blue for active
+            Theme.shared.palette.surface0     // Dim for inactive
 
-        borderView.layer?.borderColor = borderColor?.cgColor
+        borderView.layer?.borderColor = borderColor.cgColor
         borderView.layer?.borderWidth = isActive ? 2 : 1
         borderView.translatesAutoresizingMaskIntoConstraints = false
 
@@ -543,6 +580,10 @@ class PaneSplitController: NSViewController {
     var activePane: PaneModel? {
         guard activePaneIndex >= 0 && activePaneIndex < panes.count else { return nil }
         return panes[activePaneIndex]
+    }
+
+    var activePaneID: UUID? {
+        activePane?.id
     }
 
     func rebuildSplitView(for tab: TabModel) {
@@ -653,10 +694,10 @@ final class PaneCloseButton: NSButton {
         imagePosition = .imageOnly
         bezelStyle = .rounded
         isBordered = false
-        contentTintColor = NSColor(hex: "#cdd6f4") ?? .labelColor
+        contentTintColor = AppTheme.primaryText
         toolTip = "Close Pane"
         wantsLayer = true
-        layer?.backgroundColor = (NSColor(hex: "#313244") ?? .controlBackgroundColor).withAlphaComponent(0.9).cgColor
+        layer?.backgroundColor = Theme.shared.palette.surface0.withAlphaComponent(0.9).cgColor
         layer?.cornerRadius = 5
     }
 

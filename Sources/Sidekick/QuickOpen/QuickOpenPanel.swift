@@ -70,7 +70,7 @@ class QuickOpenPanel: NSPanel {
         // Container view with padding
         let containerView = NSView()
         containerView.wantsLayer = true
-        containerView.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
+        containerView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
         containerView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(containerView)
 
@@ -451,12 +451,12 @@ class QuickOpenCellView: NSTableCellView {
 
         fileNameLabel = NSTextField(labelWithString: "")
         fileNameLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        fileNameLabel.textColor = NSColor(hex: "#cdd6f4")
+        fileNameLabel.textColor = AppTheme.primaryText
         fileNameLabel.translatesAutoresizingMaskIntoConstraints = false
 
         pathLabel = NSTextField(labelWithString: "")
         pathLabel.font = NSFont.systemFont(ofSize: 11)
-        pathLabel.textColor = NSColor(hex: "#6c7086")
+        pathLabel.textColor = AppTheme.mutedText
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(fileNameLabel)

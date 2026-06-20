@@ -29,6 +29,7 @@ class SidebarContainerView: NSView {
     private var headerView: NSView!
     private var titleLabel: NSTextField!
     private var contentView: NSView!
+    private var themeObserver: ThemeObserver?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -48,6 +49,13 @@ class SidebarContainerView: NSView {
         setupContent()
         createPanelViews()
         showPanel(.files)
+
+        themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
+    }
+
+    private func applyThemeColors() {
+        applyBackground(enableBlur: true)
+        titleLabel?.textColor = AppTheme.primaryText
     }
 
     private func setupHeader() {
@@ -58,7 +66,7 @@ class SidebarContainerView: NSView {
 
         titleLabel = NSTextField(labelWithString: "FILES")
         titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        titleLabel.textColor = NSColor(hex: "#cdd6f4")
+        titleLabel.textColor = AppTheme.primaryText
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(titleLabel)
 
@@ -88,8 +96,8 @@ class SidebarContainerView: NSView {
 
     func applyBackground(enableBlur: Bool) {
         // Sidebar is always opaque (no blur)
-        layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
-        headerView?.layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
+        layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        headerView?.layer?.backgroundColor = AppTheme.headerBackground.cgColor
     }
 
     private func createPanelViews() {

@@ -1,11 +1,23 @@
 import Foundation
 import Cocoa
 
-enum AgentState {
+enum AgentState: String, Codable, CaseIterable {
     case idle       // No agent activity
     case working    // Agent is processing
     case ready      // Agent is ready for input (waiting for user)
     case done       // Agent finished the last run
+
+    /// Higher values require more immediate attention. Used to aggregate
+    /// per-pane state into the tab indicator without one idle pane masking a
+    /// working or blocked sibling.
+    var priority: Int {
+        switch self {
+        case .idle: return 0
+        case .done: return 1
+        case .working: return 2
+        case .ready: return 3
+        }
+    }
 }
 
 class TabModel: ObservableObject, Identifiable {
@@ -99,6 +111,10 @@ class TabModel: ObservableObject, Identifiable {
         } else {
             title = "Terminal"
         }
+    }
+
+    func updateAgentStateFromPanes() {
+        agentState = panes.map(\.agentState).max(by: { $0.priority < $1.priority }) ?? .idle
     }
 
     private func rebuildSplitView(splitDirection: SplitDirection = .horizontal) {

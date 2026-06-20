@@ -32,10 +32,21 @@ final class HostsPanelViewController: NSViewController {
         view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
     }
 
+    private var themeObserver: ThemeObserver?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         setupViews()
         refresh()
+        themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
+    }
+
+    private func applyThemeColors() {
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        refreshButton?.contentTintColor = AppTheme.primaryText
+        scrollView?.backgroundColor = AppTheme.sidebarBackground
+        tableView?.backgroundColor = AppTheme.sidebarBackground
+        tableView?.reloadData()
     }
 
     private func setupViews() {
@@ -45,7 +56,7 @@ final class HostsPanelViewController: NSViewController {
             action: #selector(refreshClicked)
         )
         refreshButton.isBordered = false
-        refreshButton.contentTintColor = NSColor(hex: "#cdd6f4")
+        refreshButton.contentTintColor = AppTheme.primaryText
         refreshButton.toolTip = "Refresh hosts"
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
 
@@ -334,7 +345,7 @@ extension HostsPanelViewController: NSTableViewDelegate {
         case .header(let title):
             let label = NSTextField(labelWithString: title)
             label.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
-            label.textColor = NSColor(hex: "#6c7086")
+            label.textColor = AppTheme.mutedText
             label.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(label)
             NSLayoutConstraint.activate([
@@ -344,7 +355,7 @@ extension HostsPanelViewController: NSTableViewDelegate {
         case .message(let text):
             let label = NSTextField(labelWithString: text)
             label.font = NSFont.systemFont(ofSize: 12)
-            label.textColor = NSColor(hex: "#6c7086")
+            label.textColor = AppTheme.mutedText
             label.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(label)
             NSLayoutConstraint.activate([
@@ -353,12 +364,12 @@ extension HostsPanelViewController: NSTableViewDelegate {
             ])
         case .host(let name, let detail, _):
             let icon = NSImageView(image: NSImage(systemSymbolName: "terminal", accessibilityDescription: nil) ?? NSImage())
-            icon.contentTintColor = NSColor(hex: "#89b4fa")
+            icon.contentTintColor = AppTheme.accent
             icon.translatesAutoresizingMaskIntoConstraints = false
 
             let nameLabel = NSTextField(labelWithString: name)
             nameLabel.font = NSFont.systemFont(ofSize: 13)
-            nameLabel.textColor = NSColor(hex: "#cdd6f4")
+            nameLabel.textColor = AppTheme.primaryText
             nameLabel.lineBreakMode = .byTruncatingTail
             nameLabel.translatesAutoresizingMaskIntoConstraints = false
             nameLabel.toolTip = detail.map { "\(name)\n\($0)" } ?? "Double-click to connect to \(name)"

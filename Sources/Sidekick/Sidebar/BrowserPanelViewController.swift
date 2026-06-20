@@ -22,7 +22,7 @@ class BrowserPanelViewController: NSViewController {
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
     }
 
     override func viewDidLoad() {
@@ -169,7 +169,7 @@ class BrowserPanelViewController: NSViewController {
     private func setupNavigationBar() {
         navigationView = NSView()
         navigationView.wantsLayer = true
-        navigationView.layer?.backgroundColor = NSColor(hex: "#11111b")?.cgColor
+        navigationView.layer?.backgroundColor = AppTheme.headerBackground.cgColor
         navigationView.translatesAutoresizingMaskIntoConstraints = false
 
         // Back button

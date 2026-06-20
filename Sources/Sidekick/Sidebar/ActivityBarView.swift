@@ -42,6 +42,7 @@ class ActivityBarView: NSView {
     private var selectedPanel: SidebarPanel = .files
     private var buttons: [NSButton] = []
     private var agentsBadge: NSTextField?
+    private var themeObserver: ThemeObserver?
     private let buttonSize: CGFloat = 40
     private let buttonSpacing: CGFloat = 4
     var topInset: CGFloat = 8 {
@@ -64,6 +65,13 @@ class ActivityBarView: NSView {
         wantsLayer = true
         applyBackground(enableBlur: true) // Default to blur enabled
         createActivityButtons()
+        themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
+    }
+
+    private func applyThemeColors() {
+        applyBackground(enableBlur: true)
+        updateSelectedButton(panel: selectedPanel)
+        agentsBadge?.layer?.backgroundColor = Theme.shared.current.red.cgColor
     }
 
     func applyBackground(enableBlur: Bool) {

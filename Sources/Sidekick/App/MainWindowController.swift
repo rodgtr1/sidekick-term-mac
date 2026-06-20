@@ -459,6 +459,15 @@ class MainWindowController: NSWindowController {
     @objc private func themeDidChange() {
         titlebarBackgroundView?.applyTheme()
         tabBarSpacerView?.applyTheme()
+        configureWindowBackgroundEffect()
+        // Repaint open terminals so a theme switch (or an Auto light/dark flip)
+        // applies live rather than only to newly opened panes.
+        for tab in tabs {
+            for pane in tab.panes {
+                pane.terminalViewController?.applyConfig(config)
+                pane.editorViewController?.applyConfig(config)
+            }
+        }
     }
 
     func applyRuntimeConfig(_ newConfig: Config) {
@@ -487,7 +496,7 @@ class MainWindowController: NSWindowController {
         } else {
             setBackgroundBlurRadius(0)
             window.isOpaque = true
-            window.backgroundColor = NSColor(hex: "#1e1e2e") ?? .windowBackgroundColor
+            window.backgroundColor = AppTheme.windowBackground
         }
     }
 
@@ -688,10 +697,13 @@ class MainWindowController: NSWindowController {
 
     @objc private func paneAgentStateChanged(_ notification: Notification) {
         guard let pane = notification.object as? PaneModel,
-              let state = notification.userInfo?["agentState"] as? AgentState else { return }
+              notification.userInfo?["agentState"] is AgentState else { return }
 
         if let tab = tabs.first(where: { $0.panes.contains(where: { $0.id == pane.id }) }) {
-            applyAgentState(state, to: tab)
+            // PaneModel has already stored the new state. Aggregate all panes
+            // so an idle sibling cannot mask one that is working or blocked.
+            tab.updateAgentStateFromPanes()
+            applyAgentState(tab.agentState, to: tab)
         }
     }
 
@@ -911,21 +923,22 @@ extension MainWindowController: TabBarDelegate {
 
 extension MainWindowController: PaneSplitControllerDelegate {
     func paneSplitController(_ controller: PaneSplitController, didAddPane pane: PaneModel, at index: Int) {
-        guard let activeTab = tabs[safe: activeTabIndex],
-              tabSplitControllers[activeTab.id] === controller else { return }
+        guard let tab = tabs.first(where: { tabSplitControllers[$0.id] === controller }) else { return }
 
-        if !activeTab.panes.contains(where: { $0.id == pane.id }) {
-            activeTab.panes.append(pane)
+        if !tab.panes.contains(where: { $0.id == pane.id }) {
+            tab.panes.append(pane)
         }
-        activeTab.activePaneIndex = index
         updateTabBar()
     }
 
     func paneSplitController(_ controller: PaneSplitController, didActivatePane pane: PaneModel, at index: Int) {
-        guard let activeTab = tabs[safe: activeTabIndex],
-              tabSplitControllers[activeTab.id] === controller else { return }
+        guard let tabIndex = tabs.firstIndex(where: { tabSplitControllers[$0.id] === controller }) else { return }
+        let tab = tabs[tabIndex]
 
-        activeTab.activePaneIndex = index
+        tab.activePaneIndex = index
+        if tabIndex != activeTabIndex {
+            switchToTab(index: tabIndex)
+        }
         if let directory = pane.resolvedWorkingDirectory() {
             sidebarContainerView.updateFileTree(path: directory)
         }
@@ -936,22 +949,22 @@ extension MainWindowController: PaneSplitControllerDelegate {
             sidebarContainerView.updateRunTaskStatus(name: taskName, status: nil)
         }
 
-        guard let activeTab = tabs[safe: activeTabIndex],
-              tabSplitControllers[activeTab.id] === controller else { return }
+        guard let tab = tabs.first(where: { tabSplitControllers[$0.id] === controller }) else { return }
 
-        if index < activeTab.panes.count, activeTab.panes[index].id == pane.id {
-            activeTab.panes.remove(at: index)
-        } else if let paneIndex = activeTab.panes.firstIndex(of: pane) {
-            activeTab.panes.remove(at: paneIndex)
+        if index < tab.panes.count, tab.panes[index].id == pane.id {
+            tab.panes.remove(at: index)
+        } else if let paneIndex = tab.panes.firstIndex(of: pane) {
+            tab.panes.remove(at: paneIndex)
         }
 
-        if activeTab.activePaneIndex >= activeTab.panes.count {
-            activeTab.activePaneIndex = max(activeTab.panes.count - 1, 0)
-        } else if activeTab.activePaneIndex > index {
-            activeTab.activePaneIndex -= 1
+        if tab.activePaneIndex >= tab.panes.count {
+            tab.activePaneIndex = max(tab.panes.count - 1, 0)
+        } else if tab.activePaneIndex > index {
+            tab.activePaneIndex -= 1
         }
 
-        activeTab.updateTitleFromActivePane()
+        tab.updateTitleFromActivePane()
+        tab.updateAgentStateFromPanes()
         updateTabBar()
     }
 }
@@ -1564,6 +1577,69 @@ private final class SidebarResizeHandle: NSView {
     }
 }
 
+// MARK: - Automation
+
+private extension MainWindowController {
+    func automationPane(id: UUID) -> (tab: TabModel, pane: PaneModel, controller: PaneSplitController)? {
+        for tab in tabs {
+            guard let pane = tab.panes.first(where: { $0.id == id }),
+                  let controller = tabSplitControllers[tab.id] else { continue }
+            return (tab, pane, controller)
+        }
+        return nil
+    }
+
+    func automationPaneInfo(tab: TabModel, pane: PaneModel, controller: PaneSplitController) -> IPCPaneInfo {
+        let type: String
+        switch pane.paneType {
+        case .terminal: type = "terminal"
+        case .editor: type = "editor"
+        case .diff: type = "diff"
+        case .uncommittedChanges: type = "uncommitted_changes"
+        case .browser: type = "browser"
+        }
+        let pid = pane.terminalViewController?.shellProcessID ?? 0
+        return IPCPaneInfo(
+            paneID: pane.id.uuidString.lowercased(),
+            tabID: tab.id.uuidString.lowercased(),
+            type: type,
+            cwd: pane.resolvedWorkingDirectory(),
+            focused: controller.activePaneID == pane.id && tab.id == tabs[safe: activeTabIndex]?.id,
+            agentStatus: pane.agentState.rawValue,
+            processID: pid > 0 ? Int32(pid) : nil
+        )
+    }
+
+    func allAutomationPaneInfo() -> [IPCPaneInfo] {
+        tabs.flatMap { tab -> [IPCPaneInfo] in
+            guard let controller = tabSplitControllers[tab.id] else { return [] }
+            return tab.panes.map { automationPaneInfo(tab: tab, pane: $0, controller: controller) }
+        }
+    }
+
+    func waitForAutomationCondition(
+        timeoutMS: Int,
+        condition: @escaping () -> Bool,
+        completion: @escaping (Bool) -> Void
+    ) {
+        if condition() {
+            completion(true)
+            return
+        }
+        let deadline = Date().addingTimeInterval(Double(timeoutMS) / 1000)
+        var timer: Timer?
+        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            if condition() {
+                timer?.invalidate()
+                completion(true)
+            } else if Date() >= deadline {
+                timer?.invalidate()
+                completion(false)
+            }
+        }
+    }
+}
+
 // MARK: - IPCServerDelegate
 extension MainWindowController: IPCServerDelegate {
     func ipcServer(
@@ -1606,6 +1682,115 @@ extension MainWindowController: IPCServerDelegate {
         case .agentIdle:
             setActiveTabAgentState(.idle)
             completion(IPCResponse(ok: true))
+
+        case .paneList:
+            completion(IPCResponse(result: IPCResult(panes: allAutomationPaneInfo())))
+
+        case .paneCurrent(let requestedPaneID):
+            let context: (tab: TabModel, pane: PaneModel, controller: PaneSplitController)?
+            if let requestedPaneID {
+                context = automationPane(id: requestedPaneID)
+            } else if let tab = tabs[safe: activeTabIndex],
+                      let pane = tab.activePane,
+                      let controller = tabSplitControllers[tab.id] {
+                context = (tab, pane, controller)
+            } else {
+                context = nil
+            }
+            guard let context else {
+                completion(IPCResponse(ok: false, error: "Pane not found"))
+                return
+            }
+            completion(IPCResponse(result: IPCResult(
+                pane: automationPaneInfo(tab: context.tab, pane: context.pane, controller: context.controller)
+            )))
+
+        case .paneSplit(let paneID, let direction, let cwd, let command, let focus):
+            guard let context = automationPane(id: paneID) else {
+                completion(IPCResponse(ok: false, error: "Pane not found"))
+                return
+            }
+            guard let pane = context.controller.splitPane(
+                direction: direction,
+                targetPaneID: paneID,
+                initialDirectory: cwd,
+                command: command,
+                focus: focus
+            ) else {
+                completion(IPCResponse(ok: false, error: "Unable to split pane (the tab may be at its pane limit)"))
+                return
+            }
+            completion(IPCResponse(result: IPCResult(
+                pane: automationPaneInfo(tab: context.tab, pane: pane, controller: context.controller)
+            )))
+
+        case .paneFocus(let paneID):
+            guard let context = automationPane(id: paneID), context.controller.focusPane(id: paneID) else {
+                completion(IPCResponse(ok: false, error: "Pane not found"))
+                return
+            }
+            completion(IPCResponse(result: IPCResult(
+                pane: automationPaneInfo(tab: context.tab, pane: context.pane, controller: context.controller)
+            )))
+
+        case .paneClose(let paneID):
+            guard let context = automationPane(id: paneID), context.controller.closePane(id: paneID) else {
+                completion(IPCResponse(ok: false, error: "Pane not found or cannot close the last pane"))
+                return
+            }
+            completion(IPCResponse())
+
+        case .paneSendText(let paneID, let text):
+            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
+                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+                return
+            }
+            terminal.send(text: text)
+            completion(IPCResponse())
+
+        case .paneSendKey(let paneID, let key):
+            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
+                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+                return
+            }
+            guard terminal.send(key: key) else {
+                completion(IPCResponse(ok: false, error: "Unsupported key: \(key)"))
+                return
+            }
+            completion(IPCResponse())
+
+        case .paneRead(let paneID, let source, let lines):
+            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
+                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+                return
+            }
+            let text = source == "recent"
+                ? terminal.recentOutputText(lineLimit: lines)
+                : terminal.visibleScreenText(lineLimit: lines)
+            completion(IPCResponse(result: IPCResult(text: text)))
+
+        case .waitAgentStatus(let paneID, let status, let timeoutMS):
+            guard automationPane(id: paneID) != nil else {
+                completion(IPCResponse(ok: false, error: "Pane not found"))
+                return
+            }
+            waitForAutomationCondition(timeoutMS: timeoutMS, condition: { [weak self] in
+                self?.automationPane(id: paneID)?.pane.agentState == status
+            }) { matched in
+                completion(IPCResponse(result: IPCResult(matched: matched)))
+            }
+
+        case .waitOutput(let paneID, let match, let timeoutMS):
+            guard automationPane(id: paneID)?.pane.terminalViewController != nil else {
+                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+                return
+            }
+            waitForAutomationCondition(timeoutMS: timeoutMS, condition: { [weak self] in
+                guard let terminal = self?.automationPane(id: paneID)?.pane.terminalViewController else { return false }
+                return terminal.recentOutputText().contains(match) || terminal.visibleScreenText().contains(match)
+            }) { matched in
+                completion(IPCResponse(result: IPCResult(matched: matched)))
+            }
         }
     }
 

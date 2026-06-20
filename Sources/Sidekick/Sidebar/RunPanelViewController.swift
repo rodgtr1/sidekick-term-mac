@@ -57,12 +57,24 @@ class RunPanelViewController: NSViewController {
         view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
     }
 
+    private var themeObserver: ThemeObserver?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
         setupTableView()
         layoutViews()
         loadTasks()
+        themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
+    }
+
+    private func applyThemeColors() {
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        statusLabel?.textColor = AppTheme.mutedText
+        tableView?.backgroundColor = AppTheme.sidebarBackground
+        scrollView?.backgroundColor = AppTheme.sidebarBackground
+        scrollView?.contentView.backgroundColor = AppTheme.sidebarBackground
+        tableView?.reloadData()
     }
 
     override func viewDidLayout() {
@@ -73,7 +85,7 @@ class RunPanelViewController: NSViewController {
     private func setupUI() {
         // Status label
         statusLabel = NSTextField(labelWithString: "Loading tasks...")
-        statusLabel.textColor = NSColor(hex: "#6c7086")
+        statusLabel.textColor = AppTheme.mutedText
         statusLabel.font = NSFont.systemFont(ofSize: 11)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -367,7 +379,7 @@ class TaskSectionHeaderView: NSTableCellView {
 
         titleLabel = NSTextField(labelWithString: "")
         titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        titleLabel.textColor = NSColor(hex: "#cdd6f4")
+        titleLabel.textColor = AppTheme.primaryText
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(titleLabel)
@@ -447,13 +459,13 @@ class TaskCellView: NSTableCellView {
         // Name label
         nameLabel = TaskCellLabel(labelWithString: "")
         nameLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        nameLabel.textColor = NSColor(hex: "#cdd6f4")
+        nameLabel.textColor = AppTheme.primaryText
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // Command label
         commandLabel = TaskCellLabel(labelWithString: "")
         commandLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        commandLabel.textColor = NSColor(hex: "#6c7086")
+        commandLabel.textColor = AppTheme.mutedText
         commandLabel.translatesAutoresizingMaskIntoConstraints = false
         commandLabel.lineBreakMode = .byTruncatingTail
 

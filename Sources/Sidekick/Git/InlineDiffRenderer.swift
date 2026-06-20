@@ -48,18 +48,18 @@ enum InlineDiffRenderer {
     /// lines; reserve `.backgroundColor` for intraline emphasis only).
     static let lineFillColor = NSAttributedString.Key("InlineDiffLineFillColor")
 
-    private static let textColor = NSColor(hex: "#cdd6f4") ?? .textColor
-    private static let gutterColor = NSColor(hex: "#6c7086") ?? .secondaryLabelColor
-    private static let separatorColor = NSColor(hex: "#45475a") ?? .separatorColor
-    private static let removedLineBG = (NSColor(hex: "#f38ba8") ?? .systemRed).withAlphaComponent(0.25)
-    private static let removedEmphasisBG = (NSColor(hex: "#f38ba8") ?? .systemRed).withAlphaComponent(0.42)
-    private static let addedLineBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.22)
-    private static let addedEmphasisBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.38)
-    private static let conflictMarkerText = NSColor(hex: "#f9e2af") ?? .systemYellow
-    private static let conflictMarkerBG = (NSColor(hex: "#f9e2af") ?? .systemYellow).withAlphaComponent(0.15)
-    private static let conflictOursBG = (NSColor(hex: "#94e2d5") ?? .systemTeal).withAlphaComponent(0.12)
-    private static let conflictBaseBG = (NSColor(hex: "#6c7086") ?? .systemGray).withAlphaComponent(0.12)
-    private static let conflictTheirsBG = (NSColor(hex: "#89b4fa") ?? .systemBlue).withAlphaComponent(0.12)
+    private static var textColor: NSColor { AppTheme.primaryText }
+    private static var gutterColor: NSColor { AppTheme.mutedText }
+    private static var separatorColor: NSColor { Theme.shared.palette.surface1 }
+    private static var removedLineBG: NSColor { AppTheme.error.withAlphaComponent(0.25) }
+    private static var removedEmphasisBG: NSColor { AppTheme.error.withAlphaComponent(0.42) }
+    private static var addedLineBG: NSColor { AppTheme.success.withAlphaComponent(0.22) }
+    private static var addedEmphasisBG: NSColor { AppTheme.success.withAlphaComponent(0.38) }
+    private static var conflictMarkerText: NSColor { AppTheme.warning }
+    private static var conflictMarkerBG: NSColor { AppTheme.warning.withAlphaComponent(0.15) }
+    private static var conflictOursBG: NSColor { Theme.shared.palette.teal.withAlphaComponent(0.12) }
+    private static var conflictBaseBG: NSColor { AppTheme.mutedText.withAlphaComponent(0.12) }
+    private static var conflictTheirsBG: NSColor { AppTheme.accent.withAlphaComponent(0.12) }
 
     private enum ConflictSection {
         case none, ours, base, theirs

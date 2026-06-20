@@ -8,17 +8,73 @@ struct IPCCommand: Codable {
     let old: String?
     let new: String?
     let cwd: String?
+    let paneID: String?
+    let direction: String?
+    let focus: Bool?
+    let command: [String]?
+    let text: String?
+    let key: String?
+    let source: String?
+    let lines: Int?
+    let status: String?
+    let match: String?
+    let timeoutMS: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match
+        case paneID = "pane_id"
+        case timeoutMS = "timeout_ms"
+    }
+}
+
+struct IPCPaneInfo: Codable {
+    let paneID: String
+    let tabID: String
+    let type: String
+    let cwd: String?
+    let focused: Bool
+    let agentStatus: String
+    let processID: Int32?
+
+    enum CodingKeys: String, CodingKey {
+        case type, cwd, focused
+        case paneID = "pane_id"
+        case tabID = "tab_id"
+        case agentStatus = "agent_status"
+        case processID = "process_id"
+    }
+}
+
+struct IPCResult: Codable {
+    let panes: [IPCPaneInfo]?
+    let pane: IPCPaneInfo?
+    let text: String?
+    let matched: Bool?
+
+    init(
+        panes: [IPCPaneInfo]? = nil,
+        pane: IPCPaneInfo? = nil,
+        text: String? = nil,
+        matched: Bool? = nil
+    ) {
+        self.panes = panes
+        self.pane = pane
+        self.text = text
+        self.matched = matched
+    }
 }
 
 struct IPCResponse: Codable {
     let ok: Bool
     let error: String?
     let accepted: Bool?
+    let result: IPCResult?
 
-    init(ok: Bool = true, error: String? = nil, accepted: Bool? = nil) {
+    init(ok: Bool = true, error: String? = nil, accepted: Bool? = nil, result: IPCResult? = nil) {
         self.ok = ok
         self.error = error
         self.accepted = accepted
+        self.result = result
     }
 }
 
@@ -30,6 +86,16 @@ enum IPCCommandType {
     case agentBusy
     case agentDone
     case agentIdle
+    case paneList
+    case paneCurrent(paneID: UUID?)
+    case paneSplit(paneID: UUID, direction: SplitDirection, cwd: String?, command: [String]?, focus: Bool)
+    case paneFocus(paneID: UUID)
+    case paneClose(paneID: UUID)
+    case paneSendText(paneID: UUID, text: String)
+    case paneSendKey(paneID: UUID, key: String)
+    case paneRead(paneID: UUID, source: String, lines: Int?)
+    case waitAgentStatus(paneID: UUID, status: AgentState, timeoutMS: Int)
+    case waitOutput(paneID: UUID, match: String, timeoutMS: Int)
 
     static func from(_ command: IPCCommand) -> IPCCommandType? {
         switch command.action {
@@ -51,9 +117,83 @@ enum IPCCommandType {
             return .agentDone
         case "agent_idle":
             return .agentIdle
+        case "pane_list":
+            return .paneList
+        case "pane_current":
+            if let rawPaneID = command.paneID {
+                guard let paneID = UUID(uuidString: rawPaneID) else { return nil }
+                return .paneCurrent(paneID: paneID)
+            }
+            return .paneCurrent(paneID: nil)
+        case "pane_split":
+            guard let paneID = uuid(command.paneID),
+                  let direction = splitDirection(command.direction) else { return nil }
+            let cwd: String?
+            if let requestedCWD = command.cwd {
+                guard let validCWD = validatedDirectory(requestedCWD) else { return nil }
+                cwd = validCWD
+            } else {
+                cwd = nil
+            }
+            if let argv = command.command, argv.isEmpty || argv.count > 256 || argv.contains(where: { $0.count > 32_768 }) {
+                return nil
+            }
+            return .paneSplit(
+                paneID: paneID,
+                direction: direction,
+                cwd: cwd,
+                command: command.command,
+                focus: command.focus ?? true
+            )
+        case "pane_focus":
+            guard let paneID = uuid(command.paneID) else { return nil }
+            return .paneFocus(paneID: paneID)
+        case "pane_close":
+            guard let paneID = uuid(command.paneID) else { return nil }
+            return .paneClose(paneID: paneID)
+        case "pane_send_text":
+            guard let paneID = uuid(command.paneID), let text = command.text, text.count <= 1_000_000 else { return nil }
+            return .paneSendText(paneID: paneID, text: text)
+        case "pane_send_key":
+            guard let paneID = uuid(command.paneID), let key = command.key, !key.isEmpty else { return nil }
+            return .paneSendKey(paneID: paneID, key: key)
+        case "pane_read":
+            guard let paneID = uuid(command.paneID) else { return nil }
+            let source = command.source ?? "visible"
+            guard source == "visible" || source == "recent",
+                  command.lines.map({ (1...10_000).contains($0) }) ?? true else { return nil }
+            return .paneRead(paneID: paneID, source: source, lines: command.lines)
+        case "wait_agent_status":
+            guard let paneID = uuid(command.paneID),
+                  let rawStatus = command.status,
+                  let status = AgentState(rawValue: rawStatus),
+                  let timeout = validTimeout(command.timeoutMS) else { return nil }
+            return .waitAgentStatus(paneID: paneID, status: status, timeoutMS: timeout)
+        case "wait_output":
+            guard let paneID = uuid(command.paneID),
+                  let match = command.match, !match.isEmpty, match.count <= 16_384,
+                  let timeout = validTimeout(command.timeoutMS) else { return nil }
+            return .waitOutput(paneID: paneID, match: match, timeoutMS: timeout)
         default:
             return nil
         }
+    }
+
+    private static func uuid(_ value: String?) -> UUID? {
+        value.flatMap(UUID.init(uuidString:))
+    }
+
+    private static func splitDirection(_ value: String?) -> SplitDirection? {
+        switch value {
+        case "right", "horizontal": return .horizontal
+        case "down", "vertical": return .vertical
+        default: return nil
+        }
+    }
+
+    private static func validTimeout(_ value: Int?) -> Int? {
+        let timeout = value ?? 30_000
+        return (1...3_600_000).contains(timeout) ? timeout : nil
     }
 
     /// Resolves symlinks and requires an absolute path. The file may not

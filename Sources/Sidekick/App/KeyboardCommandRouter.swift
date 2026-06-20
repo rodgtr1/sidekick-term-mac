@@ -48,8 +48,7 @@ struct KeyboardCommandRouter {
             case 0: return .showPanel(.agents)
             case 4: return .showPanel(.hosts)
             case 13: return .closeCurrentPane
-            case 2: return .splitPane(.horizontal)
-            case 6: return .splitPane(.vertical)
+            case 2: return .splitPane(.vertical)
             case 17: return .newTab
             case 31: return .splitWithBrowser
             case 47: return .toggleHiddenFiles

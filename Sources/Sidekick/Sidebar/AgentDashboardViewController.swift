@@ -31,9 +31,12 @@ final class AgentDashboardViewController: NSViewController {
         view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
     }
 
+    private var themeObserver: ThemeObserver?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         setupViews()
+        themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
 
         NotificationCenter.default.addObserver(
             self,
@@ -41,6 +44,14 @@ final class AgentDashboardViewController: NSViewController {
             name: NSNotification.Name("PaneAgentStateChanged"),
             object: nil
         )
+    }
+
+    private func applyThemeColors() {
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        scrollView?.backgroundColor = AppTheme.sidebarBackground
+        tableView?.backgroundColor = AppTheme.sidebarBackground
+        emptyLabel?.textColor = AppTheme.mutedText
+        tableView?.reloadData()
     }
 
     deinit {
@@ -89,7 +100,7 @@ final class AgentDashboardViewController: NSViewController {
 
         emptyLabel = NSTextField(labelWithString: "No agent activity.\nAgent states from Claude/Codex\nsessions appear here.")
         emptyLabel.font = NSFont.systemFont(ofSize: 12)
-        emptyLabel.textColor = NSColor(hex: "#6c7086")
+        emptyLabel.textColor = AppTheme.mutedText
         emptyLabel.alignment = .center
         emptyLabel.maximumNumberOfLines = 0
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -154,12 +165,11 @@ final class AgentDashboardViewController: NSViewController {
     }
 
     fileprivate static func describe(_ state: AgentState) -> (label: String, color: NSColor) {
-        let theme = Theme.shared.current
         switch state {
-        case .working: return ("Working", NSColor(hex: "#f9e2af") ?? theme.yellow)
-        case .ready: return ("Needs input", theme.green)
-        case .done: return ("Done", theme.blue)
-        case .idle: return ("Idle", NSColor(hex: "#6c7086") ?? .gray)
+        case .working: return ("Working", AppTheme.warning)
+        case .ready: return ("Needs input", AppTheme.success)
+        case .done: return ("Done", AppTheme.accent)
+        case .idle: return ("Idle", AppTheme.mutedText)
         }
     }
 
@@ -210,7 +220,7 @@ extension AgentDashboardViewController: NSTableViewDelegate {
 
         let titleLabel = NSTextField(labelWithString: rowData.title)
         titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        titleLabel.textColor = NSColor(hex: "#cdd6f4")
+        titleLabel.textColor = AppTheme.primaryText
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 

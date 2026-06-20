@@ -27,6 +27,9 @@ class GitPanelViewController: NSViewController {
     private var refreshButton: NSButton!
     private var pullButton: NSButton!
     private var pushButton: NSButton!
+    private var commitContainer: NSView?
+    private var commitLabel: NSTextField?
+    private var themeObserver: ThemeObserver?
 
     override func loadView() {
         view = NSView()
@@ -39,6 +42,24 @@ class GitPanelViewController: NSViewController {
         gitStatusModel = GitStatusModel()
         setupUI()
         setupBindings()
+        themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
+    }
+
+    private func applyThemeColors() {
+        view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        headerView?.layer?.backgroundColor = AppTheme.headerBackground.cgColor
+        branchLabel?.textColor = AppTheme.accent
+        syncLabel?.textColor = AppTheme.peach
+        scrollView?.backgroundColor = AppTheme.sidebarBackground
+        scrollView?.contentView.backgroundColor = AppTheme.sidebarBackground
+        tableView?.backgroundColor = AppTheme.sidebarBackground
+        commitContainer?.layer?.backgroundColor = AppTheme.headerBackground.cgColor
+        commitLabel?.textColor = AppTheme.primaryText
+        commitMessageTextView?.backgroundColor = AppTheme.windowBackground
+        commitMessageTextView?.textColor = AppTheme.primaryText
+        commitMessageTextView?.insertionPointColor = AppTheme.cursor
+        // statusLabel color is driven by isClean binding; reload re-colors rows.
+        tableView?.reloadData()
     }
 
     private func setupUI() {
@@ -58,21 +79,21 @@ class GitPanelViewController: NSViewController {
         // Branch info
         branchLabel = NSTextField(labelWithString: "main")
         branchLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        branchLabel.textColor = NSColor(hex: "#89b4fa")
+        branchLabel.textColor = AppTheme.accent
         branchLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(branchLabel)
 
         // Ahead/behind upstream info
         syncLabel = NSTextField(labelWithString: "")
         syncLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        syncLabel.textColor = NSColor(hex: "#fab387")
+        syncLabel.textColor = AppTheme.peach
         syncLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(syncLabel)
 
         // Status info
         statusLabel = NSTextField(labelWithString: "Clean")
         statusLabel.font = NSFont.systemFont(ofSize: 11)
-        statusLabel.textColor = NSColor(hex: "#a6e3a1")
+        statusLabel.textColor = AppTheme.success
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(statusLabel)
 
@@ -213,12 +234,14 @@ class GitPanelViewController: NSViewController {
         commitContainer.layer?.backgroundColor = AppTheme.headerBackground.cgColor
         commitContainer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(commitContainer)
+        self.commitContainer = commitContainer
 
         let commitLabel = NSTextField(labelWithString: "Commit Message")
         commitLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        commitLabel.textColor = NSColor(hex: "#cdd6f4")
+        commitLabel.textColor = AppTheme.primaryText
         commitLabel.translatesAutoresizingMaskIntoConstraints = false
         commitContainer.addSubview(commitLabel)
+        self.commitLabel = commitLabel
 
         // Text view for commit message
         let commitScrollView = NSScrollView()
@@ -232,8 +255,8 @@ class GitPanelViewController: NSViewController {
         commitMessageTextView.isRichText = false
         commitMessageTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         commitMessageTextView.backgroundColor = AppTheme.windowBackground
-        commitMessageTextView.textColor = NSColor(hex: "#cdd6f4") ?? .textColor
-        commitMessageTextView.insertionPointColor = NSColor(hex: "#f5e0dc") ?? .textColor
+        commitMessageTextView.textColor = AppTheme.primaryText
+        commitMessageTextView.insertionPointColor = AppTheme.cursor
 
         commitScrollView.documentView = commitMessageTextView
         commitContainer.addSubview(commitScrollView)
@@ -325,7 +348,7 @@ class GitPanelViewController: NSViewController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isClean in
                 self?.statusLabel.stringValue = isClean ? "Working tree clean" : "Changes detected"
-                self?.statusLabel.textColor = isClean ? NSColor(hex: "#a6e3a1") : NSColor(hex: "#fab387")
+                self?.statusLabel.textColor = isClean ? AppTheme.success : AppTheme.peach
             }
             .store(in: &cancellables)
 
@@ -545,7 +568,7 @@ extension GitPanelViewController: NSTableViewDelegate {
             }
 
             cellView?.textField?.stringValue = file.filename
-            cellView?.textField?.textColor = NSColor(hex: "#cdd6f4")
+            cellView?.textField?.textColor = AppTheme.primaryText
 
         } else if identifier?.rawValue == "Actions" {
             cellView = tableView.makeView(withIdentifier: identifier!, owner: self) as? NSTableCellView

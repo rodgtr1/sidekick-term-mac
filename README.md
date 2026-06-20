@@ -151,6 +151,34 @@ cp -r build/Sidekick.app /Applications/
 sidekick-ctl ping
 ```
 
+### Pane Automation
+
+`sidekick-ctl` exposes live terminal panes to scripts and coding agents. Pane
+IDs are returned as JSON and remain stable for the lifetime of the pane.
+
+```bash
+# Discover panes and the caller's own pane
+sidekick-ctl pane list
+sidekick-ctl pane current
+
+# Split and launch a real process without changing UI focus
+sidekick-ctl pane split "$SIDEKICK_PANE_ID" \
+  --direction right --cwd "$PWD" --no-focus --exec claude
+
+# Control and inspect the returned pane ID
+sidekick-ctl pane run "$PANE_ID" "Review the API error handling"
+sidekick-ctl pane read "$PANE_ID" --source recent --lines 100
+sidekick-ctl wait agent-status "$PANE_ID" done --timeout 600000
+```
+
+Managed terminals receive `SIDEKICK_ENV`, `SIDEKICK_SOCKET_PATH`, and
+`SIDEKICK_PANE_ID`. Direct `--exec` launches use an argv array rather than a
+shell command. Sidekick currently allows four panes per tab.
+
+The bundled `scripts/install-agent-status-hooks` installer copies the pane
+orchestration skill to both `~/.claude/skills` and `~/.codex/skills`; its source
+is `.claude/skills/sidekick-panes/SKILL.md`.
+
 ### Claude/Codex Agent Status Hooks
 
 Sidekick can drive tab status indicators from Claude Code and Codex lifecycle hooks.
@@ -199,6 +227,13 @@ echo '{"action":"agent_done"}' | nc -U ~/.config/sidekick/sidekick.sock
 
 # Create a new tab
 echo '{"action":"new_tab","cwd":"/path/to/dir"}' | nc -U ~/.config/sidekick/sidekick.sock
+
+# List panes
+echo '{"action":"pane_list"}' | nc -U ~/.config/sidekick/sidekick.sock
+
+# Split a pane and directly launch a command
+echo '{"action":"pane_split","pane_id":"UUID","direction":"right","focus":false,"command":["claude"]}' \
+  | nc -U ~/.config/sidekick/sidekick.sock
 
 # Show a diff
 echo '{"action":"show_diff","path":"file.txt","old":"old content","new":"new content"}' | nc -U ~/.config/sidekick/sidekick.sock

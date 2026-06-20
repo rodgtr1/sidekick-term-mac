@@ -21,19 +21,24 @@ class SyntaxHighlighter {
         let function: NSColor
         let type: NSColor
 
-        static let catppuccinMocha = SyntaxColorScheme(
-            text: NSColor(hex: "#cdd6f4") ?? .textColor,
-            background: NSColor(hex: "#1e1e2e") ?? .textBackgroundColor,
-            comment: NSColor(hex: "#6c7086") ?? .secondaryLabelColor,
-            keyword: NSColor(hex: "#cba6fa") ?? .systemPurple,
-            string: NSColor(hex: "#a6e3a1") ?? .systemGreen,
-            number: NSColor(hex: "#fab387") ?? .systemOrange,
-            function: NSColor(hex: "#89b4fa") ?? .systemBlue,
-            type: NSColor(hex: "#f9e2af") ?? .systemYellow
-        )
+        /// Built from the active theme's palette, so syntax colors follow
+        /// whichever theme is selected.
+        static var current: SyntaxColorScheme {
+            let p = Theme.shared.palette
+            return SyntaxColorScheme(
+                text: p.text,
+                background: p.base,
+                comment: p.overlay0,
+                keyword: p.mauve,
+                string: p.green,
+                number: p.peach,
+                function: p.blue,
+                type: p.yellow
+            )
+        }
     }
 
-    init(textView: NSTextView, colorScheme: SyntaxColorScheme = .catppuccinMocha) {
+    init(textView: NSTextView, colorScheme: SyntaxColorScheme = .current) {
         self.textView = textView
         self.colorScheme = colorScheme
     }

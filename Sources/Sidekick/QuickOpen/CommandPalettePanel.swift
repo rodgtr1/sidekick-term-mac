@@ -55,7 +55,7 @@ class CommandPalettePanel: NSPanel {
 
         let containerView = NSView()
         containerView.wantsLayer = true
-        containerView.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
+        containerView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
         containerView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(containerView)
 
@@ -261,14 +261,14 @@ private final class PaletteActionCellView: NSTableCellView {
 
     private func setupUI() {
         iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.contentTintColor = NSColor(hex: "#89b4fa")
+        iconView.contentTintColor = AppTheme.accent
 
         titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        titleLabel.textColor = NSColor(hex: "#cdd6f4")
+        titleLabel.textColor = AppTheme.primaryText
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         subtitleLabel.font = NSFont.systemFont(ofSize: 11)
-        subtitleLabel.textColor = NSColor(hex: "#6c7086")
+        subtitleLabel.textColor = AppTheme.mutedText
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(iconView)

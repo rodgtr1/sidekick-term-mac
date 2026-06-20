@@ -72,21 +72,21 @@ class KeyboardShortcutsPanel: NSPanel {
         // Container view with padding
         let containerView = NSView()
         containerView.wantsLayer = true
-        containerView.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
+        containerView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
         containerView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(containerView)
 
         // Title label
         let titleLabel = NSTextField(labelWithString: "Keyboard Shortcuts")
         titleLabel.font = NSFont.systemFont(ofSize: 18, weight: .semibold)
-        titleLabel.textColor = NSColor(hex: "#cdd6f4")
+        titleLabel.textColor = AppTheme.primaryText
         titleLabel.alignment = .center
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // Subtitle label
         let subtitleLabel = NSTextField(labelWithString: "Press Esc to close this panel")
         subtitleLabel.font = NSFont.systemFont(ofSize: 12)
-        subtitleLabel.textColor = NSColor(hex: "#6c7086")
+        subtitleLabel.textColor = AppTheme.mutedText
         subtitleLabel.alignment = .center
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -199,18 +199,18 @@ extension KeyboardShortcutsPanel: NSTableViewDelegate {
 
         let textField = NSTextField(labelWithString: "")
         textField.font = NSFont.systemFont(ofSize: 13)
-        textField.textColor = NSColor(hex: "#cdd6f4")
+        textField.textColor = AppTheme.primaryText
         textField.translatesAutoresizingMaskIntoConstraints = false
 
         if tableColumn?.identifier.rawValue == "Keys" {
             textField.stringValue = shortcut.keys
             textField.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-            textField.textColor = NSColor(hex: "#89b4fa") // Blue
+            textField.textColor = AppTheme.accent // Blue
         } else if tableColumn?.identifier.rawValue == "Description" {
             textField.stringValue = shortcut.description
         } else if tableColumn?.identifier.rawValue == "Category" {
             textField.stringValue = shortcut.category
-            textField.textColor = NSColor(hex: "#6c7086") // Dim
+            textField.textColor = AppTheme.mutedText // Dim
             textField.font = NSFont.systemFont(ofSize: 11)
         }
 

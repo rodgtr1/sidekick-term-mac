@@ -171,8 +171,8 @@ final class UncommittedChangesViewController: NSViewController {
 
         let container = NSView()
         container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
-        container.layer?.borderColor = NSColor(hex: "#313244")?.cgColor
+        container.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        container.layer?.borderColor = Theme.shared.palette.surface0.cgColor
         container.layer?.borderWidth = 1
         container.layer?.cornerRadius = 4
         container.translatesAutoresizingMaskIntoConstraints = false
@@ -207,7 +207,7 @@ final class UncommittedChangesViewController: NSViewController {
     private func makeHeaderView(_ section: ChangeSection) -> NSView {
         let header = NSView()
         header.wantsLayer = true
-        header.layer?.backgroundColor = NSColor(hex: "#181825")?.cgColor
+        header.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
         header.translatesAutoresizingMaskIntoConstraints = false
 
         let fileName = NSTextField(labelWithString: URL(fileURLWithPath: section.relativePath).lastPathComponent)
@@ -283,15 +283,15 @@ final class UncommittedChangesViewController: NSViewController {
     // MARK: - Conflict resolution
 
     private enum ConflictColors {
-        static let currentBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.16)
-        static let currentHeaderBG = (NSColor(hex: "#a6e3a1") ?? .systemGreen).withAlphaComponent(0.30)
-        static let incomingBG = (NSColor(hex: "#89b4fa") ?? .systemBlue).withAlphaComponent(0.16)
-        static let incomingHeaderBG = (NSColor(hex: "#89b4fa") ?? .systemBlue).withAlphaComponent(0.30)
-        static let separatorBG = (NSColor(hex: "#6c7086") ?? .systemGray).withAlphaComponent(0.22)
-        static let context = NSColor(hex: "#6c7086") ?? .secondaryLabelColor
-        static let text = NSColor(hex: "#cdd6f4") ?? .textColor
-        static let current = NSColor(hex: "#a6e3a1") ?? .systemGreen
-        static let incoming = NSColor(hex: "#89b4fa") ?? .systemBlue
+        static var currentBG: NSColor { AppTheme.success.withAlphaComponent(0.16) }
+        static var currentHeaderBG: NSColor { AppTheme.success.withAlphaComponent(0.30) }
+        static var incomingBG: NSColor { AppTheme.accent.withAlphaComponent(0.16) }
+        static var incomingHeaderBG: NSColor { AppTheme.accent.withAlphaComponent(0.30) }
+        static var separatorBG: NSColor { AppTheme.mutedText.withAlphaComponent(0.22) }
+        static var context: NSColor { AppTheme.mutedText }
+        static var text: NSColor { AppTheme.primaryText }
+        static var current: NSColor { AppTheme.success }
+        static var incoming: NSColor { AppTheme.accent }
     }
 
     /// Builds the section for a conflicted file: one block per conflict with
@@ -303,8 +303,8 @@ final class UncommittedChangesViewController: NSViewController {
 
         let container = NSView()
         container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor(hex: "#1e1e2e")?.cgColor
-        container.layer?.borderColor = (NSColor(hex: "#f9e2af") ?? .systemYellow).withAlphaComponent(0.6).cgColor
+        container.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        container.layer?.borderColor = AppTheme.warning.withAlphaComponent(0.6).cgColor
         container.layer?.borderWidth = 1
         container.layer?.cornerRadius = 4
         container.translatesAutoresizingMaskIntoConstraints = false
@@ -370,7 +370,7 @@ final class UncommittedChangesViewController: NSViewController {
 
         let counter = NSTextField(labelWithString: total > 1 ? "Conflict \(index + 1)/\(total)" : "Conflict")
         counter.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        counter.textColor = NSColor(hex: "#f9e2af") ?? .systemYellow
+        counter.textColor = AppTheme.warning
         buttonRow.addArrangedSubview(counter)
 
         let currentTitle = conflict.currentLabel.isEmpty ? "Current" : conflict.currentLabel

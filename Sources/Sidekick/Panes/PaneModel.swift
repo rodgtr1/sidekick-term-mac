@@ -7,6 +7,8 @@ class PaneModel: Identifiable, Hashable {
     var title: String = ""
     var currentDirectory: String = ""
     var gitBranch: String?
+    var agentState: AgentState = .idle
+    var agentStateChangedAt = Date()
 
     static func == (lhs: PaneModel, rhs: PaneModel) -> Bool {
         return lhs.id == rhs.id
@@ -37,8 +39,17 @@ class PaneModel: Identifiable, Hashable {
         self.isFocused = false
     }
 
-    func createTerminalViewController(config: Config, initialDirectory: String? = nil) {
-        let terminalVC = TerminalViewController(config: config, initialDirectory: initialDirectory)
+    func createTerminalViewController(
+        config: Config,
+        initialDirectory: String? = nil,
+        command: [String]? = nil
+    ) {
+        let terminalVC = TerminalViewController(
+            config: config,
+            initialDirectory: initialDirectory,
+            paneID: id,
+            command: command
+        )
         terminalVC.delegate = self
         self.terminalViewController = terminalVC
         self.view = terminalVC.view
@@ -248,6 +259,10 @@ extension PaneModel: TerminalViewControllerDelegate {
     }
 
     func terminalDidDetectAgentState(_ terminal: TerminalViewController, state: AgentState) {
+        if agentState != state {
+            agentState = state
+            agentStateChangedAt = Date()
+        }
         NotificationCenter.default.post(
             name: NSNotification.Name("PaneAgentStateChanged"),
             object: self,

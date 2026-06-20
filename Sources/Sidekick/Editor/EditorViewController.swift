@@ -70,9 +70,9 @@ class EditorViewController: NSViewController {
             ofSize: CGFloat(config.editor?.fontSize ?? 13),
             weight: .regular
         )
-        textView.backgroundColor = NSColor(hex: "#1e1e2e") ?? .textBackgroundColor
-        textView.textColor = NSColor(hex: "#cdd6f4") ?? .textColor
-        textView.insertionPointColor = NSColor(hex: "#f5e0dc") ?? .textColor
+        textView.backgroundColor = AppTheme.windowBackground
+        textView.textColor = AppTheme.primaryText
+        textView.insertionPointColor = AppTheme.cursor
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
@@ -141,6 +141,16 @@ class EditorViewController: NSViewController {
             width: editorConfig.wordWrap ? 0 : CGFloat.greatestFiniteMagnitude,
             height: CGFloat.greatestFiniteMagnitude
         )
+
+        // Re-apply theme colors live (applyConfig is invoked on theme change).
+        textView.backgroundColor = AppTheme.windowBackground
+        textView.textColor = AppTheme.primaryText
+        textView.insertionPointColor = AppTheme.cursor
+        let ext = syntaxHighlighter?.fileExtension ?? ""
+        syntaxHighlighter = SyntaxHighlighter(textView: textView)
+        syntaxHighlighter.fileExtension = ext
+        syntaxHighlighter.highlightSyntax()
+
         lineNumberRuler?.needsDisplay = true
     }
 
@@ -313,7 +323,7 @@ class EditorViewController: NSViewController {
               !searchTerm.isEmpty else { return }
 
         var searchRange = scanRange
-        let highlightColor = NSColor(hex: "#f9e2af")?.withAlphaComponent(0.35) ?? NSColor.systemYellow.withAlphaComponent(0.35)
+        let highlightColor = AppTheme.warning.withAlphaComponent(0.35)
 
         while searchRange.length > 0 {
             let foundRange = content.range(
