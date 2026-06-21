@@ -1320,6 +1320,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             view.layer?.backgroundColor = backgroundColor.cgColor
             view.layer?.isOpaque = false
             terminalView.nativeBackgroundColor = .clear
+            // Keep rendering transparent, but advertise the opaque theme color
+            // through OSC 11 so auto-themed TUIs do not interpret clear as black.
+            terminalView.terminal.backgroundColor = swiftTermColor(baseColor)
             terminalView.layer?.backgroundColor = NSColor.clear.cgColor
             terminalView.layer?.isOpaque = false
             terminalView.alphaValue = 1.0
@@ -1331,6 +1334,22 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             terminalView.layer?.isOpaque = true
             terminalView.alphaValue = 1.0
         }
+    }
+
+    private func swiftTermColor(_ color: NSColor) -> SwiftTerm.Color {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else {
+            return SwiftTerm.Color(red: 0, green: 0, blue: 0)
+        }
+
+        func component(_ value: CGFloat) -> UInt16 {
+            UInt16((max(0, min(1, value)) * 65_535).rounded())
+        }
+
+        return SwiftTerm.Color(
+            red: component(rgb.redComponent),
+            green: component(rgb.greenComponent),
+            blue: component(rgb.blueComponent)
+        )
     }
 
     deinit {
