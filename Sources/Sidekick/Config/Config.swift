@@ -38,7 +38,7 @@ public struct Config: Codable {
 
         guard let data = try? Data(contentsOf: fileURL),
               let tomlString = String(data: data, encoding: .utf8) else {
-            print("❌ Failed to read config file")
+            Log.error("Failed to read config file at \(expandedPath)", category: "config")
             return Config()
         }
 
@@ -49,7 +49,7 @@ public struct Config: Codable {
             print("✅ Config loaded: font=\(config.font.family) size=\(config.font.size) opacity=\(config.window.opacity)")
             return config
         } catch {
-            print("❌ Failed to parse config: \(error)")
+            Log.error("Failed to parse config: \(error)", category: "config")
             return Config()
         }
     }

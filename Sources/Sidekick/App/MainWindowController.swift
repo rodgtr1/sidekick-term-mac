@@ -1368,6 +1368,18 @@ extension MainWindowController {
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
+        // When the GUI file editor has focus, let it own a few shortcuts that
+        // otherwise route to panes/terminal: ⌘F (find bar), ⌘] / ⌘[ (indent /
+        // outdent). The terminal and nvim are not CodeTextViews, so they keep
+        // the default pane behavior.
+        if window?.firstResponder is CodeTextView {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags == .command,
+               event.keyCode == 3 || event.keyCode == 30 || event.keyCode == 33 {
+                return false
+            }
+        }
+
         guard let command = keyboardCommandRouter.command(for: event, tabCount: tabs.count) else {
             return false
         }

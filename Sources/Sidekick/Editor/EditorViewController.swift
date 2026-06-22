@@ -1,7 +1,7 @@
 import Cocoa
 
 class EditorViewController: NSViewController {
-    private var textView: NSTextView!
+    private var textView: CodeTextView!
     private var scrollView: NSScrollView!
     private var lineNumberRuler: LineNumberRulerView!
     private var syntaxHighlighter: SyntaxHighlighter!
@@ -62,10 +62,13 @@ class EditorViewController: NSViewController {
         textStorage.addLayoutManager(layoutManager)
         textStorage.delegate = self
 
-        textView = NSTextView(frame: scrollView.contentView.bounds, textContainer: textContainer)
+        textView = CodeTextView(frame: scrollView.contentView.bounds, textContainer: textContainer)
         textView.isEditable = true
         textView.isSelectable = true
         textView.isRichText = false
+        textView.allowsUndo = true
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
         textView.font = Self.editorFont(for: config.editor ?? EditorConfig())
         textView.backgroundColor = AppTheme.windowBackground
         textView.textColor = AppTheme.primaryText
@@ -128,8 +131,11 @@ class EditorViewController: NSViewController {
     static func editorFont(for editorConfig: EditorConfig) -> NSFont {
         let size = CGFloat(editorConfig.fontSize)
         let family = editorConfig.fontFamily.trimmingCharacters(in: .whitespaces)
-        if !family.isEmpty, let font = NSFont(name: family, size: size) {
-            return font
+        if !family.isEmpty {
+            if let font = NSFont(name: family, size: size) {
+                return font
+            }
+            Log.error("Editor font '\(family)' not found; falling back to system mono", category: "editor")
         }
         return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
@@ -138,7 +144,9 @@ class EditorViewController: NSViewController {
         guard isViewLoaded else { return }
 
         let editorConfig = config.editor ?? EditorConfig()
-        textView.font = Self.editorFont(for: editorConfig)
+        let font = Self.editorFont(for: editorConfig)
+        Log.debug("applyConfig: font=\(font.fontName) size=\(editorConfig.fontSize) wrap=\(editorConfig.wordWrap)", category: "editor")
+        textView.font = font
 
         textView.isHorizontallyResizable = !editorConfig.wordWrap
         textView.textContainer?.widthTracksTextView = editorConfig.wordWrap
@@ -167,8 +175,23 @@ class EditorViewController: NSViewController {
     func refreshLayout() {
         guard isViewLoaded,
               let textView = textView,
+              let scrollView = scrollView,
               let layoutManager = textView.layoutManager,
               let textContainer = textView.textContainer else { return }
+
+        // When word wrap is on, the container width tracks the text view width
+        // but only recomputes on a resize. A font change resets the width to 0,
+        // so without this every line wraps to zero width and the text vanishes
+        // until the window is resized. Restore it to the visible width here.
+        if textContainer.widthTracksTextView {
+            let visibleWidth = scrollView.contentView.bounds.width
+            if visibleWidth > 0 {
+                textContainer.containerSize = NSSize(
+                    width: visibleWidth - 2 * textContainer.lineFragmentPadding,
+                    height: CGFloat.greatestFiniteMagnitude
+                )
+            }
+        }
 
         let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
         layoutManager.invalidateLayout(forCharacterRange: fullRange, actualCharacterRange: nil)
@@ -218,6 +241,9 @@ class EditorViewController: NSViewController {
             isModified = false
             updateTitle()
 
+            // Pick the line-comment style for ⌘/ based on the file type.
+            textView.commentPrefix = CodeTextView.commentPrefix(forExtension: url.pathExtension.lowercased())
+
             // Update syntax highlighter with file extension
             if let highlighter = syntaxHighlighter {
                 highlighter.fileExtension = url.pathExtension.lowercased()
@@ -225,7 +251,8 @@ class EditorViewController: NSViewController {
                 applySearchHighlights()
             }
         } catch {
-            showError("Failed to open file: \\(error.localizedDescription)")
+            Log.error("Failed to open \(url.path): \(error.localizedDescription)", category: "editor")
+            showError("Failed to open file: \(error.localizedDescription)")
         }
     }
 
@@ -239,7 +266,8 @@ class EditorViewController: NSViewController {
             isModified = false
             return true
         } catch {
-            showError("Failed to save file: \\(error.localizedDescription)")
+            Log.error("Failed to save \(url.path): \(error.localizedDescription)", category: "editor")
+            showError("Failed to save file: \(error.localizedDescription)")
             return false
         }
     }
@@ -266,7 +294,8 @@ class EditorViewController: NSViewController {
             updateTitle()
             return true
         } catch {
-            showError("Failed to save file: \\(error.localizedDescription)")
+            Log.error("Failed to save as \(url.path): \(error.localizedDescription)", category: "editor")
+            showError("Failed to save file: \(error.localizedDescription)")
             return false
         }
     }

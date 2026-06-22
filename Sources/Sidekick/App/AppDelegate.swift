@@ -4,7 +4,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var mainWindowController: MainWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🚀 App launching...")
+        // Log uncaught ObjC exceptions to the persistent log so production
+        // crashes leave a trace (see ~/Library/Logs/Sidekick/Sidekick.log).
+        NSSetUncaughtExceptionHandler { exception in
+            Log.error("Uncaught exception: \(exception.name.rawValue) — \(exception.reason ?? "no reason")\n\(exception.callStackSymbols.joined(separator: "\n"))", category: "crash")
+        }
+
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let buildNum = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        Log.info("App launching (version \(version) build \(buildNum))", category: "app")
 
         // Set activation policy to regular app
         NSApp.setActivationPolicy(.regular)
@@ -109,6 +117,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let editMenu = NSMenu(title: "Edit")
         editMenuItem.submenu = editMenu
 
+        // Undo / Redo (validated against the first responder's undo manager —
+        // active in the editor and any text field, inert elsewhere).
+        let undoItem = NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(undoItem)
+
+        let redoItem = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        redoItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redoItem)
+
+        editMenu.addItem(NSMenuItem.separator())
+
+        // Cut
+        let cutItem = NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(cutItem)
+
         // Copy
         let copyItem = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(copyItem)
@@ -116,6 +139,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Paste
         let pasteItem = NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(pasteItem)
+
+        editMenu.addItem(NSMenuItem.separator())
+
+        // Select All
+        let selectAllItem = NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(selectAllItem)
+
+        editMenu.addItem(NSMenuItem.separator())
+
+        // Find submenu (drives the editor's built-in find bar; ⌘F is freed for
+        // the editor via the first-responder check in MainWindowController).
+        let findMenuItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
+        let findMenu = NSMenu(title: "Find")
+
+        let findItem = NSMenuItem(title: "Find…", action: #selector(NSResponder.performTextFinderAction(_:)), keyEquivalent: "f")
+        findItem.tag = NSTextFinder.Action.showFindInterface.rawValue
+        findMenu.addItem(findItem)
+
+        let findNextItem = NSMenuItem(title: "Find Next", action: #selector(NSResponder.performTextFinderAction(_:)), keyEquivalent: "g")
+        findNextItem.tag = NSTextFinder.Action.nextMatch.rawValue
+        findMenu.addItem(findNextItem)
+
+        let findPrevItem = NSMenuItem(title: "Find Previous", action: #selector(NSResponder.performTextFinderAction(_:)), keyEquivalent: "G")
+        findPrevItem.keyEquivalentModifierMask = [.command, .shift]
+        findPrevItem.tag = NSTextFinder.Action.previousMatch.rawValue
+        findMenu.addItem(findPrevItem)
+
+        findMenuItem.submenu = findMenu
+        editMenu.addItem(findMenuItem)
 
         mainMenu.addItem(editMenuItem)
 
