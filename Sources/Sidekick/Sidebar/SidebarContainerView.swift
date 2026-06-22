@@ -5,13 +5,6 @@ protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String)
     func sidebarContainer(_ container: SidebarContainerView, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String?)
-    func sidebarContainer(
-        _ container: SidebarContainerView,
-        didRequestRunTask command: String,
-        openBrowser: String?,
-        taskName: String
-    )
-    func sidebarContainer(_ container: SidebarContainerView, didRequestPasteCommand command: String)
     func sidebarContainerTabs(_ container: SidebarContainerView) -> [TabModel]
     func sidebarContainer(_ container: SidebarContainerView, didRequestSwitchToTab index: Int)
     func sidebarContainer(_ container: SidebarContainerView, didRequestConnectCommand command: String)
@@ -125,11 +118,6 @@ class SidebarContainerView: NSView {
             searchPanelVC.delegate = self
             panelControllers[panel] = searchPanelVC
             return searchPanelVC.view
-        case .run:
-            let runPanelVC = RunPanelViewController()
-            runPanelVC.delegate = self
-            panelControllers[panel] = runPanelVC
-            return runPanelVC.view
         case .agents:
             let agentDashboardVC = AgentDashboardViewController()
             agentDashboardVC.delegate = self
@@ -201,11 +189,6 @@ class SidebarContainerView: NSView {
         if let searchPanelVC = panelControllers[.search] as? SearchPanelViewController {
             searchPanelVC.updateWorkingDirectory(path)
         }
-
-        // Update run panel working directory
-        if let runPanelVC = panelControllers[.run] as? RunPanelViewController {
-            runPanelVC.updateWorkingDirectory(path)
-        }
     }
 
     func toggleHiddenFiles() {
@@ -229,12 +212,6 @@ class SidebarContainerView: NSView {
     func refreshFileTree() {
         if let fileTreeVC = panelControllers[.files] as? FileTreeViewController {
             fileTreeVC.refresh()
-        }
-    }
-
-    func updateRunTaskStatus(name: String, status: TaskRunStatus?) {
-        if let runPanelVC = panelControllers[.run] as? RunPanelViewController {
-            runPanelVC.setTaskStatus(name: name, status: status)
         }
     }
 }
@@ -282,20 +259,5 @@ extension SidebarContainerView: GitPanelDelegate {
 extension SidebarContainerView: SearchPanelDelegate {
     func searchPanel(_ panel: SearchPanelViewController, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String) {
         delegate?.sidebarContainer(self, didRequestOpenFile: filePath, atLine: line, highlighting: searchTerm)
-    }
-}
-
-extension SidebarContainerView: RunPanelDelegate {
-    func runPanel(
-        _ panel: RunPanelViewController,
-        didRequestRunTask command: String,
-        openBrowser: String?,
-        taskName: String
-    ) {
-        delegate?.sidebarContainer(self, didRequestRunTask: command, openBrowser: openBrowser, taskName: taskName)
-    }
-
-    func runPanel(_ panel: RunPanelViewController, didRequestPasteCommand command: String) {
-        delegate?.sidebarContainer(self, didRequestPasteCommand: command)
     }
 }

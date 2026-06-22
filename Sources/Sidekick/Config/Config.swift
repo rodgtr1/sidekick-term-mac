@@ -7,7 +7,6 @@ public struct Config: Codable {
     public var cursor: CursorConfig
     public var window: WindowConfig
     public var behavior: BehaviorConfig
-    public var tasks: [Task]?  // Make optional since it's not always in config
     public var shell: ShellConfig
     public var diff: DiffConfig
     public var editor: EditorConfig?  // Make optional for backwards compatibility
@@ -19,7 +18,6 @@ public struct Config: Codable {
         self.cursor = CursorConfig()
         self.window = WindowConfig()
         self.behavior = BehaviorConfig()
-        self.tasks = []
         self.shell = ShellConfig()
         self.diff = DiffConfig()
         self.editor = EditorConfig()
@@ -125,12 +123,6 @@ show_hidden_files = false
 [hosts]
 # Show Teleport nodes (from `tsh ls`) in the Hosts sidebar panel
 show_teleport = false
-
-# Global run-panel tasks (available in every project)
-# [[tasks]]
-# name = "My task"
-# cmd  = "echo hello"
-# open_browser = "http://localhost:3000"  # optional: open embedded browser when run
 """
 
         // Create directory if needed
@@ -144,19 +136,8 @@ show_teleport = false
         let fileURL = URL(fileURLWithPath: expandedPath)
 
         do {
-            // Reload config from disk to preserve manual edits (like tasks)
-            var configToSave = self
-            if FileManager.default.fileExists(atPath: expandedPath),
-               let data = try? Data(contentsOf: fileURL),
-               let tomlString = String(data: data, encoding: .utf8),
-               let toml = try? TOMLTable(string: tomlString),
-               let diskConfig = try? TOMLDecoder().decode(Config.self, from: toml) {
-                // Preserve tasks from the file on disk
-                configToSave.tasks = diskConfig.tasks
-            }
-
             let encoder = TOMLEncoder()
-            let toml = try encoder.encode(configToSave)
+            let toml = try encoder.encode(self)
             let tomlString = toml.description
 
             // Create directory if needed
@@ -366,27 +347,3 @@ public struct HostsConfig: Codable {
     }
 }
 
-// MARK: - Task Configuration
-public struct Task: Codable {
-    public var name: String
-    public var cmd: String
-    public var llmPrompt: String?
-    public var hotkey: String?
-    public var openBrowser: String?
-
-    enum CodingKeys: String, CodingKey {
-        case name
-        case cmd
-        case llmPrompt = "llm_prompt"
-        case hotkey
-        case openBrowser = "open_browser"
-    }
-
-    public init(name: String, cmd: String, llmPrompt: String? = nil, hotkey: String? = nil, openBrowser: String? = nil) {
-        self.name = name
-        self.cmd = cmd
-        self.llmPrompt = llmPrompt
-        self.hotkey = hotkey
-        self.openBrowser = openBrowser
-    }
-}

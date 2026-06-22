@@ -143,8 +143,6 @@ class MainWindowController: NSWindowController {
     private var sessionSaveTimer: Timer?
     /// Last session state written, to skip identical autosave writes.
     private var lastSavedSession: SessionState?
-    /// Panes running a task from the Run panel, keyed by pane id → task name.
-    private var runningTaskPanes: [UUID: String] = [:]
     /// Pending hook diff approvals, shown one sheet at a time.
     private var diffApprovalQueue: [(path: String, old: String, new: String, completion: (Bool) -> Void)] = []
     private var activeDiffApproval: DiffApprovalPanel?
@@ -632,21 +630,6 @@ class MainWindowController: NSWindowController {
         guard let pane = notification.object as? PaneModel else { return }
         let status = notification.userInfo?["status"] as? TerminalCommandStatus
 
-        // Reflect run-panel task completion (pane was launched from Run
-        // panel). The mapping is removed once the task's command finishes so
-        // later manual commands in the same split don't rewrite the status.
-        if let taskName = runningTaskPanes[pane.id] {
-            if let status = status {
-                runningTaskPanes.removeValue(forKey: pane.id)
-                sidebarContainerView.updateRunTaskStatus(
-                    name: taskName,
-                    status: status.succeeded ? .succeeded : .failed
-                )
-            } else {
-                sidebarContainerView.updateRunTaskStatus(name: taskName, status: .running)
-            }
-        }
-
         for tab in tabs {
             if tab.panes.contains(where: { $0.id == pane.id }) {
                 notifyIfLongCommandFinished(status, tabTitle: tab.title)
@@ -958,10 +941,6 @@ extension MainWindowController: PaneSplitControllerDelegate {
     }
 
     func paneSplitController(_ controller: PaneSplitController, didClosePane pane: PaneModel, at index: Int) {
-        if let taskName = runningTaskPanes.removeValue(forKey: pane.id) {
-            sidebarContainerView.updateRunTaskStatus(name: taskName, status: nil)
-        }
-
         guard let tab = tabs.first(where: { tabSplitControllers[$0.id] === controller }) else { return }
 
         if index < tab.panes.count, tab.panes[index].id == pane.id {
@@ -1039,48 +1018,6 @@ extension MainWindowController: SidebarContainerDelegate {
         openFileInEditor(url, atLine: line, highlighting: searchTerm)
     }
 
-    func sidebarContainer(
-        _ container: SidebarContainerView,
-        didRequestRunTask command: String,
-        openBrowser: String?,
-        taskName: String
-    ) {
-        runTaskInSplit(command: command, openBrowser: openBrowser, taskName: taskName)
-    }
-
-    /// Runs a task from the Run panel in a dedicated split below the active
-    /// pane, tracks its pane for status updates, and optionally opens the
-    /// embedded browser at the task's URL.
-    private func runTaskInSplit(command: String, openBrowser: String?, taskName: String) {
-        let paneCountBefore = currentPaneSplitController?.paneCount ?? 0
-        currentPaneSplitController?.splitPane(direction: .vertical)
-
-        if let controller = currentPaneSplitController,
-           controller.paneCount > paneCountBefore,
-           let pane = controller.activePane,
-           let terminal = pane.terminalViewController {
-            // Fresh split: give the shell a moment to start before typing.
-            runningTaskPanes[pane.id] = taskName
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak terminal] in
-                terminal?.send(text: command + "\n")
-            }
-        } else {
-            // Split failed (e.g. max panes reached): run in the active
-            // terminal, tracking whichever pane the command was sent to.
-            if let pane = runCommandInActiveTerminal(command) {
-                runningTaskPanes[pane.id] = taskName
-            }
-        }
-
-        sidebarContainerView.updateRunTaskStatus(name: taskName, status: .running)
-
-        if let urlString = openBrowser, let url = URL(string: urlString), url.scheme != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                self?.openURLInBrowserPane(url)
-            }
-        }
-    }
-
     private func openURLInBrowserPane(_ url: URL) {
         if let browserPane = tabs[safe: activeTabIndex]?.panes.first(where: { $0.paneType == .browser }),
            let browserVC = browserPane.browserViewController {
@@ -1088,10 +1025,6 @@ extension MainWindowController: SidebarContainerDelegate {
             return
         }
         currentPaneSplitController?.splitWithBrowser(direction: .horizontal, initialURL: url)
-    }
-
-    func sidebarContainer(_ container: SidebarContainerView, didRequestPasteCommand command: String) {
-        pasteCommandToActiveTerminal(command)
     }
 
     private func openFileInEditor(_ url: URL) {
@@ -1240,9 +1173,6 @@ extension MainWindowController: SidebarContainerDelegate {
             PaletteAction(title: "Show Search Panel", subtitle: "⇧⌘F", symbolName: "magnifyingglass.circle") { [weak self] in
                 self?.showPanel(.search)
             },
-            PaletteAction(title: "Show Run Panel", subtitle: "⇧⌘R", symbolName: "play.circle") { [weak self] in
-                self?.showPanel(.run)
-            },
             PaletteAction(title: "Toggle Sidebar", subtitle: "⌘B", symbolName: "sidebar.left") { [weak self] in
                 self?.toggleSidebar()
             },
@@ -1331,17 +1261,6 @@ extension MainWindowController: SidebarContainerDelegate {
 
         terminalVC.send(text: command + "\n")
         return terminalPane
-    }
-
-    private func pasteCommandToActiveTerminal(_ command: String) {
-        guard let activeTab = tabs[safe: activeTabIndex],
-              let terminalPane = activeTab.panes.first(where: { $0.terminalViewController != nil }),
-              let terminalVC = terminalPane.terminalViewController else {
-            return
-        }
-
-        // Send just the command without Enter, so user can edit it
-        terminalVC.send(text: command)
     }
 
     private func setupIPC() {

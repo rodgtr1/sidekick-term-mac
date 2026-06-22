@@ -53,7 +53,6 @@ class KeyboardShortcutsPanel: NSPanel {
             KeyboardShortcut(keys: "⌘⇧E", description: "Show file explorer panel", category: "Sidebar"),
             KeyboardShortcut(keys: "⌘⇧G", description: "Show git panel", category: "Sidebar"),
             KeyboardShortcut(keys: "⌘⇧F", description: "Show search-in-files panel", category: "Sidebar"),
-            KeyboardShortcut(keys: "⌘⇧R", description: "Show run panel", category: "Sidebar"),
             KeyboardShortcut(keys: "⌘⇧O", description: "Toggle embedded browser panel", category: "Sidebar"),
 
             // File Operations

@@ -44,7 +44,6 @@ struct KeyboardCommandRouter {
             case 14: return .showPanel(.files)
             case 5: return .showPanel(.git)
             case 3: return .showPanel(.search)
-            case 15: return .showPanel(.run)
             case 0: return .showPanel(.agents)
             case 4: return .showPanel(.hosts)
             case 13: return .closeCurrentPane

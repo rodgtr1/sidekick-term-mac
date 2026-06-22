@@ -9,7 +9,6 @@ enum SidebarPanel: String, CaseIterable {
     case files = "Files"
     case search = "Search"
     case git = "Git"
-    case run = "Run"
     case agents = "Agents"
     case hosts = "Hosts"
 
@@ -18,7 +17,6 @@ enum SidebarPanel: String, CaseIterable {
         case .files: return "folder"
         case .git: return "arrow.branch"
         case .search: return "magnifyingglass"
-        case .run: return "play.circle"
         case .agents: return "sparkles"
         case .hosts: return "server.rack"
         }
@@ -29,10 +27,29 @@ enum SidebarPanel: String, CaseIterable {
         case .files: return "⌘⇧E"
         case .git: return "⌘⇧G"
         case .search: return "⌘⇧F"
-        case .run: return "⌘⇧R"
         case .agents: return "⌘⇧A"
         case .hosts: return "⌘⇧H"
         }
+    }
+
+    /// The Codicon (VS Code icon font) name backing this panel's icon. Using
+    /// one icon family keeps every activity-bar icon visually consistent.
+    var codiconName: String {
+        switch self {
+        case .files: return "folder"
+        case .search: return "search"
+        case .git: return "source-control"
+        case .agents: return "sparkle"
+        case .hosts: return "server"
+        }
+    }
+
+    /// This panel's icon as a tinted template image. Returns nil to fall back
+    /// to `icon` (an SF Symbol) — used for Agents, which keeps the original
+    /// `sparkles` symbol rather than the Codicon.
+    func customImage(pointSize: CGFloat) -> NSImage? {
+        if self == .agents { return nil }
+        return SidebarIcons.codicon(codiconName, pointSize: pointSize)
     }
 }
 
@@ -105,9 +122,15 @@ class ActivityBarView: NSView {
         button.isBordered = false
         button.wantsLayer = true
 
-        // Use SF Symbol for icon
-        if let image = NSImage(systemSymbolName: panel.icon, accessibilityDescription: panel.rawValue) {
-            let config = NSImage.SymbolConfiguration(pointSize: 20, weight: .medium)
+        // Prefer a bundled custom icon; otherwise fall back to the SF Symbol.
+        // SF Symbols at pointSize 20 render a visibly larger box than a literal
+        // 20pt image, so custom icons use a larger size to match their weight.
+        if let custom = panel.customImage(pointSize: 24) {
+            button.image = custom
+        } else if let image = NSImage(systemSymbolName: panel.icon, accessibilityDescription: panel.rawValue) {
+            // Tuned to visually match the 24pt Codicons next to it (SF Symbol
+            // point size renders a larger box than an equivalent template image).
+            let config = NSImage.SymbolConfiguration(pointSize: 22, weight: .medium)
             button.image = image.withSymbolConfiguration(config)
         } else {
             // Fallback to text if SF Symbol not available

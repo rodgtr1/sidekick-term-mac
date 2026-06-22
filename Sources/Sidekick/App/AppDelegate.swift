@@ -203,10 +203,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         searchItem.target = self
         viewMenu.addItem(searchItem)
 
-        let runItem = NSMenuItem(title: "Show Run", action: #selector(showRunPanel), keyEquivalent: "")
-        runItem.target = self
-        viewMenu.addItem(runItem)
-
         // Split with Browser (no key equivalent - handled by event monitor)
         let splitBrowserItem = NSMenuItem(title: "Split with Browser", action: #selector(splitWithBrowser), keyEquivalent: "")
         splitBrowserItem.target = self
@@ -286,10 +282,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showSearchPanel() {
         mainWindowController?.showPanel(.search)
-    }
-
-    @objc private func showRunPanel() {
-        mainWindowController?.showPanel(.run)
     }
 
     @objc private func splitWithBrowser() {
