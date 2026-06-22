@@ -5,9 +5,6 @@ import Cocoa
 /// the terminal (including nvim) is a different view and is unaffected.
 ///
 /// Shortcuts:
-///   ⌥↑ / ⌥↓        move line(s) up / down
-///   ⇧⌥↑ / ⇧⌥↓      duplicate line(s) up / down
-///   ⇧⌘K            delete line(s)
 ///   ⌘/             toggle line comment
 ///   ⌘] / ⌘[        indent / outdent
 ///   Tab / ⇧Tab     indent / outdent selection (insert spaces when no selection)
@@ -26,10 +23,7 @@ class CodeTextView: NSTextView {
 
     // Hardware key codes (US layout, but these are physical-position codes).
     private enum Key {
-        static let upArrow: UInt16 = 126
-        static let downArrow: UInt16 = 125
         static let tab: UInt16 = 48
-        static let k: UInt16 = 40
         static let slash: UInt16 = 44
         static let leftBracket: UInt16 = 33
         static let rightBracket: UInt16 = 30
@@ -40,16 +34,6 @@ class CodeTextView: NSTextView {
         let code = event.keyCode
 
         switch (flags, code) {
-        case ([.option], Key.downArrow):
-            moveSelectedLines(down: true); return
-        case ([.option], Key.upArrow):
-            moveSelectedLines(down: false); return
-        case ([.option, .shift], Key.downArrow):
-            duplicateSelectedLines(down: true); return
-        case ([.option, .shift], Key.upArrow):
-            duplicateSelectedLines(down: false); return
-        case ([.command, .shift], Key.k):
-            deleteSelectedLines(); return
         case ([.command], Key.slash):
             toggleComment(); return
         case ([.command], Key.rightBracket):
@@ -66,86 +50,6 @@ class CodeTextView: NSTextView {
     }
 
     // MARK: - Line operations
-
-    private func moveSelectedLines(down: Bool) {
-        let ns = string as NSString
-        let sel = selectedRange()
-        let block = ns.lineRange(for: sel)
-
-        if down {
-            guard NSMaxRange(block) < ns.length else { return }
-            let next = ns.lineRange(for: NSRange(location: NSMaxRange(block), length: 0))
-            let blockStr = ns.substring(with: block)
-            let nextStr = ns.substring(with: next)
-            let combined = NSRange(location: block.location, length: NSMaxRange(next) - block.location)
-
-            let newText: String
-            let delta: Int
-            if nextStr.hasSuffix("\n") {
-                newText = nextStr + blockStr
-                delta = (nextStr as NSString).length
-            } else {
-                // Block has a trailing newline, the (last) next line does not.
-                newText = nextStr + "\n" + String(blockStr.dropLast())
-                delta = (nextStr as NSString).length + 1
-            }
-            let newSel = NSRange(location: sel.location + delta, length: sel.length)
-            replaceText(in: combined, with: newText, selection: newSel)
-        } else {
-            guard block.location > 0 else { return }
-            let prev = ns.lineRange(for: NSRange(location: block.location - 1, length: 0))
-            let blockStr = ns.substring(with: block)
-            let prevStr = ns.substring(with: prev)
-            let combined = NSRange(location: prev.location, length: NSMaxRange(block) - prev.location)
-
-            let newText: String
-            if blockStr.hasSuffix("\n") {
-                newText = blockStr + prevStr
-            } else {
-                // Block is the last line without a trailing newline.
-                newText = blockStr + "\n" + String(prevStr.dropLast())
-            }
-            let delta = (prevStr as NSString).length
-            let newSel = NSRange(location: sel.location - delta, length: sel.length)
-            replaceText(in: combined, with: newText, selection: newSel)
-        }
-    }
-
-    private func duplicateSelectedLines(down: Bool) {
-        let ns = string as NSString
-        let sel = selectedRange()
-        let block = ns.lineRange(for: sel)
-        let blockStr = ns.substring(with: block)
-        let hasTrailingNewline = blockStr.hasSuffix("\n")
-
-        if down {
-            let insertText = hasTrailingNewline ? blockStr : "\n" + blockStr
-            let insertLoc = NSMaxRange(block)
-            let dupStart = hasTrailingNewline ? insertLoc : insertLoc + 1
-            let offsetInBlock = sel.location - block.location
-            let newSel = NSRange(location: dupStart + offsetInBlock, length: sel.length)
-            replaceText(in: NSRange(location: insertLoc, length: 0), with: insertText, selection: newSel)
-        } else {
-            // Insert a copy above; the cursor stays put and lands on the upper copy.
-            let insertText = hasTrailingNewline ? blockStr : blockStr + "\n"
-            replaceText(in: NSRange(location: block.location, length: 0), with: insertText, selection: sel)
-        }
-    }
-
-    private func deleteSelectedLines() {
-        let ns = string as NSString
-        let sel = selectedRange()
-        let block = ns.lineRange(for: sel)
-        let blockStr = ns.substring(with: block)
-
-        var deleteRange = block
-        if !blockStr.hasSuffix("\n") && block.location > 0 {
-            // Last line without a trailing newline: also remove the preceding
-            // newline so we don't leave a dangling blank line.
-            deleteRange = NSRange(location: block.location - 1, length: block.length + 1)
-        }
-        replaceText(in: deleteRange, with: "", selection: NSRange(location: deleteRange.location, length: 0))
-    }
 
     private func reindent(add: Bool) {
         let ns = string as NSString
