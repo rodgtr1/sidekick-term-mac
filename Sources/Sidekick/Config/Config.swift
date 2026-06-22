@@ -319,12 +319,15 @@ public struct EditorConfig: Codable {
     public var wordWrap: Bool
     public var fontSize: Int
     public var showHiddenFiles: Bool
+    /// Editor font family. Empty means use the system monospaced font.
+    public var fontFamily: String
 
     enum CodingKeys: String, CodingKey {
         case fileOpenMode = "file_open_mode"
         case wordWrap = "word_wrap"
         case fontSize = "font_size"
         case showHiddenFiles = "show_hidden_files"
+        case fontFamily = "font_family"
     }
 
     public init() {
@@ -332,6 +335,7 @@ public struct EditorConfig: Codable {
         self.wordWrap = true
         self.fontSize = 13
         self.showHiddenFiles = false
+        self.fontFamily = ""
     }
 
     public init(from decoder: Decoder) throws {
@@ -340,6 +344,7 @@ public struct EditorConfig: Codable {
         self.wordWrap = try container.decodeIfPresent(Bool.self, forKey: .wordWrap) ?? true
         self.fontSize = try container.decodeIfPresent(Int.self, forKey: .fontSize) ?? 13
         self.showHiddenFiles = try container.decodeIfPresent(Bool.self, forKey: .showHiddenFiles) ?? false
+        self.fontFamily = try container.decodeIfPresent(String.self, forKey: .fontFamily) ?? ""
     }
 }
 

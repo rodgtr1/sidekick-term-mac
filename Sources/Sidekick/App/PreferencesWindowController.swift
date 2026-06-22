@@ -28,6 +28,7 @@ class PreferencesWindowController: NSWindowController {
 
     // Editor Tab
     private var fileOpenModePopup: NSPopUpButton!
+    private var editorFontFamilyPopup: NSPopUpButton!
     private var editorFontSizeSlider: NSSlider!
     private var editorFontSizeLabel: NSTextField!
     private var wordWrapCheckbox: NSButton!
@@ -220,15 +221,7 @@ class PreferencesWindowController: NSWindowController {
         fontFamilyLabel.translatesAutoresizingMaskIntoConstraints = false
 
         fontFamilyPopup = NSPopUpButton()
-        fontFamilyPopup.addItems(withTitles: [
-            "JetBrains Mono",
-            "SF Mono",
-            "Monaco",
-            "Menlo",
-            "Consolas",
-            "Fira Code",
-            "Source Code Pro"
-        ])
+        fontFamilyPopup.addItems(withTitles: terminalFontFamilies())
         fontFamilyPopup.target = self
         fontFamilyPopup.action = #selector(fontFamilyChanged(_:))
         fontFamilyPopup.translatesAutoresizingMaskIntoConstraints = false
@@ -459,6 +452,18 @@ class PreferencesWindowController: NSWindowController {
         fileOpenModePopup.action = #selector(fileOpenModeChanged(_:))
         fileOpenModePopup.translatesAutoresizingMaskIntoConstraints = false
 
+        let editorFontFamilyLabel = NSTextField(labelWithString: "Font Family:")
+        editorFontFamilyLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        editorFontFamilyLabel.textColor = AppTheme.primaryText
+        editorFontFamilyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        editorFontFamilyPopup = NSPopUpButton()
+        editorFontFamilyPopup.addItem(withTitle: Self.systemDefaultFontTitle)
+        editorFontFamilyPopup.addItems(withTitles: terminalFontFamilies())
+        editorFontFamilyPopup.target = self
+        editorFontFamilyPopup.action = #selector(editorFontFamilyChanged(_:))
+        editorFontFamilyPopup.translatesAutoresizingMaskIntoConstraints = false
+
         let editorFontSizeTitleLabel = NSTextField(labelWithString: "Text Size:")
         editorFontSizeTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         editorFontSizeTitleLabel.textColor = AppTheme.primaryText
@@ -493,6 +498,8 @@ class PreferencesWindowController: NSWindowController {
 
         editorView.addSubview(fileOpenModeLabel)
         editorView.addSubview(fileOpenModePopup)
+        editorView.addSubview(editorFontFamilyLabel)
+        editorView.addSubview(editorFontFamilyPopup)
         editorView.addSubview(editorFontSizeTitleLabel)
         editorView.addSubview(editorFontSizeSlider)
         editorView.addSubview(editorFontSizeLabel)
@@ -507,7 +514,14 @@ class PreferencesWindowController: NSWindowController {
             fileOpenModePopup.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
             fileOpenModePopup.widthAnchor.constraint(equalToConstant: 200),
 
-            editorFontSizeTitleLabel.topAnchor.constraint(equalTo: fileOpenModePopup.bottomAnchor, constant: 24),
+            editorFontFamilyLabel.topAnchor.constraint(equalTo: fileOpenModePopup.bottomAnchor, constant: 24),
+            editorFontFamilyLabel.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
+
+            editorFontFamilyPopup.topAnchor.constraint(equalTo: editorFontFamilyLabel.bottomAnchor, constant: 10),
+            editorFontFamilyPopup.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
+            editorFontFamilyPopup.widthAnchor.constraint(equalToConstant: 200),
+
+            editorFontSizeTitleLabel.topAnchor.constraint(equalTo: editorFontFamilyPopup.bottomAnchor, constant: 24),
             editorFontSizeTitleLabel.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
 
             editorFontSizeSlider.topAnchor.constraint(equalTo: editorFontSizeTitleLabel.bottomAnchor, constant: 10),
@@ -551,14 +565,13 @@ class PreferencesWindowController: NSWindowController {
         // Load Teleport hosts setting
         showTeleportCheckbox.state = (config.hosts?.showTeleport ?? false) ? .on : .off
 
-        // Load font family
+        // Load font family. If the configured font isn't in the list, add it
+        // so the popup always reflects what's actually in use.
         let currentFont = config.font.family
-        for i in 0..<fontFamilyPopup.numberOfItems {
-            if fontFamilyPopup.item(at: i)?.title == currentFont {
-                fontFamilyPopup.selectItem(at: i)
-                break
-            }
+        if fontFamilyPopup.item(withTitle: currentFont) == nil {
+            fontFamilyPopup.addItem(withTitle: currentFont)
         }
+        fontFamilyPopup.selectItem(withTitle: currentFont)
 
         // Load font size
         fontSizeSlider.doubleValue = Double(config.font.size)
@@ -566,6 +579,19 @@ class PreferencesWindowController: NSWindowController {
 
         let editorConfig = config.editor ?? EditorConfig()
         fileOpenModePopup.selectItem(at: editorConfig.fileOpenMode == "builtin" ? 1 : 0)
+
+        // Editor font family. Empty means system default; an unknown family is
+        // added so the popup reflects what's actually configured.
+        let editorFamily = editorConfig.fontFamily.trimmingCharacters(in: .whitespaces)
+        if editorFamily.isEmpty {
+            editorFontFamilyPopup.selectItem(withTitle: Self.systemDefaultFontTitle)
+        } else {
+            if editorFontFamilyPopup.item(withTitle: editorFamily) == nil {
+                editorFontFamilyPopup.addItem(withTitle: editorFamily)
+            }
+            editorFontFamilyPopup.selectItem(withTitle: editorFamily)
+        }
+
         editorFontSizeSlider.doubleValue = Double(editorConfig.fontSize)
         updateEditorFontSizeLabel()
         wordWrapCheckbox.state = editorConfig.wordWrap ? .on : .off
@@ -630,6 +656,35 @@ class PreferencesWindowController: NSWindowController {
         config.save()
     }
 
+    /// Popup title meaning "no family configured — use the system mono font".
+    private static let systemDefaultFontTitle = "System Default"
+
+    /// Font families suitable for the terminal: every installed fixed-pitch
+    /// family, plus families whose name marks them as coding/Nerd fonts (the
+    /// non-"Mono" Nerd Font variants report a proportional trait but are still
+    /// usable), plus a few common names. Sorted and de-duplicated.
+    private func terminalFontFamilies() -> [String] {
+        let manager = NSFontManager.shared
+        let fixedPitch = UInt(NSFontTraitMask.fixedPitchFontMask.rawValue)
+        let nameHints = ["mono", "nerd", "code", "consol", "courier"]
+
+        var families = Set<String>(["JetBrains Mono", "SF Mono", "Monaco", "Menlo"])
+
+        for family in manager.availableFontFamilies {
+            let lower = family.lowercased()
+            if nameHints.contains(where: lower.contains) {
+                families.insert(family)
+                continue
+            }
+            if let members = manager.availableMembers(ofFontFamily: family),
+               members.contains(where: { ($0.count > 3 ? ($0[3] as? UInt ?? 0) : 0) & fixedPitch != 0 }) {
+                families.insert(family)
+            }
+        }
+
+        return families.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
     @objc private func fontFamilyChanged(_ sender: NSPopUpButton) {
         if let selectedTitle = sender.selectedItem?.title {
             config.font.family = selectedTitle
@@ -656,6 +711,14 @@ class PreferencesWindowController: NSWindowController {
         ensureEditorConfig()
         config.editor?.fontSize = Int(sender.doubleValue)
         updateEditorFontSizeLabel()
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
+    }
+
+    @objc private func editorFontFamilyChanged(_ sender: NSPopUpButton) {
+        ensureEditorConfig()
+        let title = sender.selectedItem?.title ?? Self.systemDefaultFontTitle
+        config.editor?.fontFamily = (title == Self.systemDefaultFontTitle) ? "" : title
         mainWindowController?.applyRuntimeConfig(config)
         config.save()
     }

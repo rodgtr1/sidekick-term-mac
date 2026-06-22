@@ -66,10 +66,7 @@ class EditorViewController: NSViewController {
         textView.isEditable = true
         textView.isSelectable = true
         textView.isRichText = false
-        textView.font = NSFont.monospacedSystemFont(
-            ofSize: CGFloat(config.editor?.fontSize ?? 13),
-            weight: .regular
-        )
+        textView.font = Self.editorFont(for: config.editor ?? EditorConfig())
         textView.backgroundColor = AppTheme.windowBackground
         textView.textColor = AppTheme.primaryText
         textView.insertionPointColor = AppTheme.cursor
@@ -126,14 +123,22 @@ class EditorViewController: NSViewController {
         )
     }
 
+    /// The editor font: the configured family if set and installed,
+    /// otherwise the system monospaced font.
+    static func editorFont(for editorConfig: EditorConfig) -> NSFont {
+        let size = CGFloat(editorConfig.fontSize)
+        let family = editorConfig.fontFamily.trimmingCharacters(in: .whitespaces)
+        if !family.isEmpty, let font = NSFont(name: family, size: size) {
+            return font
+        }
+        return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
     func applyConfig(_ config: Config) {
         guard isViewLoaded else { return }
 
         let editorConfig = config.editor ?? EditorConfig()
-        textView.font = NSFont.monospacedSystemFont(
-            ofSize: CGFloat(editorConfig.fontSize),
-            weight: .regular
-        )
+        textView.font = Self.editorFont(for: editorConfig)
 
         textView.isHorizontallyResizable = !editorConfig.wordWrap
         textView.textContainer?.widthTracksTextView = editorConfig.wordWrap
@@ -151,6 +156,25 @@ class EditorViewController: NSViewController {
         syntaxHighlighter.fileExtension = ext
         syntaxHighlighter.highlightSyntax()
 
+        refreshLayout()
+    }
+
+    /// Force the text view to regenerate glyph layout and redraw. NSTextView
+    /// drops its laid-out glyphs when its enclosing view is hidden (tab switch)
+    /// or when the font changes, and doesn't always regenerate them on its own —
+    /// which leaves the editor looking empty. Call this when the editor becomes
+    /// visible again or after a font change.
+    func refreshLayout() {
+        guard isViewLoaded,
+              let textView = textView,
+              let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else { return }
+
+        let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
+        layoutManager.invalidateLayout(forCharacterRange: fullRange, actualCharacterRange: nil)
+        layoutManager.ensureLayout(for: textContainer)
+        textView.needsLayout = true
+        textView.needsDisplay = true
         lineNumberRuler?.needsDisplay = true
     }
 

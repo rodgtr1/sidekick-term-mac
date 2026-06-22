@@ -819,6 +819,17 @@ class MainWindowController: NSWindowController {
         return activeTab.panes.compactMap { $0.resolvedWorkingDirectory() }.first
     }
 
+    /// After a tab's view is unhidden, its editors need to regenerate their
+    /// glyph layout — NSTextView leaves them blank otherwise. Deferred to the
+    /// next runloop so the view has its restored frame before we lay out.
+    private func refreshEditorsOnShow(for tab: TabModel) {
+        DispatchQueue.main.async {
+            for pane in tab.panes {
+                pane.editorViewController?.refreshLayout()
+            }
+        }
+    }
+
     private func switchToTab(index: Int) {
         guard index >= 0 && index < tabs.count else { return }
         guard index != activeTabIndex else { return } // Already on this tab
@@ -841,6 +852,7 @@ class MainWindowController: NSWindowController {
         if let newController = tabSplitControllers[newTab.id] {
             currentPaneSplitController = newController
             newController.view.isHidden = false
+            refreshEditorsOnShow(for: newTab)
             print("  Showing new controller for tab \(index)")
         } else {
             print("  ⚠️ No split controller found for tab \(index)")
@@ -875,6 +887,7 @@ class MainWindowController: NSWindowController {
         if let newController = tabSplitControllers[newTab.id] {
             currentPaneSplitController = newController
             newController.view.isHidden = false
+            refreshEditorsOnShow(for: newTab)
         }
 
         updateTabBar()
