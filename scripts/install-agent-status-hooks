@@ -49,6 +49,29 @@ def add_hook(event, command, matcher=None):
         group["matcher"] = matcher
     groups.append(group)
 
+def remove_hook(event, signature):
+    groups = hooks.get(event)
+    if not groups:
+        return
+    kept = []
+    for group in groups:
+        hooks_list = [
+            h for h in group.get("hooks", [])
+            if signature not in (h.get("command") or "")
+        ]
+        if hooks_list:
+            group["hooks"] = hooks_list
+            kept.append(group)
+    if kept:
+        hooks[event] = kept
+    else:
+        hooks.pop(event, None)
+
+# Earlier versions registered a "PermissionRequest" ready hook, but Claude Code
+# has no such event so it never fired (leaving the agent stuck on "Working").
+# "Notification" now carries the ready signal; drop the dead hook.
+remove_hook("PermissionRequest", "sidekick-agent-status")
+
 add_hook("UserPromptSubmit", f"{status_bin} busy")
 # Claude Code fires "Notification" when it needs permission or input. There is
 # no "PermissionRequest" event, so the old mapping never reported "ready".

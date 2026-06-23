@@ -41,8 +41,31 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
     }
 
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        onInput?()
+        // Focus and mouse reports are emitted by the emulator itself when the
+        // view is focused, clicked, or hovered — the user didn't type them, so
+        // they must not count as "the user is working" (that flipped a finished
+        // agent back to Working whenever its tab was activated).
+        if !Self.isTerminalGeneratedReport(data) {
+            onInput?()
+        }
         super.send(source: source, data: data)
+    }
+
+    /// True when `data` is purely a focus-tracking (CSI I / CSI O) or
+    /// mouse-report (CSI M… / CSI <…) sequence the terminal generated on its
+    /// own, rather than a genuine keystroke or paste.
+    private static func isTerminalGeneratedReport(_ data: ArraySlice<UInt8>) -> Bool {
+        guard data.count >= 3 else { return false }
+        let bytes = Array(data)
+        guard bytes[0] == 0x1B, bytes[1] == 0x5B else { return false } // ESC [
+        switch bytes[2] {
+        case 0x49, 0x4F:          // CSI I / CSI O — focus in / focus out
+            return bytes.count == 3
+        case 0x4D, 0x3C:          // CSI M / CSI < — mouse report (X10 / SGR)
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -671,6 +694,16 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             return
         }
 
+        // Once any OSC 666 has arrived this pane is hook-authoritative: the
+        // agent reports busy/ready/done/idle itself, so the text heuristics
+        // below stand down entirely. Running them alongside the hooks only
+        // fabricates transitions the agent never reported — the root of the
+        // "stuck on Working" / Working↔NeedsInput-flicker races. Heuristics
+        // remain for un-hooked sessions (a plain shell, or an agent whose
+        // integration isn't installed), and resume if the agent process exits
+        // (resetAgentState clears hasExplicitAgentStatus).
+        if hasExplicitAgentStatus { return }
+
         recentOutput += output
         if recentOutput.count > 8_000 {
             recentOutput = String(recentOutput.suffix(8_000))
@@ -681,20 +714,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let actionablePromptMarkers = agentPromptMarkers(in: normalizedRecentOutput)
             .subtracting(suppressedPromptMarkers)
 
-        if !actionablePromptMarkers.isEmpty,
-           // When explicit hooks are active, only let text heuristics signal
-           // .ready while we're in a known-working state (catching a permission
-           // dialog that rendered after the OSC hook fired). If the last
-           // authoritative signal was .done or .idle, trailing UI output like
-           // "tab to add additional instructions" must not override it.
-           !hasExplicitAgentStatus || lastDetectedAgentState == .working {
+        if !actionablePromptMarkers.isEmpty {
             agentDoneTimer?.invalidate()
             agentDoneTimer = nil
             notifyDetectedAgentState(.ready)
-        } else if hasExplicitAgentStatus {
-            // Working/done come from the agent's hooks; guessing them from
-            // output here would fabricate "done" (quiet period) while a
-            // permission dialog is still waiting for the user.
         } else if containsAgentWorkingCue(normalizedCurrentOutput),
                   lastDetectedAgentState != .ready {
             notifyDetectedAgentState(.working)
@@ -1082,20 +1105,18 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func handleTerminalInput() {
+        // Hook-equipped agents report every transition over OSC 666, so input
+        // must never move agent state: Working comes from UserPromptSubmit /
+        // PreToolUse, Ready from Notification, Done from Stop. Guessing from
+        // keystrokes is what stranded finished agents on "Working" once their
+        // pane was focused. (Focus/mouse reports are already filtered upstream,
+        // but real keystrokes are silenced here too — the next hook is
+        // authoritative and effectively instant.)
+        if hasExplicitAgentStatus { return }
+
         recentOutput = ""
         agentDoneTimer?.invalidate()
         agentDoneTimer = nil
-
-        if hasExplicitAgentStatus {
-            // Answering a dialog resumes work (the prompt-detection above
-            // restores .ready if the dialog merely redrew), but "done" only
-            // ever comes from the agent's Stop hook — and typing a new
-            // prompt stays "done" until UserPromptSubmit reports busy.
-            if lastDetectedAgentState == .ready {
-                notifyDetectedAgentState(.working)
-            }
-            return
-        }
 
         if lastDetectedAgentState == .ready || lastDetectedAgentState == .done {
             notifyDetectedAgentState(.working)
@@ -1116,7 +1137,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let previousState = lastDetectedAgentState
         lastDetectedAgentState = state
 
-        if state == .working {
+        // Blocked-polling scrapes the visible screen for permission dialogs —
+        // a heuristic only needed when no hook reports .ready. Hook-authoritative
+        // panes get .ready from the Notification hook, so skip the scraping.
+        if state == .working && !hasExplicitAgentStatus {
             startBlockedPolling(suppressingVisiblePrompt: previousState == .ready)
         } else {
             stopBlockedPolling()

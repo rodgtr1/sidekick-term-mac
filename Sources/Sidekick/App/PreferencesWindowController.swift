@@ -14,6 +14,7 @@ class PreferencesWindowController: NSWindowController {
     private var opacityLabel: NSTextField!
     private var blurCheckbox: NSButton!
     private var showTeleportCheckbox: NSButton!
+    private var restoreSessionCheckbox: NSButton!
     private var rawConfigButton: NSButton!
 
     // Terminal Tab
@@ -161,6 +162,14 @@ class PreferencesWindowController: NSWindowController {
         showTeleportCheckbox.font = NSFont.systemFont(ofSize: 13)
         showTeleportCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
+        restoreSessionCheckbox = NSButton(
+            checkboxWithTitle: "Reopen previous tabs on launch (off starts with one tab at ~/)",
+            target: self,
+            action: #selector(restoreSessionChanged(_:))
+        )
+        restoreSessionCheckbox.font = NSFont.systemFont(ofSize: 13)
+        restoreSessionCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
         let rawConfigLabel = NSTextField(labelWithString: "Raw Config File:")
         rawConfigLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         rawConfigLabel.textColor = AppTheme.primaryText
@@ -175,6 +184,7 @@ class PreferencesWindowController: NSWindowController {
         generalView.addSubview(opacityLabel)
         generalView.addSubview(blurCheckbox)
         generalView.addSubview(showTeleportCheckbox)
+        generalView.addSubview(restoreSessionCheckbox)
         generalView.addSubview(rawConfigLabel)
         generalView.addSubview(rawConfigButton)
 
@@ -196,7 +206,10 @@ class PreferencesWindowController: NSWindowController {
             showTeleportCheckbox.topAnchor.constraint(equalTo: blurCheckbox.bottomAnchor, constant: 12),
             showTeleportCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
 
-            rawConfigLabel.topAnchor.constraint(equalTo: showTeleportCheckbox.bottomAnchor, constant: 30),
+            restoreSessionCheckbox.topAnchor.constraint(equalTo: showTeleportCheckbox.bottomAnchor, constant: 12),
+            restoreSessionCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
+
+            rawConfigLabel.topAnchor.constraint(equalTo: restoreSessionCheckbox.bottomAnchor, constant: 30),
             rawConfigLabel.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
 
             rawConfigButton.topAnchor.constraint(equalTo: rawConfigLabel.bottomAnchor, constant: 10),
@@ -565,6 +578,9 @@ class PreferencesWindowController: NSWindowController {
         // Load Teleport hosts setting
         showTeleportCheckbox.state = (config.hosts?.showTeleport ?? false) ? .on : .off
 
+        // Load session-restore setting
+        restoreSessionCheckbox.state = config.behavior.restoreSession ? .on : .off
+
         // Load font family. If the configured font isn't in the list, add it
         // so the popup always reflects what's actually in use.
         let currentFont = config.font.family
@@ -645,6 +661,11 @@ class PreferencesWindowController: NSWindowController {
         config.window.enableBlur = sender.state == .on
         config.save()
         showRestartAlert()
+    }
+
+    @objc private func restoreSessionChanged(_ sender: NSButton) {
+        config.behavior.restoreSession = sender.state == .on
+        config.save()
     }
 
     @objc private func showTeleportChanged(_ sender: NSButton) {
