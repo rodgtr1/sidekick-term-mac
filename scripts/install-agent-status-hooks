@@ -50,7 +50,9 @@ def add_hook(event, command, matcher=None):
     groups.append(group)
 
 add_hook("UserPromptSubmit", f"{status_bin} busy")
-add_hook("PermissionRequest", f"{status_bin} ready")
+# Claude Code fires "Notification" when it needs permission or input. There is
+# no "PermissionRequest" event, so the old mapping never reported "ready".
+add_hook("Notification", f"{status_bin} ready")
 # Flips "ready" back to "busy" as soon as an approved tool starts running.
 add_hook("PreToolUse", f"{status_bin} busy")
 add_hook("Stop", f"{status_bin} done")

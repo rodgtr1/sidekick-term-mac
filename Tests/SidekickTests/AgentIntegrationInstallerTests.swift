@@ -58,6 +58,20 @@ final class AgentIntegrationInstallerTests: XCTestCase {
         XCTAssertEqual(hookCommands(hooks, event: "PreToolUse").first, "/usr/local/bin/some-other-hook")
     }
 
+    func testRemoveClaudeHookStripsDeadPermissionRequestHook() {
+        // A previous version registered a "PermissionRequest" ready hook, an
+        // event Claude Code never fires. Reinstalling must remove it.
+        var hooks: [String: Any] = [
+            "PermissionRequest": [["hooks": [["type": "command", "command": "/a/sidekick-agent-status ready"]]]],
+            "Notification": [["hooks": [["type": "command", "command": "/a/sidekick-agent-status ready"]]]]
+        ]
+        AgentIntegrationInstaller.removeClaudeHook(from: &hooks, event: "PermissionRequest", signature: "sidekick-agent-status")
+
+        XCTAssertNil(hooks["PermissionRequest"])
+        // The valid Notification hook (same binary) is untouched.
+        XCTAssertEqual(hookCommands(hooks, event: "Notification"), ["/a/sidekick-agent-status ready"])
+    }
+
     // MARK: - Codex TOML features section
 
     func testCodexHooksEnabledAddedToEmptyConfig() {

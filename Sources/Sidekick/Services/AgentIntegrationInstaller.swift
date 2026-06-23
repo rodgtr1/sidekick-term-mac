@@ -111,14 +111,23 @@ enum AgentIntegrationInstaller {
     /// Hook events shared by the Claude and Codex integrations.
     private static let statusHooks: [(event: String, state: String)] = [
         ("UserPromptSubmit", "busy"),
-        ("PermissionRequest", "ready"),
         ("Stop", "done")
     ]
 
     /// Claude-only refinements (Codex doesn't expose these events).
     private static let claudeOnlyStatusHooks: [(event: String, state: String)] = [
+        // Claude Code fires "Notification" when it needs permission to run a
+        // tool (or has been waiting on the user) — there is no
+        // "PermissionRequest" event, so the old mapping never reported "ready"
+        // and the agent stayed stuck on "Working" through every prompt.
+        ("Notification", "ready"),
         ("PreToolUse", "busy"),     // approved tool starts running
         ("SessionEnd", "idle")      // clears the tab from the agents panel
+    ]
+
+    /// Ready hook for Codex, whose permission event isn't the shared trio.
+    private static let codexOnlyStatusHooks: [(event: String, state: String)] = [
+        ("PermissionRequest", "ready")
     ]
 
     private static func installClaude() throws {
@@ -144,6 +153,10 @@ enum AgentIntegrationInstaller {
         // harness still asked), so it's no longer installed. Strip any copy a
         // previous version left behind.
         removeClaudeHook(from: &hooks, event: "PreToolUse", signature: "sidekick-hook")
+        // Earlier versions registered a "PermissionRequest" ready hook, but
+        // Claude Code has no such event so it never fired. Remove the dead hook
+        // now that "Notification" carries the ready signal.
+        removeClaudeHook(from: &hooks, event: "PermissionRequest", signature: "sidekick-agent-status")
         settings["hooks"] = hooks
 
         let data = try JSONSerialization.data(
@@ -225,7 +238,7 @@ enum AgentIntegrationInstaller {
 
         config = ensureCodexHooksEnabled(in: config)
 
-        for (event, state) in statusHooks {
+        for (event, state) in statusHooks + codexOnlyStatusHooks {
             let signature = "sidekick-agent-status \(state)"
             if config.contains(signature) && config.contains("[[hooks.\(event)]]") {
                 continue
