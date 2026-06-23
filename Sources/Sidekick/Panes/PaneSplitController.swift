@@ -128,8 +128,18 @@ class PaneSplitController: NSViewController {
     }
 
     private func updatePaneCloseButtons() {
-        let shouldShow = panes.count > 1
+        guard panes.count > 1 else {
+            paneCloseButtons.values.forEach { $0.isHidden = true }
+            return
+        }
+
+        // A terminal pane only needs a close button when it's one of several
+        // terminals. When the split exists solely because the user opened an
+        // editor/browser/diff alongside the terminal, leave the terminal alone
+        // and show the X on that opened pane instead.
+        let terminalCount = panes.filter { $0.paneType == .terminal }.count
         for (pane, button) in paneCloseButtons {
+            let shouldShow = pane.paneType == .terminal ? terminalCount > 1 : true
             button.isHidden = !shouldShow || paneContainers[pane] == nil
         }
     }

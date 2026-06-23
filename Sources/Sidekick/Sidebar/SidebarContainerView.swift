@@ -214,6 +214,14 @@ class SidebarContainerView: NSView {
             fileTreeVC.refresh()
         }
     }
+
+    func revealFile(_ url: URL) {
+        (panelControllers[.files] as? FileTreeViewController)?.revealFile(url)
+    }
+
+    func clearFileSelection() {
+        (panelControllers[.files] as? FileTreeViewController)?.clearSelection()
+    }
 }
 
 extension SidebarContainerView: AgentDashboardDelegate {

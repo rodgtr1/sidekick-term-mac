@@ -770,6 +770,22 @@ class MainWindowController: NSWindowController {
     private func syncSidebarToActiveTab() {
         guard let directory = currentSidebarDirectoryForActiveTab() else { return }
         sidebarContainerView.updateFileTree(path: directory)
+
+        // Keep the file tree pointed at whatever the active tab is editing:
+        // expand to and highlight that file, or clear the selection otherwise.
+        if let editorPath = activeEditorFilePath() {
+            sidebarContainerView.revealFile(URL(fileURLWithPath: editorPath))
+        } else {
+            sidebarContainerView.clearFileSelection()
+        }
+    }
+
+    private func activeEditorFilePath() -> String? {
+        guard let activeTab = tabs[safe: activeTabIndex] else { return nil }
+        let editorPane =
+            activeTab.activePane.flatMap { $0.paneType == .editor ? $0 : nil } ??
+            activeTab.panes.first(where: { $0.paneType == .editor })
+        return editorPane?.editorViewController?.filePath
     }
 
     private func currentSidebarDirectoryForActiveTab() -> String? {
@@ -1057,6 +1073,7 @@ extension MainWindowController: SidebarContainerDelegate {
         currentPaneSplitController?.setActivePane(index: currentTab.activePaneIndex)
 
         updateTabBar()
+        syncSidebarToActiveTab()
     }
 
     private func openDiffViewer(for filePath: String) {

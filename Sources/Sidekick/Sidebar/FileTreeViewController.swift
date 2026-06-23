@@ -26,6 +26,11 @@ class FileTreeViewController: NSViewController {
     private var eventStream: FSEventStreamRef?
     private var refreshWorkItem: DispatchWorkItem?
     private var lastRefreshFromFileEvent: Date?
+    /// Expanded folders remembered per project root, so switching tabs and
+    /// coming back restores the tree instead of collapsing it.
+    private var expandedPathsByRoot: [String: Set<String>] = [:]
+    /// A file we want to expand-to and select once the tree is loaded.
+    private var pendingRevealURL: URL?
 
     override func loadView() {
         view = NSView()
@@ -105,17 +110,26 @@ class FileTreeViewController: NSViewController {
 
     func loadFileTree(for path: String, force: Bool = false) {
         print("🌳 loadFileTree called with path: \(path)")
-        let expandedPaths = force ? expandedDirectoryPaths() : []
 
         let workspace = WorkspaceResolver.context(for: path)
         let displayPath = workspace.displayRoot
         print("🌳 displayPath: \(displayPath), gitRoot: \(workspace.repositoryRoot ?? "none")")
         let pathChanged = displayPath != currentPath
 
-        guard force || displayPath != currentPath else {
+        guard force || pathChanged else {
             print("🌳 Skipping - already loaded: \(displayPath)")
             return
         }
+
+        // Remember the outgoing project's expanded folders so returning to it
+        // restores them instead of collapsing everything.
+        if pathChanged, !currentPath.isEmpty {
+            expandedPathsByRoot[currentPath] = expandedDirectoryPaths()
+        }
+
+        // Restore expansion: the live set on a forced refresh, otherwise the
+        // saved set for the project we're switching to.
+        let expandedPaths = force ? expandedDirectoryPaths() : (expandedPathsByRoot[displayPath] ?? [])
 
         currentPath = displayPath
         if pathChanged {
@@ -154,6 +168,7 @@ class FileTreeViewController: NSViewController {
                                   self.rootNode === rootNode else { return }
                             self.outlineView.reloadData()
                             self.expandLoadedItems(from: rootNode)
+                            self.attemptRevealPending()
                         }
                     }
                 }
@@ -186,6 +201,7 @@ class FileTreeViewController: NSViewController {
                     if let rootNode = self.rootNode {
                         self.expandLoadedItems(from: rootNode)
                     }
+                    self.attemptRevealPending()
                 }
             }
         }
@@ -206,6 +222,83 @@ class FileTreeViewController: NSViewController {
     func refresh() {
         if let rootPath = rootNode?.url.path {
             loadFileTree(for: rootPath, force: true)
+        }
+    }
+
+    // MARK: - Reveal / select a file
+
+    /// Expand the folders leading to `url` and select it. If the tree is still
+    /// loading the request is remembered and retried once it finishes.
+    func revealFile(_ url: URL) {
+        pendingRevealURL = url.standardizedFileURL
+        attemptRevealPending()
+    }
+
+    /// Clear any selection (e.g. the active tab is no longer an editor).
+    func clearSelection() {
+        pendingRevealURL = nil
+        outlineView?.deselectAll(nil)
+    }
+
+    private func attemptRevealPending() {
+        guard isViewLoaded,
+              let target = pendingRevealURL,
+              let rootNode = rootNode,
+              rootNode.isLoaded else { return }
+
+        let targetPath = target.path
+        let rootPath = rootNode.url.standardizedFileURL.path
+        guard targetPath == rootPath || targetPath.hasPrefix(rootPath + "/") else {
+            // File lives outside the current tree; nothing to reveal.
+            pendingRevealURL = nil
+            return
+        }
+
+        revealStep(target: target, in: rootNode)
+    }
+
+    private func revealStep(target: URL, in node: FileTreeNode) {
+        let targetPath = target.path
+        guard let child = node.children.first(where: { child in
+            let childPath = child.url.standardizedFileURL.path
+            return targetPath == childPath || targetPath.hasPrefix(childPath + "/")
+        }) else {
+            // Not present (likely hidden or gitignored); give up quietly.
+            pendingRevealURL = nil
+            return
+        }
+
+        if child.url.standardizedFileURL.path == targetPath {
+            outlineView.expandItem(node)
+            let row = outlineView.row(forItem: child)
+            if row >= 0 {
+                outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                outlineView.scrollRowToVisible(row)
+            }
+            pendingRevealURL = nil
+            return
+        }
+
+        // `child` is an ancestor directory of the target: expand, then descend.
+        if child.isLoaded {
+            child.isExpanded = true
+            outlineView.expandItem(child)
+            revealStep(target: target, in: child)
+        } else {
+            let showHidden = self.showHidden
+            let gitIgnoreChecker = self.gitIgnoreChecker
+            DispatchQueue.global(qos: .userInitiated).async { [weak self, weak child] in
+                child?.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) {
+                    DispatchQueue.main.async {
+                        guard let self = self, let child = child,
+                              self.pendingRevealURL == target else { return }
+                        child.isExpanded = true
+                        self.outlineView.reloadItem(child, reloadChildren: true)
+                        self.outlineView.expandItem(child)
+                        self.revealStep(target: target, in: child)
+                    }
+                }
+            }
         }
     }
 

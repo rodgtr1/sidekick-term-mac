@@ -80,6 +80,9 @@ class EditorViewController: NSViewController {
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.autoresizingMask = [.width]
+        // Breathing room on the sides so wrapped text doesn't slide under the
+        // scroller (and isn't jammed against the line-number ruler).
+        textView.textContainerInset = NSSize(width: 10, height: 6)
 
         // Configure word wrap based on config (default to true if not set)
         textView.isVerticallyResizable = true
@@ -187,7 +190,7 @@ class EditorViewController: NSViewController {
             let visibleWidth = scrollView.contentView.bounds.width
             if visibleWidth > 0 {
                 textContainer.containerSize = NSSize(
-                    width: visibleWidth - 2 * textContainer.lineFragmentPadding,
+                    width: visibleWidth - 2 * textView.textContainerInset.width - 2 * textContainer.lineFragmentPadding,
                     height: CGFloat.greatestFiniteMagnitude
                 )
             }
