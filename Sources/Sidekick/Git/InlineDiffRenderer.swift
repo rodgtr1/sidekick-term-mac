@@ -68,7 +68,10 @@ enum InlineDiffRenderer {
     private static let gutterWidth = 5
     private static var blankGutter: String { String(repeating: " ", count: gutterWidth) + "  " }
 
-    static func render(_ diff: String) -> NSAttributedString {
+    /// `fileExtension` (lowercased, no dot) drives syntax highlighting of the
+    /// diff content; pass "" to render plain (e.g. when the language is
+    /// unknown).
+    static func render(_ diff: String, fileExtension: String = "") -> NSAttributedString {
         let result = NSMutableAttributedString()
         var lines = diff.components(separatedBy: "\n")
         if lines.last == "" {
@@ -126,7 +129,7 @@ enum InlineDiffRenderer {
                     added.append(String(lines[index].dropFirst()))
                     index += 1
                 }
-                appendChangeBlock(removed: removed, added: added, newLineNumber: &newLineNumber, to: result)
+                appendChangeBlock(removed: removed, added: added, newLineNumber: &newLineNumber, ext: fileExtension, to: result)
                 continue
             }
 
@@ -136,7 +139,7 @@ enum InlineDiffRenderer {
                     added.append(String(lines[index].dropFirst()))
                     index += 1
                 }
-                appendChangeBlock(removed: [], added: added, newLineNumber: &newLineNumber, to: result)
+                appendChangeBlock(removed: [], added: added, newLineNumber: &newLineNumber, ext: fileExtension, to: result)
                 continue
             }
 
@@ -149,9 +152,9 @@ enum InlineDiffRenderer {
             // Context line (leading space in unified format).
             let content = line.hasPrefix(" ") ? String(line.dropFirst()) : line
             if conflictMode {
-                appendConflictLine(content, number: newLineNumber, section: &conflictSection, to: result)
+                appendConflictLine(content, number: newLineNumber, section: &conflictSection, ext: fileExtension, to: result)
             } else {
-                appendLine(content, number: newLineNumber, lineBG: nil, emphasis: nil, emphasisBG: nil, to: result)
+                appendLine(content, number: newLineNumber, lineBG: nil, emphasis: nil, emphasisBG: nil, ext: fileExtension, to: result)
             }
             newLineNumber += 1
             index += 1
@@ -172,6 +175,7 @@ enum InlineDiffRenderer {
         removed: [String],
         added: [String],
         newLineNumber: inout Int,
+        ext: String,
         to result: NSMutableAttributedString
     ) {
         let pairCount = min(removed.count, added.count)
@@ -183,7 +187,7 @@ enum InlineDiffRenderer {
             if offset < pairCount {
                 emphasis = intralineDifference(removedLine, added[offset]).old
             }
-            appendLine(removedLine, number: nil, lineBG: removedLineBG, emphasis: emphasis, emphasisBG: removedEmphasisBG, to: result)
+            appendLine(removedLine, number: nil, lineBG: removedLineBG, emphasis: emphasis, emphasisBG: removedEmphasisBG, ext: ext, to: result)
         }
 
         for (offset, addedLine) in added.enumerated() {
@@ -191,7 +195,7 @@ enum InlineDiffRenderer {
             if offset < pairCount {
                 emphasis = intralineDifference(removed[offset], addedLine).new
             }
-            appendLine(addedLine, number: newLineNumber, lineBG: addedLineBG, emphasis: emphasis, emphasisBG: addedEmphasisBG, to: result)
+            appendLine(addedLine, number: newLineNumber, lineBG: addedLineBG, emphasis: emphasis, emphasisBG: addedEmphasisBG, ext: ext, to: result)
             newLineNumber += 1
         }
     }
@@ -203,6 +207,7 @@ enum InlineDiffRenderer {
         _ content: String,
         number: Int,
         section: inout ConflictSection,
+        ext: String,
         to result: NSMutableAttributedString
     ) {
         let isMarker: Bool
@@ -223,7 +228,7 @@ enum InlineDiffRenderer {
         }
 
         if isMarker {
-            appendLine(content, number: number, lineBG: conflictMarkerBG, emphasis: nil, emphasisBG: nil, to: result, foreground: conflictMarkerText)
+            appendLine(content, number: number, lineBG: conflictMarkerBG, emphasis: nil, emphasisBG: nil, ext: ext, to: result, foreground: conflictMarkerText)
             return
         }
 
@@ -234,7 +239,7 @@ enum InlineDiffRenderer {
         case .base: sectionBG = conflictBaseBG
         case .theirs: sectionBG = conflictTheirsBG
         }
-        appendLine(content, number: number, lineBG: sectionBG, emphasis: nil, emphasisBG: nil, to: result)
+        appendLine(content, number: number, lineBG: sectionBG, emphasis: nil, emphasisBG: nil, ext: ext, to: result)
     }
 
     /// Common-prefix/suffix character diff between a removed and added line,
@@ -281,6 +286,7 @@ enum InlineDiffRenderer {
         lineBG: NSColor?,
         emphasis: NSRange?,
         emphasisBG: NSColor?,
+        ext: String,
         to result: NSMutableAttributedString,
         foreground: NSColor? = nil
     ) {
@@ -309,6 +315,21 @@ enum InlineDiffRenderer {
             range: NSRange(location: 0, length: gutter.count)
         )
         result.append(lineString)
+
+        // Syntax-highlight the content (foreground only) so the add/remove
+        // background bars stay intact. Skipped when the caller forces a
+        // foreground (conflict markers) or the language is unknown. The gutter
+        // is excluded by shifting every token range past it, so line numbers
+        // never get mistaken for numeric literals.
+        if foreground == nil, !ext.isEmpty {
+            let contentStart = lineStart + gutter.count
+            for token in SyntaxHighlighter.tokens(for: content, ext: ext) {
+                let shifted = NSRange(location: contentStart + token.range.location, length: token.range.length)
+                if shifted.location + shifted.length <= result.length {
+                    result.addAttribute(.foregroundColor, value: token.color, range: shifted)
+                }
+            }
+        }
 
         if let emphasis = emphasis, let emphasisBG = emphasisBG {
             let shifted = NSRange(location: lineStart + gutter.count + emphasis.location, length: emphasis.length)

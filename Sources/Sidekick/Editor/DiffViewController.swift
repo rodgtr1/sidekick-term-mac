@@ -160,7 +160,8 @@ class DiffViewController: NSViewController {
             return
         }
 
-        textStorage.append(InlineDiffRenderer.render(content))
+        let ext = (filePath as NSString?)?.pathExtension.lowercased() ?? ""
+        textStorage.append(InlineDiffRenderer.render(content, fileExtension: ext))
 
         print("📝 DiffViewController: Final textStorage length: \(textStorage.length)")
         print("📝 DiffViewController: textView bounds: \(textView.bounds)")

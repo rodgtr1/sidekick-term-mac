@@ -68,7 +68,7 @@ final class DiffApprovalPanel {
         textView.string = "Computing diff…"
         DispatchQueue.global(qos: .userInitiated).async { [weak textView] in
             let diffText = Self.unifiedDiff(old: old, new: new, path: path)
-            let rendered = InlineDiffRenderer.render(diffText)
+            let rendered = InlineDiffRenderer.render(diffText, fileExtension: (path as NSString).pathExtension.lowercased())
             DispatchQueue.main.async {
                 textView?.textStorage?.setAttributedString(rendered)
             }

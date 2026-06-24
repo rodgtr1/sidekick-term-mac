@@ -179,7 +179,7 @@ final class UncommittedChangesViewController: NSViewController {
         container.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
 
         let header = makeHeaderView(section)
-        let renderedDiff = InlineDiffRenderer.render(section.diff)
+        let renderedDiff = InlineDiffRenderer.render(section.diff, fileExtension: (section.relativePath as NSString).pathExtension.lowercased())
         let diffView = makeDiffColumn(text: renderedDiff)
 
         container.addSubview(header)

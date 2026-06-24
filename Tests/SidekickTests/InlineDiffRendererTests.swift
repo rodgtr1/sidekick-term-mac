@@ -116,22 +116,23 @@ final class InlineDiffRendererTests: XCTestCase {
         XCTAssertTrue(lines[6].hasSuffix("three"))
         XCTAssertTrue(lines[6].contains("7"))
 
-        // Ours/theirs sections carry distinct background tints; lines
-        // outside the conflict carry none.
-        func backgroundColor(ofLineContaining needle: String) -> NSColor? {
+        // Ours/theirs sections carry distinct full-width tints (the custom
+        // lineFillColor attribute, painted by DiffLineBackgroundLayoutManager);
+        // lines outside the conflict carry none.
+        func fillColor(ofLineContaining needle: String) -> NSColor? {
             let nsString = rendered.string as NSString
             let location = nsString.range(of: needle).location
             guard location != NSNotFound else { return nil }
-            return rendered.attribute(.backgroundColor, at: location, effectiveRange: nil) as? NSColor
+            return rendered.attribute(InlineDiffRenderer.lineFillColor, at: location, effectiveRange: nil) as? NSColor
         }
 
-        let oursBG = backgroundColor(ofLineContaining: "main-change")
-        let theirsBG = backgroundColor(ofLineContaining: "feature-change")
+        let oursBG = fillColor(ofLineContaining: "main-change")
+        let theirsBG = fillColor(ofLineContaining: "feature-change")
         XCTAssertNotNil(oursBG)
         XCTAssertNotNil(theirsBG)
         XCTAssertNotEqual(oursBG, theirsBG)
-        XCTAssertNil(backgroundColor(ofLineContaining: "three"))
-        XCTAssertNotNil(backgroundColor(ofLineContaining: "<<<<<<< HEAD"))
+        XCTAssertNil(fillColor(ofLineContaining: "three"))
+        XCTAssertNotNil(fillColor(ofLineContaining: "<<<<<<< HEAD"))
     }
 
     func testNonConflictDiffDoesNotTintMarkerLookalikes() {
@@ -150,7 +151,7 @@ final class InlineDiffRendererTests: XCTestCase {
 
         let rendered = InlineDiffRenderer.render(diff)
         let location = (rendered.string as NSString).range(of: "<<<<<<<").location
-        XCTAssertNil(rendered.attribute(.backgroundColor, at: location, effectiveRange: nil) as? NSColor)
+        XCTAssertNil(rendered.attribute(InlineDiffRenderer.lineFillColor, at: location, effectiveRange: nil) as? NSColor)
     }
 
     func testUntrackedFileDiffRendersAllAddedWithNumbers() {
