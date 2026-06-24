@@ -14,7 +14,6 @@ final class UncommittedChangesViewController: NSViewController {
         static let sectionSpacing: CGFloat = 10
         static let headerHeight: CGFloat = 44
         static let diffLineHeight: CGFloat = 19
-        static let maxDiffHeight: CGFloat = 900
     }
 
     init(repositoryPath: String, focusedFilePath: String? = nil, gitService: GitService = GitService()) {
@@ -185,8 +184,11 @@ final class UncommittedChangesViewController: NSViewController {
         container.addSubview(header)
         container.addSubview(diffView)
 
+        // Size the diff to its full content height and let the outer scroll
+        // view handle scrolling. Capping the height here would clip long diffs,
+        // since each text view has no scroller of its own.
         let lineCount = max(1, renderedDiff.string.filter { $0 == "\n" }.count + 1)
-        let diffHeight = min(CGFloat(lineCount) * Metrics.diffLineHeight + 14, Metrics.maxDiffHeight)
+        let diffHeight = CGFloat(lineCount) * Metrics.diffLineHeight + 14
 
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: container.topAnchor),
@@ -396,7 +398,7 @@ final class UncommittedChangesViewController: NSViewController {
             textView.leadingAnchor.constraint(equalTo: block.leadingAnchor),
             textView.trailingAnchor.constraint(equalTo: block.trailingAnchor),
             textView.bottomAnchor.constraint(equalTo: block.bottomAnchor),
-            textView.heightAnchor.constraint(equalToConstant: min(textHeight, Metrics.maxDiffHeight))
+            textView.heightAnchor.constraint(equalToConstant: textHeight)
         ])
 
         return block
