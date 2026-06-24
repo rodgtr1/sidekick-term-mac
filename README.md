@@ -68,8 +68,6 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - Paste an image from the clipboard into a terminal (`Cmd+V`): it's written to
   a temp PNG and the quoted path is typed — handy for handing screenshots to agents
 - Rename tabs (right-click) and drag tabs to reorder
-- Run-panel tasks run in a dedicated split below with a running/finished/failed
-  dot; an optional `open_browser = "http://..."` field opens the embedded browser
 - macOS notifications when an agent waits for input / finishes or a long
   command (≥30s) ends while the app is in the background
 - Activity-bar badge counts agents waiting for input
@@ -344,30 +342,56 @@ sidekick-mac/
 
 ## Configuration
 
-The app loads configuration from `~/.config/sidekick/config.toml`:
+The app loads configuration from `~/.config/sidekick/config.toml`. It's created
+with defaults on first launch; changes apply live (no restart). Every supported
+key is shown below with its default value:
 
 ```toml
-[colors]
-foreground = "#cdd6f4"
-background = "#1e1e2e"
-# ... (Catppuccin Mocha palette)
+[theme]
+# catppuccin-mocha (dark), catppuccin-latte (light), or "auto" to follow macOS.
+# Drop custom palettes (same JSON schema) into ~/.config/sidekick/themes/.
+name = "catppuccin-mocha"
 
-[terminal]
-fontFamily = "JetBrains Mono"
-fontSize = 13.0
+[font]
+family = "Menlo"          # any monospace font installed on your system
+size = 13                 # points
+bold_is_bright = true     # bold text uses bright palette colors
+
+[cursor]
+shape = "block"           # block | ibeam | underline
+blink = true
 
 [window]
-opacity = 0.95
-defaultWidth = 1200
-defaultHeight = 800
+padding = 8               # inner padding around terminal content (pixels)
+opacity = 0.9             # 0.0 (transparent) … 1.0 (opaque)
+enable_blur = true        # macOS background blur/vibrancy
+
+[behavior]
+scrollback_lines = 10000  # -1 for unlimited
+scroll_on_output = false  # scroll to bottom when new output appears
+scroll_on_keystroke = true
+allow_hyperlinks = true   # clickable URLs
+mouse_autohide = true     # hide mouse cursor while typing
+audible_bell = false
+restore_session = true    # restore tabs/cwd from previous session on launch
 
 [shell]
-program = ""  # Empty = use $SHELL
+program = ""              # empty = use $SHELL
 args = []
+default_cwd = "~"
 
-[[tasks.global]]
-name = "Build"
-command = "swift build"
+[diff]
+context_lines = 3         # context lines shown in diffs
+
+[editor]
+file_open_mode = "terminal"  # terminal (opens in $EDITOR/nvim) | builtin (Sidekick editor pane)
+font_family = ""             # empty = system monospaced font
+word_wrap = true             # true = word wrap, false = horizontal scroll
+font_size = 13               # built-in editor text size (points)
+show_hidden_files = false    # show hidden/gitignored files in the file tree (dimmed)
+
+[hosts]
+show_teleport = false        # show Teleport nodes (from `tsh ls`) in the Hosts panel
 ```
 
 ## Development
