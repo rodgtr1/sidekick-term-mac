@@ -13,11 +13,27 @@ final class ConfigWatcher {
     private var lastModificationDate: Date?
 
     private let configPath = NSString(string: "~/.config/sidekick/config.toml").expandingTildeInPath
+    // The path actually watched/stat'd. When config.toml is a symlink (e.g. a
+    // stow/dotfiles link), this resolves to the real file so edits to the link
+    // target are seen — otherwise we'd watch the wrong directory and read the
+    // link's own (unchanging) modification date.
+    private var watchedPath = ""
+
+    /// Canonical path with symlinks and `..` resolved. Falls back to the input
+    /// if the file does not exist yet.
+    private func resolved(_ path: String) -> String {
+        var buffer = [Int8](repeating: 0, count: Int(PATH_MAX))
+        if realpath(path, &buffer) != nil {
+            return String(cString: buffer)
+        }
+        return path
+    }
 
     func start() {
         stop()
 
-        let directory = (configPath as NSString).deletingLastPathComponent
+        watchedPath = resolved(configPath)
+        let directory = (watchedPath as NSString).deletingLastPathComponent
         directoryFD = open(directory, O_EVTONLY)
         guard directoryFD >= 0 else {
             print("ConfigWatcher: cannot open \(directory)")
@@ -67,7 +83,7 @@ final class ConfigWatcher {
     }
 
     private func modificationDate() -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: configPath))?[.modificationDate] as? Date
+        (try? FileManager.default.attributesOfItem(atPath: watchedPath))?[.modificationDate] as? Date
     }
 
     deinit {
