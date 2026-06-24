@@ -19,7 +19,6 @@ class PaneSplitController: NSViewController {
     private var paneCloseButtons: [PaneModel: PaneCloseButton] = [:]
     // Track all split views we've created (for delegate management)
     private var allSplitViews: Set<NSSplitView> = []
-    private var clickEventMonitor: Any?
 
     init(config: Config) {
         self.config = config
@@ -33,21 +32,6 @@ class PaneSplitController: NSViewController {
     override func loadView() {
         view = NSView()
         setupSplitView()
-    }
-
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        guard clickEventMonitor == nil else { return }
-        clickEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            self?.activatePane(containing: event)
-            return event
-        }
-    }
-
-    deinit {
-        if let clickEventMonitor {
-            NSEvent.removeMonitor(clickEventMonitor)
-        }
     }
 
     private func setupSplitView() {
@@ -149,7 +133,10 @@ class PaneSplitController: NSViewController {
         return findSplitView(containing: container, in: rootSplitView)
     }
 
-    private func activatePane(containing event: NSEvent) {
+    /// Activates the pane under a left-click. The window-level monitor in
+    /// MainWindowController calls this only on the active tab's controller, so
+    /// hidden tabs can't claim clicks meant for the visible one.
+    func activatePane(containing event: NSEvent) {
         guard event.window === view.window,
               let contentView = view.window?.contentView else { return }
 

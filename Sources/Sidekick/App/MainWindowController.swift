@@ -138,6 +138,7 @@ class MainWindowController: NSWindowController {
     private var preferencesWindowController: PreferencesWindowController?
     fileprivate var commandPalette: CommandPalettePanel?
     private var keyEventMonitor: Any?
+    private var clickEventMonitor: Any?
     private let keyboardCommandRouter = KeyboardCommandRouter()
     private let configWatcher = ConfigWatcher()
     private var sessionSaveTimer: Timer?
@@ -512,11 +513,24 @@ class MainWindowController: NSWindowController {
             guard let self = self, event.window === self.window else { return event }
             return self.handleKeyDown(event) ? nil : event
         }
+
+        // A single window-wide click monitor, routed only to the active tab's
+        // split controller. Previously every tab's controller installed its own
+        // monitor, so a click was hit-tested against hidden tabs too and could
+        // yank focus to whichever tab's panes happened to overlap the point.
+        clickEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self = self, event.window === self.window else { return event }
+            self.currentPaneSplitController?.activatePane(containing: event)
+            return event
+        }
     }
 
     deinit {
         if let keyEventMonitor {
             NSEvent.removeMonitor(keyEventMonitor)
+        }
+        if let clickEventMonitor {
+            NSEvent.removeMonitor(clickEventMonitor)
         }
     }
 
@@ -728,13 +742,43 @@ class MainWindowController: NSWindowController {
         installTab(tab)
     }
 
-    /// Shared plumbing for adding a fully-built tab: hides the current tab,
+    /// Adds a tab's split controller view into the content area, pinned to all
+    /// edges. Only the active tab's controller lives in the hierarchy at once,
+    /// so hidden tabs can't receive clicks, hit-tests, or relayout work.
+    private func attachController(_ controller: PaneSplitController) {
+        guard controller.view.superview !== mainContentView else { return }
+        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        mainContentView.addSubview(controller.view)
+        NSLayoutConstraint.activate([
+            controller.view.topAnchor.constraint(equalTo: mainContentView.topAnchor),
+            controller.view.leadingAnchor.constraint(equalTo: mainContentView.leadingAnchor),
+            controller.view.trailingAnchor.constraint(equalTo: mainContentView.trailingAnchor),
+            controller.view.bottomAnchor.constraint(equalTo: mainContentView.bottomAnchor)
+        ])
+    }
+
+    /// Removes an inactive tab's view from the hierarchy (its constraints to
+    /// mainContentView go with it). The controller and its panes stay alive in
+    /// `tabSplitControllers` for re-attachment on the next switch.
+    private func detachController(_ controller: PaneSplitController) {
+        controller.view.removeFromSuperview()
+    }
+
+    /// Restores first responder to the shown tab's active pane after a switch,
+    /// since detaching the previous tab's view drops the window's responder.
+    private func restoreFocus(for tab: TabModel) {
+        DispatchQueue.main.async {
+            tab.activePane?.focus()
+        }
+    }
+
+    /// Shared plumbing for adding a fully-built tab: detaches the current tab,
     /// appends and activates the new one, and installs its split controller
     /// into the main content view. Used by new-tab, session restore, and
     /// single-pane (diff/changes) tabs so they can't drift apart.
     private func installTab(_ tab: TabModel) {
         if let currentController = currentPaneSplitController {
-            currentController.view.isHidden = true
+            detachController(currentController)
         }
         if let activeTab = tabs[safe: activeTabIndex] {
             activeTab.isActive = false
@@ -749,16 +793,8 @@ class MainWindowController: NSWindowController {
         currentPaneSplitController = paneSplitController
         tabSplitControllers[tab.id] = paneSplitController
 
-        mainContentView.addSubview(paneSplitController.view)
-        paneSplitController.view.translatesAutoresizingMaskIntoConstraints = false
+        attachController(paneSplitController)
         paneSplitController.rebuildSplitView(for: tab)
-
-        NSLayoutConstraint.activate([
-            paneSplitController.view.topAnchor.constraint(equalTo: mainContentView.topAnchor),
-            paneSplitController.view.leadingAnchor.constraint(equalTo: mainContentView.leadingAnchor),
-            paneSplitController.view.trailingAnchor.constraint(equalTo: mainContentView.trailingAnchor),
-            paneSplitController.view.bottomAnchor.constraint(equalTo: mainContentView.bottomAnchor)
-        ])
 
         updateTabBar()
     }
@@ -818,7 +854,7 @@ class MainWindowController: NSWindowController {
         return activeTab.panes.compactMap { $0.resolvedWorkingDirectory() }.first
     }
 
-    /// After a tab's view is unhidden, its editors need to regenerate their
+    /// After a tab's view is re-attached, its editors need to regenerate their
     /// glyph layout — NSTextView leaves them blank otherwise. Deferred to the
     /// next runloop so the view has its restored frame before we lay out.
     private func refreshEditorsOnShow(for tab: TabModel) {
@@ -835,10 +871,9 @@ class MainWindowController: NSWindowController {
 
         print("🔄 Switching from tab \(activeTabIndex) to tab \(index)")
 
-        // Hide current tab's split controller
+        // Detach current tab's split controller
         if let currentController = currentPaneSplitController {
-            currentController.view.isHidden = true
-            print("  Hiding current controller")
+            detachController(currentController)
         }
 
         // Update active state
@@ -846,13 +881,13 @@ class MainWindowController: NSWindowController {
         activeTabIndex = index
         tabs[activeTabIndex].isActive = true
 
-        // Get the split controller for the new tab
+        // Attach the split controller for the new tab
         let newTab = tabs[index]
         if let newController = tabSplitControllers[newTab.id] {
             currentPaneSplitController = newController
-            newController.view.isHidden = false
+            attachController(newController)
             refreshEditorsOnShow(for: newTab)
-            print("  Showing new controller for tab \(index)")
+            restoreFocus(for: newTab)
         } else {
             print("  ⚠️ No split controller found for tab \(index)")
         }
@@ -885,8 +920,9 @@ class MainWindowController: NSWindowController {
         let newTab = tabs[activeTabIndex]
         if let newController = tabSplitControllers[newTab.id] {
             currentPaneSplitController = newController
-            newController.view.isHidden = false
+            attachController(newController)
             refreshEditorsOnShow(for: newTab)
+            restoreFocus(for: newTab)
         }
 
         updateTabBar()

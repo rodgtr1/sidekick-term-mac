@@ -94,7 +94,7 @@ class SyntaxHighlighter {
             highlightCSS(text: nsText, textStorage: textStorage, range: range)
         case "json":
             highlightJSON(text: nsText, textStorage: textStorage, range: range)
-        case "md", "markdown":
+        case "md", "markdown", "mdx":
             highlightMarkdown(text: nsText, textStorage: textStorage, range: range)
         default:
             highlightGeneric(text: nsText, textStorage: textStorage, range: range)
