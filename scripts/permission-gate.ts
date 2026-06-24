@@ -2,9 +2,8 @@
  * Permission Gate Extension
  *
  * Prompts for confirmation before running bash commands that could destroy
- * files in the working directory (which, under a sandbox, is mounted into the
- * VM and writes through to the host). Scoped to project-level destruction —
- * disk/partition/system-level commands are left to the VM boundary.
+ * files in the working directory. Scoped to project-level destruction —
+ * disk/partition/system-level commands are left out of scope.
  *
  * In non-interactive mode (no UI), dangerous commands are blocked by default.
  */
