@@ -63,6 +63,24 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - Reject blocks the edit (exit 2); if Sidekick isn't running the edit is allowed
 - Install with `scripts/install-agent-status-hooks`
 
+✅ **MCP Server (`sidekick-mcp`)**
+- A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes
+  Sidekick's pane orchestration as native tools, so any MCP client (Claude
+  Desktop, Claude Code, Cursor, …) can drive Sidekick directly — no `sidekick-ctl`
+  shell-outs or skill install required
+- Tools: `pane_list` / `pane_current` / `pane_split` / `pane_focus` / `pane_close`,
+  `pane_send_text` / `pane_run` / `pane_send_key`, `pane_read` (incl. `--json`
+  command records), `wait_agent_status` / `wait_output`, and `new_tab`
+- Speaks MCP over stdio (newline-delimited JSON-RPC 2.0) and translates each
+  `tools/call` into the same Unix-socket IPC `sidekick-ctl` uses, so the running
+  app is the single source of truth
+- Build with `swift build -c release --product sidekick-mcp`, then register the
+  binary with your MCP client. Example `.mcp.json`:
+  ```json
+  { "mcpServers": { "sidekick": { "command": "/path/to/sidekick-mcp" } } }
+  ```
+- Honours `SIDEKICK_SOCKET_PATH` (defaults to `~/.config/sidekick/sidekick.sock`)
+
 ✅ **Quality of Life**
 - App-wide font zoom: `Cmd+=` / `Cmd+-` / `Cmd+0`
 - Paste an image from the clipboard into a terminal (`Cmd+V`): it's written to
