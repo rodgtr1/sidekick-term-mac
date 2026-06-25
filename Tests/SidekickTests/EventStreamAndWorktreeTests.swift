@@ -50,6 +50,54 @@ final class EventStreamAndWorktreeTests: XCTestCase {
         XCTAssertTrue(at.hasPrefix("1970-01-01T00:00:00"), "Unexpected timestamp: \(at)")
     }
 
+    // MARK: - Event filtering & backlog snapshot
+
+    private func event(_ type: String, pane: String? = nil, state: String? = nil) -> SidekickEvent {
+        var e = SidekickEvent(type: type)
+        e.paneID = pane
+        e.state = state
+        return e
+    }
+
+    func testEventFilterNilMatchesEverything() {
+        XCTAssertTrue(EventFilter().matches(event("agent_state", pane: "A")))
+        XCTAssertTrue(EventFilter().matches(event("command", pane: "B")))
+    }
+
+    func testEventFilterAlwaysDeliversHello() {
+        // A late subscriber must still learn it connected, even under a filter
+        // that would otherwise exclude the hello marker (no pane, no type).
+        XCTAssertTrue(EventFilter(paneID: "A", type: "command").matches(event("hello")))
+    }
+
+    func testEventFilterByPaneAndType() {
+        let paneA = EventFilter(paneID: "A", type: nil)
+        XCTAssertTrue(paneA.matches(event("agent_state", pane: "A")))
+        XCTAssertFalse(paneA.matches(event("agent_state", pane: "B")))
+
+        let onlyCommand = EventFilter(paneID: nil, type: "command")
+        XCTAssertTrue(onlyCommand.matches(event("command", pane: "A")))
+        XCTAssertFalse(onlyCommand.matches(event("agent_state", pane: "A")))
+
+        let both = EventFilter(paneID: "A", type: "agent_state")
+        XCTAssertTrue(both.matches(event("agent_state", pane: "A")))
+        XCTAssertFalse(both.matches(event("agent_state", pane: "B")))
+        XCTAssertFalse(both.matches(event("command", pane: "A")))
+    }
+
+    func testSnapshotKeepsLatestAgentStatePerPane() {
+        let broadcaster = EventBroadcaster()
+        broadcaster.emit(event("agent_state", pane: "B", state: "working"))
+        broadcaster.emit(event("agent_state", pane: "A", state: "working"))
+        broadcaster.emit(event("agent_state", pane: "A", state: "ready"))   // latest for A
+        broadcaster.emit(event("command", pane: "A"))                        // not state — excluded
+
+        let snapshot = broadcaster.currentStateSnapshot()
+        XCTAssertEqual(snapshot.map(\.paneID), ["A", "B"])  // ordered by pane id
+        XCTAssertEqual(snapshot.first { $0.paneID == "A" }?.state, "ready")
+        XCTAssertEqual(snapshot.first { $0.paneID == "B" }?.state, "working")
+    }
+
     // MARK: - WorktreeService porcelain parsing
 
     func testWorktreePathFoundInPorcelain() {

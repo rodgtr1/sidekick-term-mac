@@ -225,8 +225,10 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     // MARK: - Event stream emission
 
     private func emitAgentStateEvent(for pane: PaneModel) {
-        guard EventBroadcaster.shared.hasSubscribers,
-              let context = automationPane(id: pane.id) else { return }
+        // No hasSubscribers guard here (unlike command/diff): agent_state always
+        // emits so EventBroadcaster's per-pane snapshot stays current for
+        // backlog-on-connect, even while nobody is following yet.
+        guard let context = automationPane(id: pane.id) else { return }
         var event = SidekickEvent(type: "agent_state", at: pane.agentStateChangedAt)
         event.paneID = pane.id.uuidString.lowercased()
         event.tabID = context.tab.id.uuidString.lowercased()

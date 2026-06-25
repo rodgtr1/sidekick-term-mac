@@ -14,7 +14,26 @@ struct SidekickCtl {
         // `events` is a long-lived JSONL stream, not a single request/response:
         // connect, then print each line as it arrives until the app hangs up.
         if args.first == "events" {
-            guard client.stream(["action": "events"]) else {
+            var request: [String: Any] = ["action": "events"]
+            var index = 1
+            while index < args.count {
+                switch args[index] {
+                case "--follow":
+                    break  // streaming is implicit; accepted for readability
+                case "--pane":
+                    index += 1
+                    guard index < args.count else { fail("--pane requires a pane id") }
+                    request["pane_id"] = args[index]
+                case "--type":
+                    index += 1
+                    guard index < args.count else { fail("--type requires an event type") }
+                    request["type"] = args[index]
+                default:
+                    fail("Unknown events option: \(args[index])")
+                }
+                index += 1
+            }
+            guard client.stream(request) else {
                 fail("Sidekick is not responding")
             }
             return
@@ -259,7 +278,8 @@ struct SidekickCtl {
           wait output <pane-id> <text> [--timeout ms]
           worktree remove <branch> [--cwd dir] [--force]   tear down a --worktree split
           worktree prune [--cwd dir]                       drop stale worktree entries
-          events [--follow]   stream agent-state / command / diff events as JSONL
+          events [--follow] [--pane id] [--type agent_state|command|diff]
+                              stream events as JSONL; replays current pane state on connect
         """)
         exit(1)
     }

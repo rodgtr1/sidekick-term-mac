@@ -54,58 +54,105 @@ struct SidekickEvent: Codable {
 /// the main thread (notifications fire there); to a dead or wedged consumer it
 /// `shutdown`s the socket — never `close`s it — so the owning reader closes it
 /// and no FD number can be reused out from under an in-flight write.
-// @unchecked Sendable: all mutable state (`subscribers`) is accessed only under
-// `lock`, so this is safe to share across the main thread (where `emit` runs)
-// and the per-connection IPC threads (which add/remove subscribers). The unsafe
-// FD writes are serialized by the same lock-guarded membership set. Marked
-// explicitly to prep for the Swift 6 strict-concurrency migration without
-// flipping the language mode yet.
+/// Optional narrowing for an `events --follow` subscriber. A nil field matches
+/// everything; the `hello` connection marker is always delivered regardless, so
+/// a client always learns it connected even under a filter that excludes it.
+struct EventFilter {
+    var paneID: String?
+    var type: String?
+
+    func matches(_ event: SidekickEvent) -> Bool {
+        if event.type == "hello" { return true }
+        if let paneID, event.paneID != paneID { return false }
+        if let type, event.type != type { return false }
+        return true
+    }
+}
+
+// @unchecked Sendable: all mutable state (`subscribers`, `lastStateByPane`) is
+// accessed only under `lock`, so this is safe to share across the main thread
+// (where `emit` runs) and the per-connection IPC threads (which add/remove
+// subscribers). The unsafe FD writes are serialized by the same lock-guarded
+// membership set. Marked explicitly to prep for the Swift 6 strict-concurrency
+// migration without flipping the language mode yet.
 final class EventBroadcaster: @unchecked Sendable {
     static let shared = EventBroadcaster()
 
     private let lock = NSLock()
-    private var subscribers: Set<Int32> = []
+    private var subscribers: [Int32: EventFilter] = [:]
 
-    private init() {}
+    /// Last `agent_state` event seen per pane. Replayed (filtered) to a new
+    /// subscriber so a late-joining supervisor knows the current state of every
+    /// pane without waiting for the next transition.
+    private var lastStateByPane: [String: SidekickEvent] = [:]
+
+    /// Internal (not private) so tests can exercise an isolated instance;
+    /// `shared` is the canonical one the app uses.
+    init() {}
 
     /// True while at least one client is following. Lets the emit sites skip
-    /// building events nobody is listening for.
+    /// building events nobody is listening for (agent_state excepted — it always
+    /// emits so `lastStateByPane` stays current for backlog-on-connect).
     var hasSubscribers: Bool {
         lock.lock(); defer { lock.unlock() }
         return !subscribers.isEmpty
     }
 
-    /// Registers a subscriber socket and greets it. Called on the connection's
+    /// Registers a subscriber socket and greets it, then replays the current
+    /// per-pane state backlog (subject to `filter`). Called on the connection's
     /// IPC thread, which then blocks reading the socket until the client hangs
     /// up and calls `removeSubscriber`.
-    func addSubscriber(_ fd: Int32) {
+    func addSubscriber(_ fd: Int32, filter: EventFilter = EventFilter()) {
         lock.lock()
-        subscribers.insert(fd)
+        subscribers[fd] = filter
+        let backlog = sortedSnapshotLocked()
         lock.unlock()
+
         send(SidekickEvent(type: "hello"), to: fd)
+        for event in backlog where filter.matches(event) {
+            send(event, to: fd)
+        }
     }
 
     /// Called by the owning reader thread once its socket reaches EOF. The sole
     /// `close` site, so a `shutdown` from `emit` can't race FD reuse.
     func removeSubscriber(_ fd: Int32) {
         lock.lock()
-        subscribers.remove(fd)
+        subscribers[fd] = nil
         lock.unlock()
         close(fd)
     }
 
-    /// Serializes `event` to one JSON line and writes it to every subscriber.
+    /// Serializes `event` to one JSON line and writes it to every subscriber
+    /// whose filter matches. Also records `agent_state` events as the current
+    /// per-pane state for backlog-on-connect.
     func emit(_ event: SidekickEvent) {
+        if event.type == "agent_state", let pane = event.paneID {
+            lock.lock(); lastStateByPane[pane] = event; lock.unlock()
+        }
+
         guard let data = try? JSONEncoder().encode(event) else { return }
         var line = data
         line.append(UInt8(ascii: "\n"))
 
         lock.lock()
-        let targets = subscribers
+        let targets = subscribers.compactMap { $0.value.matches(event) ? $0.key : nil }
         lock.unlock()
         for fd in targets {
             send(line: line, to: fd)
         }
+    }
+
+    /// Current per-pane agent state, newest value per pane, ordered by pane id
+    /// for deterministic replay. Used for backlog-on-connect (and tests).
+    func currentStateSnapshot() -> [SidekickEvent] {
+        lock.lock(); defer { lock.unlock() }
+        return sortedSnapshotLocked()
+    }
+
+    /// Caller must hold `lock`.
+    private func sortedSnapshotLocked() -> [SidekickEvent] {
+        lastStateByPane.values.sorted { ($0.paneID ?? "") < ($1.paneID ?? "") }
     }
 
     // MARK: - Writing
@@ -151,7 +198,7 @@ final class EventBroadcaster: @unchecked Sendable {
     /// owns that) so a wedged consumer's socket unblocks for cleanup.
     private func drop(_ fd: Int32) {
         lock.lock()
-        let wasActive = subscribers.remove(fd) != nil
+        let wasActive = subscribers.removeValue(forKey: fd) != nil
         lock.unlock()
         if wasActive {
             shutdown(fd, SHUT_RDWR)

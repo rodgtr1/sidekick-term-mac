@@ -22,9 +22,11 @@ struct IPCCommand: Codable {
     let format: String?
     let worktree: String?
     let force: Bool?
+    /// Event-type filter for an `events` subscription (e.g. "agent_state").
+    let type: String?
 
     enum CodingKeys: String, CodingKey {
-        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format, worktree, force
+        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format, worktree, force, type
         case paneID = "pane_id"
         case timeoutMS = "timeout_ms"
     }
@@ -530,7 +532,7 @@ final class IPCServer: @unchecked Sendable {
         // so the client's hang-up unblocks promptly for cleanup. The reader is
         // the sole owner of close() (see EventBroadcaster).
         if command.action == "events" {
-            EventBroadcaster.shared.addSubscriber(clientFD)
+            EventBroadcaster.shared.addSubscriber(clientFD, filter: Self.eventFilter(from: command))
             var drain = [UInt8](repeating: 0, count: 256)
             while read(clientFD, &drain, drain.count) > 0 { /* clients don't send */ }
             EventBroadcaster.shared.removeSubscriber(clientFD)
@@ -566,6 +568,16 @@ final class IPCServer: @unchecked Sendable {
                 close(clientFD)
             }
         }
+    }
+
+    /// Builds an `EventFilter` from an `events` subscribe request. A pane id is
+    /// lowercased to match the emitted form; a present-but-unmatched pane or
+    /// type simply yields no events (only the `hello` marker), which reads as
+    /// "nothing matched" rather than silently broadcasting everything.
+    private static func eventFilter(from command: IPCCommand) -> EventFilter {
+        let paneID = command.paneID.flatMap { $0.isEmpty ? nil : $0.lowercased() }
+        let type = command.type.flatMap { $0.isEmpty ? nil : String($0.prefix(64)) }
+        return EventFilter(paneID: paneID, type: type)
     }
 
     private func readLine(from clientFD: Int32) -> Data? {
