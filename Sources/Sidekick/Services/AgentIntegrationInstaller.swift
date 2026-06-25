@@ -148,6 +148,12 @@ enum AgentIntegrationInstaller {
         for (event, state) in statusHooks + claudeOnlyStatusHooks {
             addClaudeHook(to: &hooks, event: event, command: "\(statusBinary.path) \(state)")
         }
+        // Telemetry (Claude-first): a second Stop hook reports per-pane token
+        // usage to the dashboard. Best-effort — registered only when the helper
+        // is bundled; it dedups against the status Stop hook by binary name.
+        if let telemetryBinary = helperURL(named: "sidekick-telemetry") {
+            addClaudeHook(to: &hooks, event: "Stop", command: telemetryBinary.path)
+        }
         // The sidekick-hook PreToolUse diff popup duplicated Claude Code's own
         // approval prompt (the hook never emitted a permission decision, so the
         // harness still asked), so it's no longer installed. Strip any copy a

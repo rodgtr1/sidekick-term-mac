@@ -79,6 +79,11 @@ echo "📋 Adding sidekick-mcp MCP server..."
 cp ".build/release/sidekick-mcp" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-mcp"
 chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-mcp"
 
+# Create sidekick-telemetry helper in bundle (Stop-hook token/cost reporter)
+echo "📋 Adding sidekick-telemetry helper..."
+cp ".build/release/sidekick-telemetry" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-telemetry"
+chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-telemetry"
+
 # Zip for handing to another Mac. scp/USB transfers skip the quarantine
 # flag entirely; browser/AirDrop transfers need right-click -> Open (or
 # System Settings -> Privacy & Security -> Open Anyway) on first launch.

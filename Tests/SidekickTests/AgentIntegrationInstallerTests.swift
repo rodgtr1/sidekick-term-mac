@@ -41,6 +41,21 @@ final class AgentIntegrationInstallerTests: XCTestCase {
         XCTAssertEqual(hookCommands(hooks, event: "Stop").count, 1)
     }
 
+    func testTelemetryStopHookCoexistsWithStatusStopHook() {
+        // The telemetry Stop hook keys on a different binary name, so it must
+        // sit alongside the agent-status Stop hook rather than dedup against it.
+        var hooks: [String: Any] = [:]
+        AgentIntegrationInstaller.addClaudeHook(to: &hooks, event: "Stop", command: "/a/sidekick-agent-status done")
+        AgentIntegrationInstaller.addClaudeHook(to: &hooks, event: "Stop", command: "/a/sidekick-telemetry")
+        // Re-adding telemetry must not duplicate it.
+        AgentIntegrationInstaller.addClaudeHook(to: &hooks, event: "Stop", command: "/a/sidekick-telemetry")
+
+        let commands = hookCommands(hooks, event: "Stop")
+        XCTAssertEqual(commands.count, 2)
+        XCTAssertTrue(commands.contains("/a/sidekick-agent-status done"))
+        XCTAssertTrue(commands.contains("/a/sidekick-telemetry"))
+    }
+
     func testAddClaudeHookPreservesForeignHooksAndAddsMatcher() {
         var hooks: [String: Any] = [
             "PreToolUse": [["hooks": [["type": "command", "command": "/usr/local/bin/some-other-hook"]]]]
