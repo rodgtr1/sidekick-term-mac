@@ -74,6 +74,11 @@ echo "📋 Adding sidekick-hook CLI..."
 cp ".build/release/sidekick-hook" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-hook"
 chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-hook"
 
+# Create sidekick-mcp MCP server in bundle (Model Context Protocol)
+echo "📋 Adding sidekick-mcp MCP server..."
+cp ".build/release/sidekick-mcp" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-mcp"
+chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-mcp"
+
 # Zip for handing to another Mac. scp/USB transfers skip the quarantine
 # flag entirely; browser/AirDrop transfers need right-click -> Open (or
 # System Settings -> Privacy & Security -> Open Anyway) on first launch.
@@ -94,3 +99,6 @@ echo ""
 echo "🛠️  To add CLI tools to PATH:"
 echo "   ln -sf /Applications/${BUNDLE_NAME}/Contents/MacOS/sidekick-ctl /usr/local/bin/sidekick-ctl"
 echo "   ln -sf /Applications/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status /usr/local/bin/sidekick-agent-status"
+echo ""
+echo "🔌 To register the MCP server with Claude Code:"
+echo "   claude mcp add --scope user sidekick /Applications/${BUNDLE_NAME}/Contents/MacOS/sidekick-mcp"

@@ -74,8 +74,12 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - Speaks MCP over stdio (newline-delimited JSON-RPC 2.0) and translates each
   `tools/call` into the same Unix-socket IPC `sidekick-ctl` uses, so the running
   app is the single source of truth
-- Build with `swift build -c release --product sidekick-mcp`, then register the
-  binary with your MCP client. Example `.mcp.json`:
+- `scripts/install-agent-status-hooks` builds it, installs it to
+  `~/.local/bin/sidekick-mcp`, and registers it with Claude Code
+  (`claude mcp add --scope user sidekick …`). It also ships inside the app bundle
+  at `Sidekick.app/Contents/MacOS/sidekick-mcp` via `build-app.sh`
+- For other MCP clients (Claude Desktop, Cursor), point them at the binary —
+  example `.mcp.json`:
   ```json
   { "mcpServers": { "sidekick": { "command": "/path/to/sidekick-mcp" } } }
   ```

@@ -5,13 +5,16 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bin_dir="${HOME}/.local/bin"
 status_bin="${bin_dir}/sidekick-agent-status"
 hook_bin="${bin_dir}/sidekick-hook"
+mcp_bin="${bin_dir}/sidekick-mcp"
 skill_source="${repo}/.claude/skills/sidekick-panes"
 
 mkdir -p "$bin_dir"
 swift build --package-path "$repo" -c release --product sidekick-agent-status
 swift build --package-path "$repo" -c release --product sidekick-hook
+swift build --package-path "$repo" -c release --product sidekick-mcp
 install -m 0755 "$repo/.build/release/sidekick-agent-status" "$status_bin"
 install -m 0755 "$repo/.build/release/sidekick-hook" "$hook_bin"
+install -m 0755 "$repo/.build/release/sidekick-mcp" "$mcp_bin"
 
 # Install the same pane-orchestration skill for Claude Code, Codex, and Pi.
 # All three load Agent Skills standard SKILL.md files; Pi reads ~/.pi/agent/skills.
@@ -148,10 +151,26 @@ if [ -d "${HOME}/.pi/agent" ]; then
     pi_note="  ${HOME}/.pi/agent/extensions/sidekick-status.ts"
 fi
 
+# Register the MCP server with Claude Code via the canonical `claude mcp add`
+# (user scope), idempotently. Other MCP clients (Claude Desktop, Cursor) can
+# use the .mcp.json snippet in the README.
+if command -v claude >/dev/null 2>&1; then
+    if claude mcp list 2>/dev/null | grep -q "sidekick"; then
+        mcp_note="  Claude Code MCP server 'sidekick' (already registered)"
+    elif claude mcp add --scope user sidekick "$mcp_bin" >/dev/null 2>&1; then
+        mcp_note="  Registered Claude Code MCP server 'sidekick' -> $mcp_bin"
+    else
+        mcp_note="  Could not auto-register; run: claude mcp add --scope user sidekick \"$mcp_bin\""
+    fi
+else
+    mcp_note="  Register with your MCP client (e.g. claude mcp add --scope user sidekick \"$mcp_bin\")"
+fi
+
 cat <<EOF
 Installed:
   $status_bin
   $hook_bin (PreToolUse edit review)
+  $mcp_bin (MCP server)
   $HOME/.claude/skills/sidekick-panes/SKILL.md
   $HOME/.codex/skills/sidekick-panes/SKILL.md
   $HOME/.pi/agent/skills/sidekick-panes/SKILL.md
@@ -161,5 +180,8 @@ Updated:
   $HOME/.claude/settings.json
   $HOME/.codex/config.toml
 
-Restart Claude Code/Codex/pi sessions for hook changes to take effect.
+MCP server:
+${mcp_note}
+
+Restart Claude Code/Codex/pi sessions for hook and MCP changes to take effect.
 EOF
