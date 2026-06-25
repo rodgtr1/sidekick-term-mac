@@ -219,6 +219,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         splitBrowserItem.target = self
         viewMenu.addItem(splitBrowserItem)
 
+        viewMenu.addItem(NSMenuItem.separator())
+
+        // Auto-approve agent edits this session (checkmark reflects effective
+        // state, including the [approval] config mode). ⇧⌘A.
+        let autoApproveItem = NSMenuItem(title: "Auto-approve Agent Edits", action: #selector(toggleAutoApproveEdits), keyEquivalent: "a")
+        autoApproveItem.keyEquivalentModifierMask = [.command, .shift]
+        autoApproveItem.target = self
+        viewMenu.addItem(autoApproveItem)
+
         mainMenu.addItem(viewMenuItem)
 
         // Window Menu
@@ -249,6 +258,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(helpMenuItem)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func toggleAutoApproveEdits() {
+        mainWindowController?.toggleAutoApproveEdits()
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleAutoApproveEdits) {
+            menuItem.state = (mainWindowController?.shouldAutoApproveEdits ?? false) ? .on : .off
+        }
+        return true
     }
 
     @objc private func newTab() {

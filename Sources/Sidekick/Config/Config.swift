@@ -11,6 +11,7 @@ public struct Config: Codable {
     public var diff: DiffConfig
     public var editor: EditorConfig?  // Make optional for backwards compatibility
     public var hosts: HostsConfig?  // Make optional for backwards compatibility
+    public var approval: ApprovalConfig?  // Make optional for backwards compatibility
 
     public init() {
         self.theme = ThemeConfig()
@@ -22,6 +23,7 @@ public struct Config: Codable {
         self.diff = DiffConfig()
         self.editor = EditorConfig()
         self.hosts = HostsConfig()
+        self.approval = ApprovalConfig()
     }
 
     public static func load(from path: String = "~/.config/sidekick/config.toml") -> Config {
@@ -123,6 +125,13 @@ show_hidden_files = false
 [hosts]
 # Show Teleport nodes (from `tsh ls`) in the Hosts sidebar panel
 show_teleport = false
+
+[approval]
+# How agent edits (the Write/Edit/MultiEdit hook) are reviewed:
+#   "ask"  — show a review popup for every edit (default)
+#   "auto" — approve edits silently, no popup
+# You can also toggle this per session from the menu: Auto-approve Agent Edits.
+mode = "ask"
 """
 
         // Create directory if needed
@@ -260,6 +269,30 @@ public struct BehaviorConfig: Codable {
         audibleBell = try container.decodeIfPresent(Bool.self, forKey: .audibleBell) ?? audibleBell
         restoreSession = try container.decodeIfPresent(Bool.self, forKey: .restoreSession) ?? restoreSession
     }
+}
+
+// MARK: - Approval Configuration
+public struct ApprovalConfig: Codable {
+    /// "ask" — show the review panel for every agent edit (default).
+    /// "auto" — allow edits without prompting.
+    public var mode: String
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+    }
+
+    public init() {
+        self.mode = "ask"
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? mode
+    }
+
+    /// True when edits should be approved without a popup.
+    public var autoApprove: Bool { mode.lowercased() == "auto" }
 }
 
 // MARK: - Shell Configuration

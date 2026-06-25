@@ -718,6 +718,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             automationOutput = String(automationOutput.suffix(64_000))
         }
 
+        if !outputMatchers.isEmpty {
+            feedOutputMatchers(strippedChunk: stripANSIEscapes(output))
+        }
+
         // While a command is running (between OSC 133 C and D), accumulate its
         // output for the command-record history. ANSI is stripped at finalize.
         if inFlightCommand != nil {
@@ -1356,6 +1360,51 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         return text.split(separator: "\n", omittingEmptySubsequences: false)
             .suffix(lineLimit)
             .joined(separator: "\n")
+    }
+
+    // MARK: - Streaming output match (for `wait output`)
+
+    /// A pending `wait output` request: an incremental matcher plus the callback
+    /// to fire when it hits.
+    private struct OutputMatcher {
+        var matcher: StreamingMatcher
+        let onMatch: () -> Void
+    }
+    private var outputMatchers: [UUID: OutputMatcher] = [:]
+
+    /// Registers `needle` to fire `onMatch` once it appears in the output
+    /// stream. Returns nil (and does not register) when the needle is already
+    /// present in the current buffer, so the caller can resolve immediately.
+    func registerOutputMatcher(_ needle: String, onMatch: @escaping () -> Void) -> UUID? {
+        if recentOutputText().contains(needle) || visibleScreenText().contains(needle) {
+            return nil
+        }
+        let id = UUID()
+        let matcher = StreamingMatcher(needle: needle, seed: recentOutputText())
+        outputMatchers[id] = OutputMatcher(matcher: matcher, onMatch: onMatch)
+        return id
+    }
+
+    func cancelOutputMatcher(_ id: UUID) {
+        outputMatchers[id] = nil
+    }
+
+    /// Feeds a freshly stripped output chunk to every pending matcher. Callbacks
+    /// are collected and fired after the loop so an onMatch that cancels a
+    /// matcher can't mutate `outputMatchers` mid-iteration.
+    private func feedOutputMatchers(strippedChunk: String) {
+        guard !outputMatchers.isEmpty else { return }
+        var fired: [() -> Void] = []
+        for id in Array(outputMatchers.keys) {
+            guard var entry = outputMatchers[id] else { continue }
+            if entry.matcher.feed(strippedChunk) {
+                outputMatchers.removeValue(forKey: id)
+                fired.append(entry.onMatch)
+            } else {
+                outputMatchers[id] = entry
+            }
+        }
+        for onMatch in fired { onMatch() }
     }
 
     func focusTerminal() {

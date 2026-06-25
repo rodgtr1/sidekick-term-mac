@@ -144,9 +144,11 @@ class MainWindowController: NSWindowController {
     private var sessionSaveTimer: Timer?
     /// Last session state written, to skip identical autosave writes.
     private var lastSavedSession: SessionState?
-    /// Pending hook diff approvals, shown one sheet at a time.
-    private var diffApprovalQueue: [(path: String, old: String, new: String, completion: (Bool) -> Void)] = []
-    private var activeDiffApproval: DiffApprovalPanel?
+    /// Owns IPC command translation and the hook diff-approval queue.
+    private var automationCoordinator: AutomationCoordinator!
+    /// Per-session "auto-approve agent edits" toggle (menu-driven). Layered on
+    /// top of the `[approval]` config mode; resets on relaunch.
+    private var sessionAutoApproveEdits = false
 
     convenience init() {
         print("🏗️ Creating MainWindowController...")
@@ -251,24 +253,9 @@ class MainWindowController: NSWindowController {
     @objc private func windowWillClose() {
         saveSession()
 
-        // Don't strand hook processes blocked on approval: reject anything
-        // pending so their IPC responses are sent and sockets closed.
-        activeDiffApproval?.cancel()
-        activeDiffApproval = nil
-        drainDiffApprovalQueue()
-    }
-
-    /// Resolves every queued approval when there is no window to review in
-    /// (app closing, or a diff arrived while the window was hidden). These
-    /// fail OPEN — allowing the edit — to match the hook's own contract that
-    /// an unavailable Sidekick lets edits through, rather than silently
-    /// blocking an agent's work because the reviewer wasn't on screen.
-    private func drainDiffApprovalQueue() {
-        let pending = diffApprovalQueue
-        diffApprovalQueue.removeAll()
-        for request in pending {
-            request.completion(true)
-        }
+        // Don't strand hook processes blocked on approval: let the coordinator
+        // cancel the visible sheet and resolve the queue.
+        automationCoordinator?.prepareForWindowClose()
     }
 
     private func setupUI() {
@@ -1351,7 +1338,8 @@ extension MainWindowController: SidebarContainerDelegate {
     }
 
     private func setupIPC() {
-        IPCServer.shared.delegate = self
+        automationCoordinator = AutomationCoordinator(host: self)
+        IPCServer.shared.delegate = automationCoordinator
         IPCServer.shared.start()
     }
 }
@@ -1608,69 +1596,6 @@ private final class SidebarResizeHandle: NSView {
     }
 }
 
-// MARK: - Automation
-
-private extension MainWindowController {
-    func automationPane(id: UUID) -> (tab: TabModel, pane: PaneModel, controller: PaneSplitController)? {
-        for tab in tabs {
-            guard let pane = tab.panes.first(where: { $0.id == id }),
-                  let controller = tabSplitControllers[tab.id] else { continue }
-            return (tab, pane, controller)
-        }
-        return nil
-    }
-
-    func automationPaneInfo(tab: TabModel, pane: PaneModel, controller: PaneSplitController) -> IPCPaneInfo {
-        let type: String
-        switch pane.paneType {
-        case .terminal: type = "terminal"
-        case .editor: type = "editor"
-        case .diff: type = "diff"
-        case .uncommittedChanges: type = "uncommitted_changes"
-        case .browser: type = "browser"
-        }
-        let pid = pane.terminalViewController?.shellProcessID ?? 0
-        return IPCPaneInfo(
-            paneID: pane.id.uuidString.lowercased(),
-            tabID: tab.id.uuidString.lowercased(),
-            type: type,
-            cwd: pane.resolvedWorkingDirectory(),
-            focused: controller.activePaneID == pane.id && tab.id == tabs[safe: activeTabIndex]?.id,
-            agentStatus: pane.agentState.rawValue,
-            processID: pid > 0 ? Int32(pid) : nil
-        )
-    }
-
-    func allAutomationPaneInfo() -> [IPCPaneInfo] {
-        tabs.flatMap { tab -> [IPCPaneInfo] in
-            guard let controller = tabSplitControllers[tab.id] else { return [] }
-            return tab.panes.map { automationPaneInfo(tab: tab, pane: $0, controller: controller) }
-        }
-    }
-
-    func waitForAutomationCondition(
-        timeoutMS: Int,
-        condition: @escaping () -> Bool,
-        completion: @escaping (Bool) -> Void
-    ) {
-        if condition() {
-            completion(true)
-            return
-        }
-        let deadline = Date().addingTimeInterval(Double(timeoutMS) / 1000)
-        var timer: Timer?
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            if condition() {
-                timer?.invalidate()
-                completion(true)
-            } else if Date() >= deadline {
-                timer?.invalidate()
-                completion(false)
-            }
-        }
-    }
-}
-
 // MARK: - NSWindowDelegate
 extension MainWindowController: NSWindowDelegate {
     /// Veto a close-button close while agents are working, so the window (and
@@ -1681,202 +1606,37 @@ extension MainWindowController: NSWindowDelegate {
     }
 }
 
-// MARK: - IPCServerDelegate
-extension MainWindowController: IPCServerDelegate {
-    func ipcServer(
-        _ server: IPCServer,
-        didReceiveCommand command: IPCCommandType,
-        completion: @escaping (IPCResponse) -> Void
-    ) {
-        switch command {
-        case .ping:
-            completion(IPCResponse(ok: true))
+// MARK: - AutomationHost
+extension MainWindowController: AutomationHost {
+    var automationTabs: [TabModel] { tabs }
+    var activeAutomationTabID: UUID? { tabs[safe: activeTabIndex]?.id }
+    var automationWindow: NSWindow? { window }
 
-        case .newTab(let cwd):
-            createNewTab(workingDirectory: cwd)
-            completion(IPCResponse(ok: true))
-
-        case .showDiff(let path, let old, let new):
-            if old.isEmpty && new.isEmpty {
-                // `sidekick-ctl open-diff <file>`: just view the file.
-                openFileInEditor(URL(fileURLWithPath: path))
-                completion(IPCResponse(ok: true))
-            } else {
-                // Hook approval: hold the response until the user decides.
-                enqueueDiffApproval(path: path, old: old, new: new) { accepted in
-                    completion(IPCResponse(ok: true, accepted: accepted))
-                }
-            }
-
-        case .agentReady:
-            setActiveTabAgentState(.ready)
-            completion(IPCResponse(ok: true))
-
-        case .agentBusy:
-            setActiveTabAgentState(.working)
-            completion(IPCResponse(ok: true))
-
-        case .agentDone:
-            setActiveTabAgentState(.done)
-            completion(IPCResponse(ok: true))
-
-        case .agentIdle:
-            setActiveTabAgentState(.idle)
-            completion(IPCResponse(ok: true))
-
-        case .paneList:
-            completion(IPCResponse(result: IPCResult(panes: allAutomationPaneInfo())))
-
-        case .paneCurrent(let requestedPaneID):
-            let context: (tab: TabModel, pane: PaneModel, controller: PaneSplitController)?
-            if let requestedPaneID {
-                context = automationPane(id: requestedPaneID)
-            } else if let tab = tabs[safe: activeTabIndex],
-                      let pane = tab.activePane,
-                      let controller = tabSplitControllers[tab.id] {
-                context = (tab, pane, controller)
-            } else {
-                context = nil
-            }
-            guard let context else {
-                completion(IPCResponse(ok: false, error: "Pane not found"))
-                return
-            }
-            completion(IPCResponse(result: IPCResult(
-                pane: automationPaneInfo(tab: context.tab, pane: context.pane, controller: context.controller)
-            )))
-
-        case .paneSplit(let paneID, let direction, let cwd, let command, let focus):
-            guard let context = automationPane(id: paneID) else {
-                completion(IPCResponse(ok: false, error: "Pane not found"))
-                return
-            }
-            guard let pane = context.controller.splitPane(
-                direction: direction,
-                targetPaneID: paneID,
-                initialDirectory: cwd,
-                command: command,
-                focus: focus
-            ) else {
-                completion(IPCResponse(ok: false, error: "Unable to split pane (the tab may be at its pane limit)"))
-                return
-            }
-            completion(IPCResponse(result: IPCResult(
-                pane: automationPaneInfo(tab: context.tab, pane: pane, controller: context.controller)
-            )))
-
-        case .paneFocus(let paneID):
-            guard let context = automationPane(id: paneID), context.controller.focusPane(id: paneID) else {
-                completion(IPCResponse(ok: false, error: "Pane not found"))
-                return
-            }
-            completion(IPCResponse(result: IPCResult(
-                pane: automationPaneInfo(tab: context.tab, pane: context.pane, controller: context.controller)
-            )))
-
-        case .paneClose(let paneID):
-            guard let context = automationPane(id: paneID), context.controller.closePane(id: paneID) else {
-                completion(IPCResponse(ok: false, error: "Pane not found or cannot close the last pane"))
-                return
-            }
-            completion(IPCResponse())
-
-        case .paneSendText(let paneID, let text):
-            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
-                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
-                return
-            }
-            terminal.send(text: text)
-            completion(IPCResponse())
-
-        case .paneSendKey(let paneID, let key):
-            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
-                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
-                return
-            }
-            guard terminal.send(key: key) else {
-                completion(IPCResponse(ok: false, error: "Unsupported key: \(key)"))
-                return
-            }
-            completion(IPCResponse())
-
-        case .paneRead(let paneID, let source, let lines, let json):
-            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
-                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
-                return
-            }
-            if json {
-                let records = terminal.recentCommandRecords(limit: lines).map {
-                    IPCCommandRecord(command: $0.command, exitCode: $0.exitCode, duration: $0.duration, output: $0.output)
-                }
-                completion(IPCResponse(result: IPCResult(commands: records)))
-            } else {
-                let text = source == "recent"
-                    ? terminal.recentOutputText(lineLimit: lines)
-                    : terminal.visibleScreenText(lineLimit: lines)
-                completion(IPCResponse(result: IPCResult(text: text)))
-            }
-
-        case .waitAgentStatus(let paneID, let status, let timeoutMS):
-            guard automationPane(id: paneID) != nil else {
-                completion(IPCResponse(ok: false, error: "Pane not found"))
-                return
-            }
-            waitForAutomationCondition(timeoutMS: timeoutMS, condition: { [weak self] in
-                self?.automationPane(id: paneID)?.pane.agentState == status
-            }) { matched in
-                completion(IPCResponse(result: IPCResult(matched: matched)))
-            }
-
-        case .waitOutput(let paneID, let match, let timeoutMS):
-            guard automationPane(id: paneID)?.pane.terminalViewController != nil else {
-                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
-                return
-            }
-            waitForAutomationCondition(timeoutMS: timeoutMS, condition: { [weak self] in
-                guard let terminal = self?.automationPane(id: paneID)?.pane.terminalViewController else { return false }
-                return terminal.recentOutputText().contains(match) || terminal.visibleScreenText().contains(match)
-            }) { matched in
-                completion(IPCResponse(result: IPCResult(matched: matched)))
-            }
-        }
+    /// Effective auto-approve: the session toggle OR the config mode.
+    var shouldAutoApproveEdits: Bool {
+        sessionAutoApproveEdits || (config.approval?.autoApprove ?? false)
     }
 
-    private func setActiveTabAgentState(_ state: AgentState) {
+    /// Flips the per-session auto-approve toggle. Menu-driven.
+    func toggleAutoApproveEdits() {
+        sessionAutoApproveEdits.toggle()
+    }
+
+    func automationSplitController(forTab tabID: UUID) -> PaneSplitController? {
+        tabSplitControllers[tabID]
+    }
+
+    func automationCreateNewTab(workingDirectory: String?) {
+        createNewTab(workingDirectory: workingDirectory)
+    }
+
+    func automationOpenFile(_ url: URL) {
+        openFileInEditor(url)
+    }
+
+    func automationSetActiveTabAgentState(_ state: AgentState) {
         guard let tab = tabs[safe: activeTabIndex] else { return }
         applyAgentState(state, to: tab)
-    }
-
-    // MARK: - Hook diff approval
-
-    private func enqueueDiffApproval(
-        path: String,
-        old: String,
-        new: String,
-        completion: @escaping (Bool) -> Void
-    ) {
-        diffApprovalQueue.append((path: path, old: old, new: new, completion: completion))
-        presentNextDiffApprovalIfIdle()
-    }
-
-    private func presentNextDiffApprovalIfIdle() {
-        guard activeDiffApproval == nil, !diffApprovalQueue.isEmpty else { return }
-
-        // No window to attach a sheet to: reject rather than leave the hook
-        // blocked and the queue wedged.
-        guard let window = window, window.isVisible else {
-            drainDiffApprovalQueue()
-            return
-        }
-
-        let request = diffApprovalQueue.removeFirst()
-        let panel = DiffApprovalPanel()
-        activeDiffApproval = panel
-        panel.show(relativeTo: window, path: request.path, old: request.old, new: request.new) { [weak self] accepted in
-            request.completion(accepted)
-            self?.activeDiffApproval = nil
-            self?.presentNextDiffApprovalIfIdle()
-        }
     }
 }
 
