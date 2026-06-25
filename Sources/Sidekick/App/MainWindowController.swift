@@ -151,11 +151,11 @@ class MainWindowController: NSWindowController {
     private var sessionAutoApproveEdits = false
 
     convenience init() {
-        print("🏗️ Creating MainWindowController...")
+        Log.debug("🏗️ Creating MainWindowController...", category: "app")
 
         let config = Config.load()
         Theme.shared.loadFromConfig(config)
-        print("✅ Config loaded")
+        Log.debug("✅ Config loaded", category: "app")
 
         let window = MainWindow(
             contentRect: NSRect(x: 100, y: 100, width: 1200, height: 800),
@@ -163,7 +163,7 @@ class MainWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        print("✅ NSWindow created")
+        Log.debug("✅ NSWindow created", category: "app")
 
         window.title = "Sidekick"
         window.setFrameAutosaveName("MainWindow")
@@ -179,17 +179,17 @@ class MainWindowController: NSWindowController {
 
         window.center()
         window.makeKeyAndOrderFront(nil)
-        print("✅ Window configured")
+        Log.debug("✅ Window configured", category: "app")
 
         self.init(window: window)
         self.config = config
-        print("✅ WindowController initialized")
+        Log.debug("✅ WindowController initialized", category: "app")
 
         setupUI()
-        print("✅ UI setup completed")
+        Log.debug("✅ UI setup completed", category: "app")
 
         setupIPC()
-        print("✅ IPC server started")
+        Log.debug("✅ IPC server started", category: "app")
 
         setupConfigWatcher()
         setupSessionPersistence()
@@ -198,7 +198,7 @@ class MainWindowController: NSWindowController {
     private func setupConfigWatcher() {
         configWatcher.onChange = { [weak self] in
             guard let self = self else { return }
-            print("🔄 Config file changed on disk, reloading")
+            Log.debug("🔄 Config file changed on disk, reloading", category: "app")
             let newConfig = Config.load()
             Theme.shared.loadFromConfig(newConfig)
             self.applyRuntimeConfig(newConfig)
@@ -327,7 +327,7 @@ class MainWindowController: NSWindowController {
             return
         }
 
-        print("📦 Restoring session with \(restorable.count) tab(s)")
+        Log.debug("📦 Restoring session with \(restorable.count) tab(s)", category: "app")
         for tabState in restorable.prefix(Limits.maxTabs) {
             restoreTab(from: tabState)
         }
@@ -890,7 +890,7 @@ class MainWindowController: NSWindowController {
         guard index >= 0 && index < tabs.count else { return }
         guard index != activeTabIndex else { return } // Already on this tab
 
-        print("🔄 Switching from tab \(activeTabIndex) to tab \(index)")
+        Log.debug("🔄 Switching from tab \(activeTabIndex) to tab \(index)", category: "app")
 
         // Detach current tab's split controller
         if let currentController = currentPaneSplitController {
@@ -1063,7 +1063,7 @@ extension MainWindowController: SidebarContainerDelegate {
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL) {
-        print("📂 Sidebar requested to open file: \(url.path)")
+        Log.debug("📂 Sidebar requested to open file: \(url.path)", category: "app")
 
         if config.editor?.fileOpenMode == "builtin" {
             openFileInEditor(url)
@@ -1124,7 +1124,7 @@ extension MainWindowController: SidebarContainerDelegate {
         guard let currentTab = tabs[safe: activeTabIndex] else { return }
 
         let editorPane = PaneFactory.editorPane(for: url, line: line, searchTerm: searchTerm)
-        currentTab.addPane(editorPane, splitDirection: .horizontal)
+        currentTab.addPane(editorPane)
         currentTab.activePaneIndex = currentTab.panes.count - 1
         currentPaneSplitController?.rebuildSplitView(for: currentTab)
         currentPaneSplitController?.setActivePane(index: currentTab.activePaneIndex)
@@ -1287,7 +1287,7 @@ extension MainWindowController: SidebarContainerDelegate {
         let configPath = "~/.config/sidekick/config.toml"
         let command = "\(editor) \(configPath)"
 
-        print("📝 Opening config file with command: \(command)")
+        Log.debug("📝 Opening config file with command: \(command)", category: "app")
 
         // Make sure window is focused
         window?.makeKeyAndOrderFront(nil)
@@ -1310,7 +1310,7 @@ extension MainWindowController: SidebarContainerDelegate {
 
         guard let pane = editorPane,
               let editor = pane.editorViewController else {
-            print("💾 No active editor pane to save")
+            Log.debug("💾 No active editor pane to save", category: "app")
             return
         }
 
@@ -1329,7 +1329,7 @@ extension MainWindowController: SidebarContainerDelegate {
         guard let activeTab = tabs[safe: activeTabIndex],
               let terminalPane = activeTab.panes.first(where: { $0.terminalViewController != nil }),
               let terminalVC = terminalPane.terminalViewController else {
-            print("❌ No terminal pane found in active tab!")
+            Log.error("❌ No terminal pane found in active tab!", category: "app")
             return nil
         }
 
@@ -1415,7 +1415,7 @@ extension MainWindowController {
         do {
             url = try ImagePasteStore.store(png: png)
         } catch {
-            print("📋 Failed to write pasted image: \(error)")
+            Log.debug("📋 Failed to write pasted image: \(error)", category: "app")
             return false
         }
 
@@ -1548,14 +1548,14 @@ extension MainWindowController {
     }
 
     func splitWithBrowser() {
-        print("🌐 MainWindowController: splitWithBrowser called")
+        Log.debug("🌐 MainWindowController: splitWithBrowser called", category: "app")
         currentPaneSplitController?.splitWithBrowser(direction: .horizontal)
     }
 
     func showKeyboardShortcuts() {
         // Show keyboard shortcuts help
         // For now, this is a placeholder - could show a panel with shortcuts
-        print("⌨️ Keyboard shortcuts requested")
+        Log.debug("⌨️ Keyboard shortcuts requested", category: "app")
     }
 
     private func updateSidebarLayout() {
@@ -1615,6 +1615,12 @@ extension MainWindowController: AutomationHost {
     /// Effective auto-approve: the session toggle OR the config mode.
     var shouldAutoApproveEdits: Bool {
         sessionAutoApproveEdits || (config.approval?.autoApprove ?? false)
+    }
+
+    /// The active approval config (defaults when the section is absent), used
+    /// for the auto_allow / always_ask glob rules.
+    var approvalConfig: ApprovalConfig {
+        config.approval ?? ApprovalConfig()
     }
 
     /// Flips the per-session auto-approve toggle. Menu-driven.

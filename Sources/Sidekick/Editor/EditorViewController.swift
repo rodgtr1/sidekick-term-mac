@@ -28,18 +28,18 @@ class EditorViewController: NSViewController {
     }
 
     override func loadView() {
-        print("📝 EditorViewController loadView() called")
+        Log.debug("📝 EditorViewController loadView() called", category: "editor")
         view = NSView()
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        print("📝 EditorViewController viewDidLoad() called")
+        Log.debug("📝 EditorViewController viewDidLoad() called", category: "editor")
         setupTextView()
     }
 
     private func setupTextView() {
-        print("📝 EditorViewController setupTextView() called")
+        Log.debug("📝 EditorViewController setupTextView() called", category: "editor")
 
         // Load config
         let config = Config.load()
@@ -221,7 +221,7 @@ class EditorViewController: NSViewController {
     }
 
     func openFile(_ url: URL) {
-        print("📝 EditorViewController openFile() called with: \(url.path)")
+        Log.debug("📝 EditorViewController openFile() called with: \(url.path)", category: "editor")
         // Check file size limit
         if Limits.isFileTooLarge(path: url.path) {
             showError("File is too large to open (max \(Limits.maxFileSize / 1024 / 1024)MB)")

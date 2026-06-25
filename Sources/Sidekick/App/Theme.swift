@@ -178,7 +178,7 @@ class Theme {
             let url = URL(fileURLWithPath: dir).appendingPathComponent(file)
             guard let data = try? Data(contentsOf: url),
                   let theme = try? decoder.decode(ThemeDefinition.self, from: data) else {
-                print("⚠️ Skipping unreadable theme file: \(file)")
+                Log.error("⚠️ Skipping unreadable theme file: \(file)", category: "theme")
                 continue
             }
             // Don't let a user file shadow a built-in name.

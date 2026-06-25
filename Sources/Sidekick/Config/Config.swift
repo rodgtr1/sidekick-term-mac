@@ -46,7 +46,7 @@ public struct Config: Codable {
             let toml = try TOMLTable(string: tomlString)
             let decoder = TOMLDecoder()
             let config = try decoder.decode(Config.self, from: toml)
-            print("✅ Config loaded: font=\(config.font.family) size=\(config.font.size) opacity=\(config.window.opacity)")
+            Log.debug("✅ Config loaded: font=\(config.font.family) size=\(config.font.size) opacity=\(config.window.opacity)", category: "config")
             return config
         } catch {
             Log.error("Failed to parse config: \(error)", category: "config")
@@ -56,82 +56,119 @@ public struct Config: Codable {
 
     private static func createDefaultConfig(at url: URL) {
         let defaultConfig = """
+# Sidekick configuration — ~/.config/sidekick/config.toml
+#
+# Every key is listed with its default value and valid choices. To change a
+# setting, edit the VALUE here, then relaunch Sidekick (most apply live).
+# Enum-like fields fall back to a default when given an unrecognized value
+# (noted per field).
+#
+# NOTE: the [font], [cursor], [window], [shell], and [diff] keys are REQUIRED —
+# commenting one out makes the whole file fail to parse and Sidekick silently
+# falls back to its built-in defaults (Menlo, size 13). The other sections
+# tolerate missing keys. Either way, prefer editing values in place.
+#
+# Editing settings in the in-app Preferences panel rewrites this file and strips
+# these comments, so prefer editing here directly.
+
 [theme]
-# Themes: catppuccin-mocha (dark), catppuccin-latte (light), or "auto" to
-# follow the macOS light/dark setting. Drop custom palettes (same JSON schema)
-# into ~/.config/sidekick/themes/ to add your own.
+# name: "catppuccin-mocha" (dark; also the fallback for unknown names),
+#   "catppuccin-latte" (light), "min-light" (light), or "auto" to follow the
+#   macOS light/dark setting. Drop custom *.json palettes into
+#   ~/.config/sidekick/themes/ and reference one by name here.
 name = "catppuccin-mocha"
 
 [font]
-# Font family — use any monospace font installed on your system
+# family: any monospace font installed on your system (free-form string).
 family = "Menlo"
-# Size in points
+# size: integer points.
 size = 13
-# Bold text uses bright palette colors (like most terminals)
+# bold_is_bright: true | false — bold text uses bright palette colors.
 bold_is_bright = true
 
 [cursor]
-# shape: block | ibeam | underline
+# shape: "block" | "ibeam" | "underline"
 shape = "block"
+# blink: true | false
 blink = true
 
 [window]
-# Inner padding around the terminal content (pixels)
+# padding: integer pixels of inset around the terminal content.
 padding = 8
-# Terminal background opacity: 0.0 (fully transparent) to 1.0 (fully opaque)
+# opacity: 0.0 (transparent) – 1.0 (opaque). Only visible when enable_blur = true.
 opacity = 0.9
-# Enable macOS background blur/vibrancy effect
+# enable_blur: true | false — translucent terminal with desktop blur behind.
 enable_blur = true
 
 [behavior]
-# Lines of scrollback (-1 for unlimited)
+# scrollback_lines: integer; -1 for unlimited.
 scrollback_lines = 10000
-# Scroll to bottom when new output appears
+# scroll_on_output: true | false — scroll to bottom when new output appears.
 scroll_on_output = false
-# Scroll to bottom when you type
+# scroll_on_keystroke: true | false — scroll to bottom when you type.
 scroll_on_keystroke = true
-# Clickable URLs
+# allow_hyperlinks: true | false — clickable URLs.
 allow_hyperlinks = true
-# Hide mouse cursor while typing
+# mouse_autohide: true | false — hide the mouse cursor while typing.
 mouse_autohide = true
+# audible_bell: true | false — play a sound on the terminal bell.
 audible_bell = false
-# Restore tabs and working directories from the previous session on launch
+# restore_session: true | false — restore tabs and working dirs on launch.
 restore_session = true
 
 [shell]
-# Shell program (leave empty to use $SHELL)
+# program: shell path (free-form); "" uses the $SHELL environment variable.
 program = ""
-# Shell arguments
+# args: array of strings passed to the shell, e.g. ["-l"].
 args = []
-# Default working directory (~ for home)
+# default_cwd: starting directory (free-form path); "~" expands to home.
 default_cwd = "~"
 
 [diff]
-# Number of context lines to show in diffs
+# context_lines: integer number of unchanged lines shown around each change.
 context_lines = 3
 
 [editor]
-# File tree open mode: terminal | builtin
-# terminal opens files in $EDITOR or nvim inside the active terminal.
-# builtin opens files in Sidekick's editor pane with syntax highlighting.
+# file_open_mode: "terminal" (open files in $EDITOR/nvim in the terminal) |
+#   "builtin" (Sidekick's editor pane with syntax highlighting). Unrecognized
+#   values fall back to "terminal".
 file_open_mode = "terminal"
-# Wrap long lines in the editor (true = word wrap, false = horizontal scroll)
+# word_wrap: true (wrap long lines) | false (horizontal scroll).
 word_wrap = true
-# Built-in editor text size in points
+# font_size: integer points for the built-in editor.
 font_size = 13
-# Show hidden files and gitignored files in the file tree (rendered dimmed)
+# font_family: editor font name (free-form); "" uses the system monospace font.
+font_family = ""
+# show_hidden_files: true | false — show hidden/gitignored files (dimmed).
 show_hidden_files = false
 
 [hosts]
-# Show Teleport nodes (from `tsh ls`) in the Hosts sidebar panel
+# show_teleport: true | false — show Teleport nodes (from `tsh ls`) in the
+#   Hosts sidebar panel.
 show_teleport = false
 
 [approval]
-# How agent edits (the Write/Edit/MultiEdit hook) are reviewed:
-#   "ask"  — show a review popup for every edit (default)
+# mode: how agent edits (the Write/Edit/MultiEdit PreToolUse hook) are reviewed:
+#   "ask"  — show Sidekick's diff-approval popup for every edit (default)
 #   "auto" — approve edits silently, no popup
-# You can also toggle this per session from the menu: Auto-approve Agent Edits.
+#   Unrecognized values fall back to "ask". Applies live (no relaunch needed).
+#   Also toggle per session from the menu — View ▸ Auto-approve Agent Edits
+#   (⇧⌘A); the menu reflects the effective state and resets on relaunch.
 mode = "ask"
+# Glob rules layered on top of `mode`, matched against each edited file path.
+# Patterns match anywhere in the path on a "/" boundary unless they start with
+# "/" (absolute) or "~". Wildcards: "*" stays within one path segment, "**"
+# spans directories, "?" matches one character. Both default to [] (no rules).
+#
+# auto_allow: approve these silently EVEN WHEN mode = "ask". No effect under
+#   "auto" (everything is already auto-approved). Example:
+#     auto_allow = ["Sources/**", "docs/**"]
+auto_allow = []
+# always_ask: ALWAYS show the popup for these, even under "auto" or after an
+#   in-popup "Approve & remember" grant. Highest precedence — good for secrets.
+#   Example:
+#     always_ask = [".env", "**/secrets/**", "*.pem"]
+always_ask = []
 """
 
         // Create directory if needed
@@ -277,18 +314,32 @@ public struct ApprovalConfig: Codable {
     /// "auto" — allow edits without prompting.
     public var mode: String
 
+    /// Globs whose edits are approved silently even while `mode = "ask"`.
+    /// e.g. `["Sources/**"]`. Matched anywhere in the path tree.
+    public var autoAllow: [String]
+
+    /// Globs that always show the review panel, even in `mode = "auto"` or
+    /// after an "approve & remember" grant. A security override, e.g. `[".env"]`.
+    public var alwaysAsk: [String]
+
     enum CodingKeys: String, CodingKey {
         case mode
+        case autoAllow = "auto_allow"
+        case alwaysAsk = "always_ask"
     }
 
     public init() {
         self.mode = "ask"
+        self.autoAllow = []
+        self.alwaysAsk = []
     }
 
     public init(from decoder: Decoder) throws {
         self.init()
         let container = try decoder.container(keyedBy: CodingKeys.self)
         mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? mode
+        autoAllow = try container.decodeIfPresent([String].self, forKey: .autoAllow) ?? autoAllow
+        alwaysAsk = try container.decodeIfPresent([String].self, forKey: .alwaysAsk) ?? alwaysAsk
     }
 
     /// True when edits should be approved without a popup.

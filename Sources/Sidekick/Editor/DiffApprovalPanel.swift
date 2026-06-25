@@ -4,16 +4,25 @@ import Cocoa
 /// hook) and asks the user to accept or reject it. The completion is held
 /// until the user decides, which in turn holds the hook's IPC response.
 final class DiffApprovalPanel {
-    private var completion: ((Bool) -> Void)?
+    private var completion: ((ApprovalOutcome) -> Void)?
     private var sheet: NSWindow?
     private weak var parentWindow: NSWindow?
+    private var rememberPopup: NSPopUpButton?
+
+    /// Menu order for the "remember" popup; index maps to `RememberScope`.
+    private static let rememberScopes: [(title: String, scope: RememberScope)] = [
+        ("Just this once", .none),
+        ("Remember this file", .file),
+        ("Remember this folder", .folder),
+        ("Auto-approve all this session", .session)
+    ]
 
     func show(
         relativeTo window: NSWindow,
         path: String,
         old: String,
         new: String,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping (ApprovalOutcome) -> Void
     ) {
         self.completion = completion
         self.parentWindow = window
@@ -84,9 +93,18 @@ final class DiffApprovalPanel {
         acceptButton.bezelStyle = .rounded
         acceptButton.translatesAutoresizingMaskIntoConstraints = false
 
+        let rememberPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for entry in Self.rememberScopes {
+            rememberPopup.addItem(withTitle: entry.title)
+        }
+        rememberPopup.toolTip = "Whether to keep approving similar edits for the rest of this session"
+        rememberPopup.translatesAutoresizingMaskIntoConstraints = false
+        self.rememberPopup = rememberPopup
+
         content.addSubview(titleLabel)
         content.addSubview(pathLabel)
         content.addSubview(scrollView)
+        content.addSubview(rememberPopup)
         content.addSubview(rejectButton)
         content.addSubview(acceptButton)
 
@@ -109,7 +127,11 @@ final class DiffApprovalPanel {
 
             rejectButton.trailingAnchor.constraint(equalTo: acceptButton.leadingAnchor, constant: -8),
             rejectButton.bottomAnchor.constraint(equalTo: acceptButton.bottomAnchor),
-            rejectButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 90)
+            rejectButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
+
+            rememberPopup.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            rememberPopup.centerYAnchor.constraint(equalTo: acceptButton.centerYAnchor),
+            rememberPopup.trailingAnchor.constraint(lessThanOrEqualTo: rejectButton.leadingAnchor, constant: -12)
         ])
 
         self.sheet = sheet
@@ -119,25 +141,26 @@ final class DiffApprovalPanel {
     }
 
     @objc private func acceptClicked() {
-        finish(accepted: true)
+        let scope = Self.rememberScopes[safe: rememberPopup?.indexOfSelectedItem ?? 0]?.scope ?? .none
+        finish(ApprovalOutcome(accepted: true, remember: scope))
     }
 
     @objc private func rejectClicked() {
-        finish(accepted: false)
+        finish(.rejected)
     }
 
     /// Tears the sheet down and reports rejection — used when the parent
     /// window closes so the held IPC completion is never stranded.
     func cancel() {
-        finish(accepted: false)
+        finish(.rejected)
     }
 
-    private func finish(accepted: Bool) {
+    private func finish(_ outcome: ApprovalOutcome) {
         if let sheet = sheet {
             parentWindow?.endSheet(sheet)
         }
         sheet = nil
-        completion?(accepted)
+        completion?(outcome)
         completion = nil
     }
 

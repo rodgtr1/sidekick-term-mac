@@ -380,7 +380,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private func setupTerminal() {
         let font = terminalFont(for: config)
 
-        print("🔤 Terminal font: \(font.fontName) size: \(font.pointSize)")
+        Log.debug("🔤 Terminal font: \(font.fontName) size: \(font.pointSize)", category: "terminal")
 
         let agentAwareTerminalView = AgentAwareTerminalView(frame: view.bounds)
         agentAwareTerminalView.onOutput = { [weak self] output in
@@ -1450,7 +1450,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     func applyConfig(_ newConfig: Config) {
-        print("🔄 Applying config to terminal: font=\(newConfig.font.family) size=\(newConfig.font.size) blur=\(newConfig.window.enableBlur)")
+        Log.debug("🔄 Applying config to terminal: font=\(newConfig.font.family) size=\(newConfig.font.size) blur=\(newConfig.window.enableBlur)", category: "terminal")
         self.config = newConfig
 
         // Update font (respecting the current app-wide zoom)
@@ -1476,7 +1476,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         if config.window.enableBlur {
             let alpha = CGFloat(max(0.0, min(1.0, config.window.opacity)))
-            print("🎨 Setting terminal background alpha to \(alpha)")
+            Log.debug("🎨 Setting terminal background alpha to \(alpha)", category: "terminal")
             let backgroundColor = baseColor.withAlphaComponent(alpha)
             view.layer?.backgroundColor = backgroundColor.cgColor
             view.layer?.isOpaque = false

@@ -16,7 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Set activation policy to regular app
         NSApp.setActivationPolicy(.regular)
-        print("✅ Activation policy set")
+        Log.debug("✅ Activation policy set", category: "app")
 
         // Keep the on-disk shell integration scripts in sync with this build
         ShellIntegration.installScripts()
@@ -27,24 +27,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         setupMenuBar()
-        print("✅ Menu bar setup completed")
+        Log.debug("✅ Menu bar setup completed", category: "app")
 
         mainWindowController = MainWindowController()
-        print("✅ MainWindowController created")
+        Log.debug("✅ MainWindowController created", category: "app")
 
         mainWindowController?.showWindow(nil)
-        print("✅ showWindow called")
+        Log.debug("✅ showWindow called", category: "app")
 
         // Ensure window is visible and in front
         if let window = mainWindowController?.window {
-            print("✅ Window exists: \(window)")
+            Log.debug("✅ Window exists: \(window)", category: "app")
             window.makeKeyAndOrderFront(nil)
             window.center()
             window.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
-            print("✅ Window visibility calls completed")
+            Log.debug("✅ Window visibility calls completed", category: "app")
         } else {
-            print("❌ Window is nil!")
+            Log.error("❌ Window is nil!", category: "app")
         }
     }
 
@@ -299,7 +299,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func editConfigFile() {
-        print("⌨️ editConfigFile action called")
+        Log.debug("⌨️ editConfigFile action called", category: "app")
         mainWindowController?.openConfigFile()
     }
 
@@ -316,7 +316,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func splitWithBrowser() {
-        print("🌐 AppDelegate: Split with Browser action called")
+        Log.debug("🌐 AppDelegate: Split with Browser action called", category: "app")
         mainWindowController?.splitWithBrowser()
     }
 

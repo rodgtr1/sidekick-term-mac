@@ -28,4 +28,21 @@ final class ApprovalConfigTests: XCTestCase {
     func testDefaultConfigDoesNotAutoApprove() {
         XCTAssertEqual(Config().approval?.autoApprove, false)
     }
+
+    func testGlobListsParse() throws {
+        let config = try approval(from: """
+        mode = "ask"
+        auto_allow = ["Sources/**", "docs/**"]
+        always_ask = [".env"]
+        """)
+        XCTAssertEqual(config.autoAllow, ["Sources/**", "docs/**"])
+        XCTAssertEqual(config.alwaysAsk, [".env"])
+    }
+
+    func testMissingGlobListsDefaultToEmpty() throws {
+        // Configs written before these keys existed must still parse.
+        let config = try approval(from: "mode = \"ask\"")
+        XCTAssertTrue(config.autoAllow.isEmpty)
+        XCTAssertTrue(config.alwaysAsk.isEmpty)
+    }
 }

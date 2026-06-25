@@ -43,7 +43,7 @@ class DiffViewController: NSViewController {
     }
 
     private func setupTextView() {
-        print("📝 DiffViewController: setupTextView called")
+        Log.debug("📝 DiffViewController: setupTextView called", category: "editor")
 
         scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -96,11 +96,11 @@ class DiffViewController: NSViewController {
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        print("📝 DiffViewController: setupTextView complete, view bounds: \(view.bounds)")
+        Log.debug("📝 DiffViewController: setupTextView complete, view bounds: \(view.bounds)", category: "editor")
     }
 
     func showDiff(for filePath: String, isInteractive: Bool = false) {
-        print("📝 DiffViewController: showDiff called for: \(filePath)")
+        Log.debug("📝 DiffViewController: showDiff called for: \(filePath)", category: "editor")
         self.filePath = filePath
         self.isInteractiveMode = isInteractive
 
@@ -108,10 +108,10 @@ class DiffViewController: NSViewController {
             DispatchQueue.main.async {
                 switch result {
                 case .success(let diffContent):
-                    print("📝 DiffViewController: Loaded diff content (\(diffContent.count) chars)")
+                    Log.debug("📝 DiffViewController: Loaded diff content (\(diffContent.count) chars)", category: "editor")
                     self?.displayDiff(diffContent)
                 case .failure(let error):
-                    print("❌ DiffViewController: Failed to load diff: \(error.localizedDescription)")
+                    Log.error("❌ DiffViewController: Failed to load diff: \(error.localizedDescription)", category: "diff")
                     self?.showError("Failed to load diff: \(error.localizedDescription)")
                 }
             }
@@ -119,19 +119,19 @@ class DiffViewController: NSViewController {
     }
 
     private func loadGitDiff(for filePath: String, completion: @escaping (Result<String, Error>) -> Void) {
-        print("📝 loadGitDiff: filePath = \(filePath)")
+        Log.debug("📝 loadGitDiff: filePath = \(filePath)", category: "editor")
 
         DispatchQueue.global(qos: .userInitiated).async { [gitService] in
             let gitRoot = gitService.repositoryRoot(from: filePath) ?? URL(fileURLWithPath: filePath).deletingLastPathComponent().path
-            print("📝 loadGitDiff: gitRoot = \(gitRoot)")
+            Log.debug("📝 loadGitDiff: gitRoot = \(gitRoot)", category: "editor")
 
             let workspace = WorkspaceContext(workingDirectory: gitRoot, repositoryRoot: gitRoot)
             let relativePath = workspace.relativePath(for: filePath)
-            print("📝 loadGitDiff: relativePath = \(relativePath)")
+            Log.debug("📝 loadGitDiff: relativePath = \(relativePath)", category: "editor")
 
             do {
                 let diff = try gitService.diff(relativePath: relativePath, repositoryRoot: gitRoot)
-                print("📝 loadGitDiff: git diff output length = \(diff.count)")
+                Log.debug("📝 loadGitDiff: git diff output length = \(diff.count)", category: "editor")
                 completion(.success(diff))
             } catch {
                 completion(.failure(error))
@@ -140,12 +140,12 @@ class DiffViewController: NSViewController {
     }
 
     private func displayDiff(_ content: String) {
-        print("📝 DiffViewController: displayDiff called with \(content.count) chars")
+        Log.debug("📝 DiffViewController: displayDiff called with \(content.count) chars", category: "editor")
         diffContent = content
         parseHunks()
 
         guard let textStorage = textView.textStorage else {
-            print("❌ DiffViewController: textStorage is nil!")
+            Log.error("❌ DiffViewController: textStorage is nil!", category: "diff")
             return
         }
 
@@ -163,10 +163,10 @@ class DiffViewController: NSViewController {
         let ext = (filePath as NSString?)?.pathExtension.lowercased() ?? ""
         textStorage.append(InlineDiffRenderer.render(content, fileExtension: ext))
 
-        print("📝 DiffViewController: Final textStorage length: \(textStorage.length)")
-        print("📝 DiffViewController: textView bounds: \(textView.bounds)")
-        print("📝 DiffViewController: textView isHidden: \(textView.isHidden)")
-        print("📝 DiffViewController: scrollView bounds: \(scrollView.bounds)")
+        Log.debug("📝 DiffViewController: Final textStorage length: \(textStorage.length)", category: "editor")
+        Log.debug("📝 DiffViewController: textView bounds: \(textView.bounds)", category: "editor")
+        Log.debug("📝 DiffViewController: textView isHidden: \(textView.isHidden)", category: "editor")
+        Log.debug("📝 DiffViewController: scrollView bounds: \(scrollView.bounds)", category: "editor")
 
         if isInteractiveMode {
             addHunkButtons()

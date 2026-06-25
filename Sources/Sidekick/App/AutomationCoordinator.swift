@@ -16,6 +16,9 @@ protocol AutomationHost: AnyObject {
     /// When true, hook edits are approved without a review popup — driven by the
     /// `[approval]` config mode and the per-session toggle.
     var shouldAutoApproveEdits: Bool { get }
+    /// The active `[approval]` config, supplying the auto_allow / always_ask
+    /// glob rules layered on top of `shouldAutoApproveEdits`.
+    var approvalConfig: ApprovalConfig { get }
 
     func automationSplitController(forTab tabID: UUID) -> PaneSplitController?
     func automationCreateNewTab(workingDirectory: String?)
@@ -33,6 +36,10 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     /// Pending hook diff approvals, shown one sheet at a time.
     private var diffApprovalQueue: [(path: String, old: String, new: String, completion: (Bool) -> Void)] = []
     private var activeDiffApproval: DiffApprovalPanel?
+
+    /// Session-scoped "approve & remember" grants from the review sheet. Reset
+    /// on relaunch, like the auto-approve menu toggle.
+    private var sessionApprovals = SessionApprovals()
 
     /// In-flight `wait agent-status` requests, resolved by the
     /// PaneAgentStateChanged push rather than a poll. Keyed by request id so a
@@ -272,8 +279,8 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
                 // `sidekick-ctl open-diff <file>`: just view the file.
                 host?.automationOpenFile(URL(fileURLWithPath: path))
                 completion(IPCResponse(ok: true))
-            } else if host?.shouldAutoApproveEdits == true {
-                // Auto-approve mode (config or session toggle): allow silently.
+            } else if approvalDecision(for: path) == .allow {
+                // Allowed silently by glob rule, "remember" grant, or auto mode.
                 emitDiffEvent(path: path, decision: "accepted")
                 completion(IPCResponse(ok: true, accepted: true))
             } else {
@@ -457,6 +464,19 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
 
     // MARK: - Hook diff approval
 
+    /// Resolves the approval policy for `path` against the config glob rules,
+    /// session "remember" grants, and the global auto toggle.
+    private func approvalDecision(for path: String) -> ApprovalPolicy.Decision {
+        let config = host?.approvalConfig ?? ApprovalConfig()
+        return ApprovalPolicy.decide(
+            path: path,
+            globalAuto: host?.shouldAutoApproveEdits ?? false,
+            autoAllow: config.autoAllow,
+            alwaysAsk: config.alwaysAsk,
+            session: sessionApprovals
+        )
+    }
+
     private func enqueueDiffApproval(
         path: String,
         old: String,
@@ -480,8 +500,13 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         let request = diffApprovalQueue.removeFirst()
         let panel = DiffApprovalPanel()
         activeDiffApproval = panel
-        panel.show(relativeTo: window, path: request.path, old: request.old, new: request.new) { [weak self] accepted in
-            request.completion(accepted)
+        panel.show(relativeTo: window, path: request.path, old: request.old, new: request.new) { [weak self] outcome in
+            // Record an "approve & remember" grant before resolving, so later
+            // edits in this batch already see it. always_ask still wins.
+            if outcome.accepted {
+                self?.sessionApprovals.record(outcome.remember, path: request.path)
+            }
+            request.completion(outcome.accepted)
             self?.activeDiffApproval = nil
             self?.presentNextDiffApprovalIfIdle()
         }

@@ -92,7 +92,7 @@ class PaneSplitController: NSViewController {
         container.onMouseDown = { [weak self] in
             guard let self = self else { return }
             if let index = self.panes.firstIndex(of: pane) {
-                print("🖱️ Clicked on pane \(index), making it active")
+                Log.debug("🖱️ Clicked on pane \(index), making it active", category: "panes")
                 self.setActivePane(index: index)
             }
         }
@@ -187,20 +187,20 @@ class PaneSplitController: NSViewController {
             targetIndex = activePaneIndex
         }
 
-        print("🔧 Splitting pane in \(direction) direction, current panes: \(panes.count)")
+        Log.debug("🔧 Splitting pane in \(direction) direction, current panes: \(panes.count)", category: "panes")
 
         let activePane = panes[targetIndex]
         guard let activePaneContainer = paneContainers[activePane],
               let parentSplit = findParentSplitView(for: activePane) else {
-            print("⚠️ Cannot find active pane container or parent split")
+            Log.error("⚠️ Cannot find active pane container or parent split", category: "panes")
             return nil
         }
 
-        print("🔧 Parent split isVertical: \(parentSplit.isVertical), arrangedSubviews: \(parentSplit.arrangedSubviews.count)")
+        Log.debug("🔧 Parent split isVertical: \(parentSplit.isVertical), arrangedSubviews: \(parentSplit.arrangedSubviews.count)", category: "panes")
 
         // Get the current directory from the active pane to use for the new terminal.
         let currentDirectory = initialDirectory ?? activePane.resolvedWorkingDirectory()
-        print("🔧 Starting new pane in directory: \(currentDirectory ?? "home")")
+        Log.debug("🔧 Starting new pane in directory: \(currentDirectory ?? "home")", category: "panes")
 
         let newPane = PaneModel()
         newPane.createTerminalViewController(
@@ -212,7 +212,7 @@ class PaneSplitController: NSViewController {
         delegate?.paneSplitController(self, didAddPane: newPane, at: panes.count - 1)
 
         guard let newPaneView = newPane.view else {
-            print("⚠️ New pane has no view!")
+            Log.error("⚠️ New pane has no view!", category: "panes")
             return nil
         }
 
@@ -222,42 +222,42 @@ class PaneSplitController: NSViewController {
         let needsVerticalSplit = (direction == .vertical) // top/bottom
         let parentIsVertical = parentSplit.isVertical
 
-        print("🔧 needsVerticalSplit: \(needsVerticalSplit), parentIsVertical: \(parentIsVertical)")
+        Log.debug("🔧 needsVerticalSplit: \(needsVerticalSplit), parentIsVertical: \(parentIsVertical)", category: "panes")
 
         // Check if we need to create a nested split view
         if (needsVerticalSplit && parentIsVertical) || (!needsVerticalSplit && !parentIsVertical) {
             // Parent orientation doesn't match - need nested split
-            print("🔧 Creating nested split view (nested will be vertical: \(!needsVerticalSplit))")
+            Log.debug("🔧 Creating nested split view (nested will be vertical: \(!needsVerticalSplit))", category: "panes")
 
             let nestedSplit = createSplitView(isVertical: !needsVerticalSplit)
             nestedSplit.translatesAutoresizingMaskIntoConstraints = false
 
             // Find the index of the active pane's container in parent
             guard let containerIndex = parentSplit.arrangedSubviews.firstIndex(of: activePaneContainer) else {
-                print("⚠️ Cannot find container index")
+                Log.error("⚠️ Cannot find container index", category: "panes")
                 return nil
             }
 
-            print("🔧 Container index in parent: \(containerIndex)")
-            print("🔧 Parent before removal has \(parentSplit.arrangedSubviews.count) subviews")
+            Log.debug("🔧 Container index in parent: \(containerIndex)", category: "panes")
+            Log.debug("🔧 Parent before removal has \(parentSplit.arrangedSubviews.count) subviews", category: "panes")
 
             // Remove active pane container from parent
             parentSplit.removeArrangedSubview(activePaneContainer)
             activePaneContainer.removeFromSuperview()
 
-            print("🔧 Parent after removal has \(parentSplit.arrangedSubviews.count) subviews")
+            Log.debug("🔧 Parent after removal has \(parentSplit.arrangedSubviews.count) subviews", category: "panes")
 
             // Add nested split at the same position
             parentSplit.insertArrangedSubview(nestedSplit, at: containerIndex)
 
-            print("🔧 Parent after inserting nested split has \(parentSplit.arrangedSubviews.count) subviews")
+            Log.debug("🔧 Parent after inserting nested split has \(parentSplit.arrangedSubviews.count) subviews", category: "panes")
 
             // Add both panes to the nested split
             nestedSplit.addArrangedSubview(activePaneContainer)
             nestedSplit.addArrangedSubview(newContainer)
 
-            print("🔧 Nested split now has \(nestedSplit.arrangedSubviews.count) subviews")
-            print("🔧 Total pane count: \(panes.count)")
+            Log.debug("🔧 Nested split now has \(nestedSplit.arrangedSubviews.count) subviews", category: "panes")
+            Log.debug("🔧 Total pane count: \(panes.count)", category: "panes")
 
             // Set 50/50 split after layout
             DispatchQueue.main.async { [weak nestedSplit, weak parentSplit] in
@@ -266,25 +266,25 @@ class PaneSplitController: NSViewController {
 
                 // Also redistribute the parent split to ensure it maintains proper spacing
                 if let parent = parentSplit {
-                    print("🔧 Redistributing parent split after nested split creation")
+                    Log.debug("🔧 Redistributing parent split after nested split creation", category: "panes")
                     SplitLayoutManager.distributeEvenly(in: parent)
                 }
             }
         } else {
             // Parent orientation matches - add to existing split
-            print("🔧 Adding to existing split view")
+            Log.debug("🔧 Adding to existing split view", category: "panes")
 
             guard let containerIndex = parentSplit.arrangedSubviews.firstIndex(of: activePaneContainer) else {
-                print("⚠️ Cannot find container index")
+                Log.error("⚠️ Cannot find container index", category: "panes")
                 return nil
             }
 
-            print("🔧 Inserting at index \(containerIndex + 1)")
+            Log.debug("🔧 Inserting at index \(containerIndex + 1)", category: "panes")
 
             // Insert new pane after the active pane
             parentSplit.insertArrangedSubview(newContainer, at: containerIndex + 1)
 
-            print("🔧 Parent now has \(parentSplit.arrangedSubviews.count) subviews")
+            Log.debug("🔧 Parent now has \(parentSplit.arrangedSubviews.count) subviews", category: "panes")
 
             // Redistribute space evenly after layout
             DispatchQueue.main.async { [weak parentSplit] in
@@ -301,18 +301,18 @@ class PaneSplitController: NSViewController {
     }
 
     func splitWithBrowser(direction: SplitDirection, initialURL: URL? = nil) {
-        print("🌐 splitWithBrowser called, current panes: \(panes.count), max: \(Limits.maxPanesPerTab)")
+        Log.debug("🌐 splitWithBrowser called, current panes: \(panes.count), max: \(Limits.maxPanesPerTab)", category: "panes")
         guard panes.count < Limits.maxPanesPerTab else {
-            print("⚠️ Max panes reached, not adding browser")
+            Log.error("⚠️ Max panes reached, not adding browser", category: "panes")
             return
         }
         guard activePaneIndex >= 0 && activePaneIndex < panes.count else { return }
 
-        print("🌐 Creating browser pane...")
+        Log.debug("🌐 Creating browser pane...", category: "panes")
         let activePane = panes[activePaneIndex]
         guard let activePaneContainer = paneContainers[activePane],
               let parentSplit = findParentSplitView(for: activePane) else {
-            print("⚠️ Cannot find active pane container or parent split")
+            Log.error("⚠️ Cannot find active pane container or parent split", category: "panes")
             return
         }
 
@@ -320,10 +320,10 @@ class PaneSplitController: NSViewController {
         newPane.createBrowserViewController(initialURL: initialURL)
         panes.append(newPane)
         delegate?.paneSplitController(self, didAddPane: newPane, at: panes.count - 1)
-        print("🌐 Browser pane created and added, total panes now: \(panes.count)")
+        Log.debug("🌐 Browser pane created and added, total panes now: \(panes.count)", category: "panes")
 
         guard let newPaneView = newPane.view else {
-            print("⚠️ New browser pane has no view!")
+            Log.error("⚠️ New browser pane has no view!", category: "panes")
             return
         }
 
@@ -335,13 +335,13 @@ class PaneSplitController: NSViewController {
 
         if (needsVerticalSplit && parentIsVertical) || (!needsVerticalSplit && !parentIsVertical) {
             // Need nested split
-            print("🌐 Creating nested split view for browser")
+            Log.debug("🌐 Creating nested split view for browser", category: "panes")
 
             let nestedSplit = createSplitView(isVertical: !needsVerticalSplit)
             nestedSplit.translatesAutoresizingMaskIntoConstraints = false
 
             guard let containerIndex = parentSplit.arrangedSubviews.firstIndex(of: activePaneContainer) else {
-                print("⚠️ Cannot find container index")
+                Log.error("⚠️ Cannot find container index", category: "panes")
                 return
             }
 
@@ -358,16 +358,16 @@ class PaneSplitController: NSViewController {
 
                 // Also redistribute the parent split to ensure it maintains proper spacing
                 if let parent = parentSplit {
-                    print("🌐 Redistributing parent split after nested browser split creation")
+                    Log.debug("🌐 Redistributing parent split after nested browser split creation", category: "panes")
                     SplitLayoutManager.distributeEvenly(in: parent)
                 }
             }
         } else {
             // Add to existing split
-            print("🌐 Adding browser to existing split view")
+            Log.debug("🌐 Adding browser to existing split view", category: "panes")
 
             guard let containerIndex = parentSplit.arrangedSubviews.firstIndex(of: activePaneContainer) else {
-                print("⚠️ Cannot find container index")
+                Log.error("⚠️ Cannot find container index", category: "panes")
                 return
             }
 
@@ -389,7 +389,7 @@ class PaneSplitController: NSViewController {
         let pane = panes[index]
         guard let container = paneContainers[pane],
               let parentSplit = findParentSplitView(for: pane) else {
-            print("⚠️ Cannot find pane container or parent split")
+            Log.error("⚠️ Cannot find pane container or parent split", category: "panes")
             return
         }
 
@@ -437,7 +437,7 @@ class PaneSplitController: NSViewController {
                 return
             }
 
-            print("🧹 Unwrapping single-child split view")
+            Log.debug("🧹 Unwrapping single-child split view", category: "panes")
 
             // Remove the child from this split
             splitView.removeArrangedSubview(onlyChild)
@@ -480,17 +480,17 @@ class PaneSplitController: NSViewController {
 
     func setActivePane(index: Int) {
         guard index >= 0 && index < panes.count else {
-            print("⚠️ setActivePane: invalid index \(index), pane count: \(panes.count)")
+            Log.error("⚠️ setActivePane: invalid index \(index), pane count: \(panes.count)", category: "panes")
             return
         }
 
-        print("🎯 setActivePane: changing from \(activePaneIndex) to \(index)")
+        Log.debug("🎯 setActivePane: changing from \(activePaneIndex) to \(index)", category: "panes")
 
         // Unfocus previous pane
         if activePaneIndex < panes.count {
             panes[activePaneIndex].unfocus()
             if let paneView = panes[activePaneIndex].view {
-                print("🎯 Removing active border from pane \(activePaneIndex)")
+                Log.debug("🎯 Removing active border from pane \(activePaneIndex)", category: "panes")
                 addPaneBorder(to: paneView, isActive: false)
             }
         }
@@ -499,7 +499,7 @@ class PaneSplitController: NSViewController {
         activePaneIndex = index
         panes[activePaneIndex].focus()
         if let paneView = panes[activePaneIndex].view {
-            print("🎯 Adding active border to pane \(index)")
+            Log.debug("🎯 Adding active border to pane \(index)", category: "panes")
             addPaneBorder(to: paneView, isActive: true)
         }
 
@@ -508,33 +508,33 @@ class PaneSplitController: NSViewController {
 
     func focusNextPane() {
         guard panes.count > 1 else {
-            print("⌨️ focusNextPane: only 1 pane, skipping")
+            Log.debug("⌨️ focusNextPane: only 1 pane, skipping", category: "panes")
             return
         }
         let nextIndex = (activePaneIndex + 1) % panes.count
-        print("⌨️ focusNextPane: moving from \(activePaneIndex) to \(nextIndex)")
+        Log.debug("⌨️ focusNextPane: moving from \(activePaneIndex) to \(nextIndex)", category: "panes")
         setActivePane(index: nextIndex)
     }
 
     func focusPreviousPane() {
         guard panes.count > 1 else {
-            print("⌨️ focusPreviousPane: only 1 pane, skipping")
+            Log.debug("⌨️ focusPreviousPane: only 1 pane, skipping", category: "panes")
             return
         }
         let prevIndex = (activePaneIndex - 1 + panes.count) % panes.count
-        print("⌨️ focusPreviousPane: moving from \(activePaneIndex) to \(prevIndex)")
+        Log.debug("⌨️ focusPreviousPane: moving from \(activePaneIndex) to \(prevIndex)", category: "panes")
         setActivePane(index: prevIndex)
     }
 
     private func addPaneBorder(to view: NSView, isActive: Bool) {
         // Remove existing border
         let existingBorders = view.subviews.filter { $0.identifier?.rawValue == "paneBorder" }
-        print("🖼️ addPaneBorder: removing \(existingBorders.count) existing borders, isActive: \(isActive)")
+        Log.debug("🖼️ addPaneBorder: removing \(existingBorders.count) existing borders, isActive: \(isActive)", category: "panes")
         existingBorders.forEach { $0.removeFromSuperview() }
 
         // Only add border if there are multiple panes
         guard panes.count > 1 else {
-            print("🖼️ Only one pane, skipping border")
+            Log.debug("🖼️ Only one pane, skipping border", category: "panes")
             return
         }
 
@@ -552,7 +552,7 @@ class PaneSplitController: NSViewController {
         borderView.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(borderView)
-        print("🖼️ Added \(isActive ? "active" : "inactive") border to view")
+        Log.debug("🖼️ Added \(isActive ? "active" : "inactive") border to view", category: "panes")
 
         NSLayoutConstraint.activate([
             borderView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -584,7 +584,7 @@ class PaneSplitController: NSViewController {
     }
 
     func rebuildSplitView(for tab: TabModel) {
-        print("🔧 rebuildSplitView called with \(tab.panes.count) panes")
+        Log.debug("🔧 rebuildSplitView called with \(tab.panes.count) panes", category: "panes")
 
         // Clear all existing content
         for arrangedSubview in rootSplitView.arrangedSubviews {
@@ -605,16 +605,16 @@ class PaneSplitController: NSViewController {
         // Add all pane views to root split view in a flat structure
         for (index, pane) in panes.enumerated() {
             if let paneView = pane.view {
-                print("🔧 Adding pane \(index) (\(pane.paneType)) to split view")
+                Log.debug("🔧 Adding pane \(index) (\(pane.paneType)) to split view", category: "panes")
                 let container = wrapPaneInContainer(pane, paneView: paneView)
                 rootSplitView.addArrangedSubview(container)
                 addPaneBorder(to: paneView, isActive: index == activePaneIndex)
             } else {
-                print("⚠️ Pane \(index) (\(pane.paneType)) has no view!")
+                Log.error("⚠️ Pane \(index) (\(pane.paneType)) has no view!", category: "panes")
             }
         }
 
-        print("🔧 Split view now has \(rootSplitView.arrangedSubviews.count) arranged subviews")
+        Log.debug("🔧 Split view now has \(rootSplitView.arrangedSubviews.count) arranged subviews", category: "panes")
         updatePaneCloseButtons()
 
         // Distribute evenly
@@ -670,12 +670,12 @@ class ClickableContainerView: NSView {
     }
 
     @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
-        print("🖱️ ClickableContainerView gesture recognizer triggered")
+        Log.debug("🖱️ ClickableContainerView gesture recognizer triggered", category: "panes")
         onMouseDown?()
     }
 
     override func mouseDown(with event: NSEvent) {
-        print("🖱️ ClickableContainerView mouseDown called")
+        Log.debug("🖱️ ClickableContainerView mouseDown called", category: "panes")
         onMouseDown?()
         super.mouseDown(with: event)
     }

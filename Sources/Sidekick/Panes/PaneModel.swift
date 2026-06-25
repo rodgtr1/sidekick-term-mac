@@ -60,21 +60,21 @@ class PaneModel: Identifiable, Hashable {
     }
 
     func createEditorViewController(for url: URL) {
-        print("🪟 PaneModel creating editor for: \(url.path)")
+        Log.debug("🪟 PaneModel creating editor for: \(url.path)", category: "panes")
         let editorVC = EditorViewController()
         self.editorViewController = editorVC
         self.currentDirectory = url.deletingLastPathComponent().path
 
         // Ensure view is loaded by accessing it
-        print("🪟 Accessing editor view...")
+        Log.debug("🪟 Accessing editor view...", category: "panes")
         _ = editorVC.view
 
         self.view = editorVC.view
         self.paneType = .editor
-        print("🪟 Editor view set, view size: \(editorVC.view.bounds)")
+        Log.debug("🪟 Editor view set, view size: \(editorVC.view.bounds)", category: "panes")
 
         // Open the file
-        print("🪟 Opening file in editor...")
+        Log.debug("🪟 Opening file in editor...", category: "panes")
         editorVC.openFile(url)
 
         // Update title based on filename
@@ -82,7 +82,7 @@ class PaneModel: Identifiable, Hashable {
 
         // Observe editor dirty state changes
         observeEditorDirtyState(editorVC)
-        print("🪟 Editor pane setup complete")
+        Log.debug("🪟 Editor pane setup complete", category: "panes")
     }
 
     private func observeEditorDirtyState(_ editorVC: EditorViewController) {
