@@ -34,6 +34,49 @@ final class AutomationIPCTests: XCTestCase {
         XCTAssertNil(IPCCommandType.from(command))
     }
 
+    func testPaneReadParsesJSONFormat() throws {
+        let paneID = UUID()
+        let json = """
+        {"action":"pane_read","pane_id":"\(paneID.uuidString)","format":"json","lines":20}
+        """
+        let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
+        guard case let .paneRead(decodedID, _, lines, isJSON) = IPCCommandType.from(command) else {
+            return XCTFail("Expected paneRead")
+        }
+        XCTAssertEqual(decodedID, paneID)
+        XCTAssertEqual(lines, 20)
+        XCTAssertTrue(isJSON)
+    }
+
+    func testPaneReadDefaultsToTextAndRejectsUnknownFormat() throws {
+        let paneID = UUID().uuidString
+        let textCommand = try JSONDecoder().decode(
+            IPCCommand.self, from: Data("""
+            {"action":"pane_read","pane_id":"\(paneID)"}
+            """.utf8))
+        guard case let .paneRead(_, _, _, isJSON) = IPCCommandType.from(textCommand) else {
+            return XCTFail("Expected paneRead")
+        }
+        XCTAssertFalse(isJSON)
+
+        let badCommand = try JSONDecoder().decode(
+            IPCCommand.self, from: Data("""
+            {"action":"pane_read","pane_id":"\(paneID)","format":"xml"}
+            """.utf8))
+        XCTAssertNil(IPCCommandType.from(badCommand))
+    }
+
+    func testCommandRecordUsesSnakeCaseJSONKeys() throws {
+        let record = IPCCommandRecord(command: "swift build", exitCode: 1, duration: 12.4, output: "error: …")
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any]
+        )
+        XCTAssertEqual(object["command"] as? String, "swift build")
+        XCTAssertEqual(object["exit_code"] as? Int, 1)
+        XCTAssertEqual(object["duration"] as? Double, 12.4)
+        XCTAssertNil(object["exitCode"])
+    }
+
     func testTabAgentStateAggregatesMostUrgentPane() {
         let tab = TabModel()
         let second = PaneModel()

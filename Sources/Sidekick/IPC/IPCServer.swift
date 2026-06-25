@@ -19,9 +19,10 @@ struct IPCCommand: Codable {
     let status: String?
     let match: String?
     let timeoutMS: Int?
+    let format: String?
 
     enum CodingKeys: String, CodingKey {
-        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match
+        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format
         case paneID = "pane_id"
         case timeoutMS = "timeout_ms"
     }
@@ -45,22 +46,38 @@ struct IPCPaneInfo: Codable {
     }
 }
 
+/// One finished shell command, returned by `pane_read` with `format: "json"`.
+struct IPCCommandRecord: Codable {
+    let command: String
+    let exitCode: Int
+    let duration: Double?
+    let output: String
+
+    enum CodingKeys: String, CodingKey {
+        case command, duration, output
+        case exitCode = "exit_code"
+    }
+}
+
 struct IPCResult: Codable {
     let panes: [IPCPaneInfo]?
     let pane: IPCPaneInfo?
     let text: String?
     let matched: Bool?
+    let commands: [IPCCommandRecord]?
 
     init(
         panes: [IPCPaneInfo]? = nil,
         pane: IPCPaneInfo? = nil,
         text: String? = nil,
-        matched: Bool? = nil
+        matched: Bool? = nil,
+        commands: [IPCCommandRecord]? = nil
     ) {
         self.panes = panes
         self.pane = pane
         self.text = text
         self.matched = matched
+        self.commands = commands
     }
 }
 
@@ -93,7 +110,7 @@ enum IPCCommandType {
     case paneClose(paneID: UUID)
     case paneSendText(paneID: UUID, text: String)
     case paneSendKey(paneID: UUID, key: String)
-    case paneRead(paneID: UUID, source: String, lines: Int?)
+    case paneRead(paneID: UUID, source: String, lines: Int?, json: Bool)
     case waitAgentStatus(paneID: UUID, status: AgentState, timeoutMS: Int)
     case waitOutput(paneID: UUID, match: String, timeoutMS: Int)
 
@@ -160,9 +177,11 @@ enum IPCCommandType {
         case "pane_read":
             guard let paneID = uuid(command.paneID) else { return nil }
             let source = command.source ?? "visible"
+            let format = command.format ?? "text"
             guard source == "visible" || source == "recent",
+                  format == "text" || format == "json",
                   command.lines.map({ (1...10_000).contains($0) }) ?? true else { return nil }
-            return .paneRead(paneID: paneID, source: source, lines: command.lines)
+            return .paneRead(paneID: paneID, source: source, lines: command.lines, json: format == "json")
         case "wait_agent_status":
             guard let paneID = uuid(command.paneID),
                   let rawStatus = command.status,

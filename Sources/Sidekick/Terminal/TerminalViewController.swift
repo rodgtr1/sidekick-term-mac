@@ -29,6 +29,19 @@ struct TerminalCommandStatus {
     }
 }
 
+/// A finished shell command captured from OSC 133 marks: the command line
+/// (carried base64-encoded in the `C` mark by the shell integration), its exit
+/// code and duration (from the `D` mark), and the ANSI-stripped output printed
+/// between the two marks. Output framing is approximate at the ~100ms
+/// detection-coalescing boundary, which is fine for agent legibility.
+struct TerminalCommandRecord {
+    let command: String
+    let exitCode: Int
+    let duration: TimeInterval?
+    let output: String
+    let finishedAt: Date
+}
+
 private final class AgentAwareTerminalView: LocalProcessTerminalView {
     var onOutput: ((String) -> Void)?
     var onInput: (() -> Void)?
@@ -125,6 +138,20 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var promptMarkRows: [Int] = []
     private static let maxPromptMarks = 500
 
+    // Per-command record capture (OSC 133 C..D windows), surfaced by
+    // `sidekick-ctl pane read --json` for agent-legible command history.
+    private struct InFlightCommand {
+        let command: String
+        let startDate: Date
+        var output: String = ""
+    }
+    private var inFlightCommand: InFlightCommand?
+    private var commandRecords: [TerminalCommandRecord] = []
+    private static let maxCommandRecords = 100
+    /// Raw output captured per command is bounded so a runaway log tail can't
+    /// grow this pane's memory without limit; the tail is what agents read.
+    private static let maxCommandOutputChars = 256_000
+
     private static let commandMarkRegex: NSRegularExpression? =
         try? NSRegularExpression(pattern: "\u{001B}\\]133;([A-Za-z])(?:;([^\u{001B}\u{0007}]*))?(?:\u{001B}\\\\|\u{0007})")
 
@@ -136,6 +163,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     private static let ansiEscapeRegex: NSRegularExpression? =
         try? NSRegularExpression(pattern: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]")
+
+    /// OSC sequences (ESC ] … BEL/ST) — cwd reports, title sets, and our own
+    /// 7/133/666 marks. Stripped from command records so the captured output
+    /// is the command's actual text, not control chatter.
+    private static let oscEscapeRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: "\u{001B}\\][^\u{0007}\u{001B}]*(?:\u{0007}|\u{001B}\\\\)")
 
     init(
         config: Config,
@@ -684,6 +717,15 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         if automationOutput.count > 64_000 {
             automationOutput = String(automationOutput.suffix(64_000))
         }
+
+        // While a command is running (between OSC 133 C and D), accumulate its
+        // output for the command-record history. ANSI is stripped at finalize.
+        if inFlightCommand != nil {
+            inFlightCommand!.output += output
+            if inFlightCommand!.output.count > Self.maxCommandOutputChars {
+                inFlightCommand!.output = String(inFlightCommand!.output.suffix(Self.maxCommandOutputChars))
+            }
+        }
     }
 
     private func detectAgentState(from output: String) {
@@ -942,13 +984,18 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
                 }
             }
         case "C":
-            // Command started — clear the previous command's status.
-            commandStartDate = Date()
+            // Command started — clear the previous command's status and begin
+            // capturing a new record. The shell integration carries the command
+            // line base64-encoded in the C parameter (`133;C;<base64>`).
+            let started = Date()
+            commandStartDate = started
+            inFlightCommand = InFlightCommand(command: Self.decodeCommandParameter(parameter), startDate: started)
             delegate?.terminalDidUpdateCommandStatus(self, status: nil)
         case "D":
             let exitCode = parameter.flatMap { Int($0) } ?? 0
             let duration = commandStartDate.map { Date().timeIntervalSince($0) }
             commandStartDate = nil
+            finalizeCommandRecord(exitCode: exitCode, duration: duration)
             delegate?.terminalDidUpdateCommandStatus(
                 self,
                 status: TerminalCommandStatus(exitCode: exitCode, duration: duration)
@@ -960,6 +1007,41 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         default:
             break
         }
+    }
+
+    /// Decodes the base64 command line carried in the OSC 133 `C` parameter.
+    /// Returns "" when absent (a shell whose integration predates this, or a
+    /// command with no captured line) so a record is still produced.
+    private static func decodeCommandParameter(_ parameter: String?) -> String {
+        guard let parameter, !parameter.isEmpty,
+              let data = Data(base64Encoded: parameter),
+              let text = String(data: data, encoding: .utf8) else { return "" }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func finalizeCommandRecord(exitCode: Int, duration: TimeInterval?) {
+        guard let inFlight = inFlightCommand else { return }
+        inFlightCommand = nil
+
+        let cleanOutput = stripANSIEscapes(stripOSCSequences(inFlight.output))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        commandRecords.append(TerminalCommandRecord(
+            command: inFlight.command,
+            exitCode: exitCode,
+            duration: duration,
+            output: cleanOutput,
+            finishedAt: Date()
+        ))
+        if commandRecords.count > Self.maxCommandRecords {
+            commandRecords.removeFirst(commandRecords.count - Self.maxCommandRecords)
+        }
+    }
+
+    /// The most recently finished commands (oldest first), capped to `limit`
+    /// when given. Surfaced over IPC for `sidekick-ctl pane read --json`.
+    func recentCommandRecords(limit: Int? = nil) -> [TerminalCommandRecord] {
+        guard let limit, limit > 0 else { return commandRecords }
+        return Array(commandRecords.suffix(limit))
     }
 
     /// The cursor's absolute row in the scrollback buffer, derived from
@@ -1072,6 +1154,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     private func stripANSIEscapes(_ output: String) -> String {
         guard let regex = Self.ansiEscapeRegex else { return output }
+        let range = NSRange(output.startIndex..<output.endIndex, in: output)
+        return regex.stringByReplacingMatches(in: output, range: range, withTemplate: "")
+    }
+
+    private func stripOSCSequences(_ output: String) -> String {
+        guard let regex = Self.oscEscapeRegex else { return output }
         let range = NSRange(output.startIndex..<output.endIndex, in: output)
         return regex.stringByReplacingMatches(in: output, range: range, withTemplate: "")
     }

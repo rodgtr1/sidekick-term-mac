@@ -77,7 +77,10 @@ __sidekick_report_cwd() {
 
 __sidekick_preexec() {
     typeset -g __SIDEKICK_COMMAND_RAN=1
-    printf '\e]133;C\e\\'
+    # Carry the command line, base64-encoded, in the C mark so Sidekick can
+    # report it in command records without re-scraping the prompt. tr -d '\n'
+    # guards against any line wrapping from base64.
+    printf '\e]133;C;%s\e\\' "$(printf '%s' "$1" | base64 | tr -d '\n')"
 }
 
 __sidekick_precmd() {
@@ -115,7 +118,8 @@ __sidekick_preexec() {
     [[ -n "$__SIDEKICK_AT_PROMPT" ]] || return 0
     unset __SIDEKICK_AT_PROMPT
     __SIDEKICK_COMMAND_RAN=1
-    printf '\e]133;C\e\\'
+    # Carry the command line, base64-encoded, in the C mark (see zsh note above).
+    printf '\e]133;C;%s\e\\' "$(printf '%s' "$BASH_COMMAND" | base64 | tr -d '\n')"
 }
 
 __sidekick_precmd() {

@@ -52,6 +52,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // ⌘Q path: the window is still open, so the close-button guard
+        // (windowShouldClose) hasn't run — confirm here if agents are busy.
+        // On the close-button path the window is already gone by now, so we
+        // skip the check to avoid prompting the user twice.
+        guard let controller = mainWindowController, controller.window?.isVisible == true else {
+            return .terminateNow
+        }
+        return controller.confirmCloseWithBusyAgents() ? .terminateNow : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         mainWindowController?.saveSession()
         IPCServer.shared.stop()

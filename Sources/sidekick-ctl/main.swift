@@ -23,9 +23,13 @@ struct SidekickCtl {
             if args.first == "ping" {
                 print("Sidekick is running")
             } else if args.prefix(2).elementsEqual(["pane", "read"]),
-                      let result = response["result"] as? [String: Any],
-                      let text = result["text"] as? String {
-                print(text)
+                      let result = response["result"] as? [String: Any] {
+                if let commands = result["commands"] {
+                    // `pane read --json`: emit the structured command records.
+                    printJSON(commands)
+                } else if let text = result["text"] as? String {
+                    print(text)
+                }
             } else if shouldPrintJSON(args) {
                 printJSON(response)
             } else if args.prefix(2).elementsEqual(["wait", "agent-status"])
@@ -132,6 +136,8 @@ struct SidekickCtl {
                     index += 1
                     guard index < args.count, let lines = Int(args[index]) else { throw CLIError("--lines requires an integer") }
                     request["lines"] = lines
+                case "--json":
+                    request["format"] = "json"
                 default:
                     throw CLIError("Unknown pane read option: \(args[index])")
                 }
@@ -186,7 +192,7 @@ struct SidekickCtl {
           pane split <pane-id> [--direction right|down] [--cwd dir] [--no-focus] [--exec command args...]
           pane focus|close <pane-id>
           pane send-text <pane-id> <text> | send-key <pane-id> <key> | run <pane-id> <command>
-          pane read <pane-id> [--source visible|recent] [--lines count]
+          pane read <pane-id> [--source visible|recent] [--lines count] [--json]
           wait agent-status <pane-id> <idle|working|ready|done> [--timeout ms]
           wait output <pane-id> <text> [--timeout ms]
         """)

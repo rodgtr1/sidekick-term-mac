@@ -66,6 +66,16 @@ sidekick-ctl pane read "$WORKER_PANE" --source visible --lines 60
 sidekick-ctl pane read "$WORKER_PANE" --source recent --lines 200
 ```
 
+For structured command history instead of a raw screen scrape, add `--json`. It
+returns recently finished commands in that pane as records — command line, exit
+code, duration, and output — which are easier to reason over than ANSI text.
+Requires the shell integration (it carries the command line in the OSC 133 marks):
+
+```sh
+sidekick-ctl pane read "$WORKER_PANE" --json --lines 20
+# [ { "command": "swift build", "exit_code": 1, "duration": 12.4, "output": "..." }, ... ]
+```
+
 Wait for future output or an agent state:
 
 ```sh

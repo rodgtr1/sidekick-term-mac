@@ -210,6 +210,9 @@ class MainWindowController: NSWindowController {
         }
 
         if let window = window {
+            // Become the window delegate so windowShouldClose can veto a close
+            // that would kill running agents (see the NSWindowDelegate extension).
+            window.delegate = self
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(windowWillClose),
@@ -217,6 +220,32 @@ class MainWindowController: NSWindowController {
                 object: window
             )
         }
+    }
+
+    /// Panes whose agent is actively running or waiting on the user — the
+    /// states whose work is lost by quitting. Drives the close confirmation.
+    private var busyAgentPaneCount: Int {
+        tabs.reduce(0) { count, tab in
+            count + tab.panes.filter { $0.agentState == .working || $0.agentState == .ready }.count
+        }
+    }
+
+    /// Returns true when it is safe to close/quit: nothing is busy, or the user
+    /// confirmed via the alert. Returns false to abort the close. Called from
+    /// both windowShouldClose (close button) and applicationShouldTerminate (⌘Q).
+    func confirmCloseWithBusyAgents() -> Bool {
+        let busy = busyAgentPaneCount
+        guard busy > 0 else { return true }
+
+        let alert = NSAlert()
+        alert.messageText = busy == 1 ? "An agent is still working" : "\(busy) agents are still working"
+        alert.informativeText = "Quitting Sidekick will end "
+            + (busy == 1 ? "this session" : "these sessions")
+            + " and any running commands. Quit anyway?"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Quit Anyway")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     @objc private func windowWillClose() {
@@ -229,11 +258,16 @@ class MainWindowController: NSWindowController {
         drainDiffApprovalQueue()
     }
 
+    /// Resolves every queued approval when there is no window to review in
+    /// (app closing, or a diff arrived while the window was hidden). These
+    /// fail OPEN — allowing the edit — to match the hook's own contract that
+    /// an unavailable Sidekick lets edits through, rather than silently
+    /// blocking an agent's work because the reviewer wasn't on screen.
     private func drainDiffApprovalQueue() {
         let pending = diffApprovalQueue
         diffApprovalQueue.removeAll()
         for request in pending {
-            request.completion(false)
+            request.completion(true)
         }
     }
 
@@ -1637,6 +1671,16 @@ private extension MainWindowController {
     }
 }
 
+// MARK: - NSWindowDelegate
+extension MainWindowController: NSWindowDelegate {
+    /// Veto a close-button close while agents are working, so the window (and
+    /// its PTYs) aren't torn down without a heads-up. ⌘Q is guarded separately
+    /// in AppDelegate.applicationShouldTerminate.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        confirmCloseWithBusyAgents()
+    }
+}
+
 // MARK: - IPCServerDelegate
 extension MainWindowController: IPCServerDelegate {
     func ipcServer(
@@ -1756,15 +1800,22 @@ extension MainWindowController: IPCServerDelegate {
             }
             completion(IPCResponse())
 
-        case .paneRead(let paneID, let source, let lines):
+        case .paneRead(let paneID, let source, let lines, let json):
             guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
                 completion(IPCResponse(ok: false, error: "Terminal pane not found"))
                 return
             }
-            let text = source == "recent"
-                ? terminal.recentOutputText(lineLimit: lines)
-                : terminal.visibleScreenText(lineLimit: lines)
-            completion(IPCResponse(result: IPCResult(text: text)))
+            if json {
+                let records = terminal.recentCommandRecords(limit: lines).map {
+                    IPCCommandRecord(command: $0.command, exitCode: $0.exitCode, duration: $0.duration, output: $0.output)
+                }
+                completion(IPCResponse(result: IPCResult(commands: records)))
+            } else {
+                let text = source == "recent"
+                    ? terminal.recentOutputText(lineLimit: lines)
+                    : terminal.visibleScreenText(lineLimit: lines)
+                completion(IPCResponse(result: IPCResult(text: text)))
+            }
 
         case .waitAgentStatus(let paneID, let status, let timeoutMS):
             guard automationPane(id: paneID) != nil else {
