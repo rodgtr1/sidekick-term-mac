@@ -416,7 +416,43 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             waitForOutput(terminal: terminal, match: match, timeoutMS: timeoutMS) { matched in
                 completion(IPCResponse(result: IPCResult(matched: matched)))
             }
+
+        case .worktreeRemove(let branch, let cwd, let force):
+            let directory = worktreeDirectory(cwd: cwd)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Result { try WorktreeService().removeWorktree(forBranch: branch, directory: directory, force: force) }
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success:
+                        completion(IPCResponse(ok: true))
+                    case .failure(let error):
+                        completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
+                    }
+                }
+            }
+
+        case .worktreePrune(let cwd):
+            let directory = worktreeDirectory(cwd: cwd)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Result { try WorktreeService().pruneWorktrees(directory: directory) }
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let output):
+                        completion(IPCResponse(ok: true, result: IPCResult(text: output)))
+                    case .failure(let error):
+                        completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
+                    }
+                }
+            }
         }
+    }
+
+    /// Resolves the directory a worktree command operates from: an explicit
+    /// `--cwd`, else the active pane's working directory, else the process cwd.
+    private func worktreeDirectory(cwd: String?) -> String {
+        cwd
+            ?? activeAutomationContext()?.pane.resolvedWorkingDirectory()
+            ?? FileManager.default.currentDirectoryPath
     }
 
     // MARK: - Pane split
@@ -454,11 +490,13 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     private static func worktreeErrorMessage(_ error: Error) -> String {
         switch error {
         case WorktreeService.WorktreeError.notAGitRepository:
-            return "Not a git repository — --worktree needs the pane to be inside one"
+            return "Not a git repository — worktree commands need a directory inside one"
+        case WorktreeService.WorktreeError.noWorktreeForBranch(let branch):
+            return "No worktree registered for branch '\(branch)'"
         case WorktreeService.WorktreeError.gitFailed(let message):
             return "git worktree failed: \(message)"
         default:
-            return "Unable to create worktree: \(error.localizedDescription)"
+            return "Worktree operation failed: \(error.localizedDescription)"
         }
     }
 

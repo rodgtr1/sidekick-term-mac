@@ -7,6 +7,7 @@ import Foundation
 struct WorktreeService {
     enum WorktreeError: Error, Equatable {
         case notAGitRepository
+        case noWorktreeForBranch(String)
         case gitFailed(String)
     }
 
@@ -54,6 +55,50 @@ struct WorktreeService {
             throw WorktreeError.gitFailed(message.isEmpty ? "git worktree add failed" : message)
         }
         return path
+    }
+
+    /// Removes the worktree registered for `branch` in the repo containing
+    /// `directory`, and returns the path it removed. Refuses a dirty or locked
+    /// worktree unless `force` is set, so a teardown can't silently discard an
+    /// agent's uncommitted work. A branch with no worktree throws
+    /// `noWorktreeForBranch` rather than failing opaquely.
+    func removeWorktree(forBranch branch: String, directory: String, force: Bool = false) throws -> String {
+        guard let repoRoot = git.repositoryRoot(from: directory) else {
+            throw WorktreeError.notAGitRepository
+        }
+
+        let listing = try git.run(repositoryRoot: repoRoot, arguments: ["worktree", "list", "--porcelain"])
+        guard listing.succeeded,
+              let path = Self.worktreePath(forBranch: branch, inPorcelain: listing.stdout) else {
+            throw WorktreeError.noWorktreeForBranch(branch)
+        }
+
+        var arguments = ["worktree", "remove"]
+        if force { arguments.append("--force") }
+        arguments.append(path)
+
+        let result = try git.run(repositoryRoot: repoRoot, arguments: arguments)
+        guard result.succeeded else {
+            let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw WorktreeError.gitFailed(message.isEmpty ? "git worktree remove failed" : message)
+        }
+        return path
+    }
+
+    /// Prunes stale worktree admin entries — bookkeeping for worktrees whose
+    /// directories were deleted by hand — and returns git's summary (empty when
+    /// there was nothing to prune).
+    func pruneWorktrees(directory: String) throws -> String {
+        guard let repoRoot = git.repositoryRoot(from: directory) else {
+            throw WorktreeError.notAGitRepository
+        }
+
+        let result = try git.run(repositoryRoot: repoRoot, arguments: ["worktree", "prune", "-v"])
+        guard result.succeeded else {
+            let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw WorktreeError.gitFailed(message.isEmpty ? "git worktree prune failed" : message)
+        }
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Path for a new worktree: a sibling `<repo>.worktrees/<branch>` directory,

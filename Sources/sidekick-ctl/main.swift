@@ -45,6 +45,10 @@ struct SidekickCtl {
                         || args.prefix(2).elementsEqual(["wait", "output"]) {
                 let matched = (response["result"] as? [String: Any])?["matched"] as? Bool ?? false
                 if !matched { exit(1) }
+            } else if args.prefix(2).elementsEqual(["worktree", "prune"]) {
+                if let text = (response["result"] as? [String: Any])?["text"] as? String, !text.isEmpty {
+                    print(text)
+                }
             }
         } catch let error as CLIError {
             fail(error.message)
@@ -70,8 +74,53 @@ struct SidekickCtl {
             return try paneRequest(Array(args.dropFirst()))
         case "wait":
             return try waitRequest(Array(args.dropFirst()))
+        case "worktree":
+            return try worktreeRequest(Array(args.dropFirst()))
         default:
             throw CLIError("Unknown command: \(args[0])")
+        }
+    }
+
+    private static func worktreeRequest(_ args: [String]) throws -> [String: Any] {
+        guard let subcommand = args.first else {
+            throw CLIError("worktree requires a subcommand: remove <branch> | prune")
+        }
+        switch subcommand {
+        case "remove":
+            guard args.count >= 2 else { throw CLIError("worktree remove requires a branch name") }
+            var request: [String: Any] = ["action": "worktree_remove", "worktree": args[1]]
+            var index = 2
+            while index < args.count {
+                switch args[index] {
+                case "--cwd":
+                    index += 1
+                    guard index < args.count else { throw CLIError("--cwd requires a directory") }
+                    request["cwd"] = NSString(string: args[index]).expandingTildeInPath
+                case "--force":
+                    request["force"] = true
+                default:
+                    throw CLIError("Unknown worktree remove option: \(args[index])")
+                }
+                index += 1
+            }
+            return request
+        case "prune":
+            var request: [String: Any] = ["action": "worktree_prune"]
+            var index = 1
+            while index < args.count {
+                switch args[index] {
+                case "--cwd":
+                    index += 1
+                    guard index < args.count else { throw CLIError("--cwd requires a directory") }
+                    request["cwd"] = NSString(string: args[index]).expandingTildeInPath
+                default:
+                    throw CLIError("Unknown worktree prune option: \(args[index])")
+                }
+                index += 1
+            }
+            return request
+        default:
+            throw CLIError("Unknown worktree subcommand: \(subcommand)")
         }
     }
 
@@ -208,6 +257,8 @@ struct SidekickCtl {
           pane read <pane-id> [--source visible|recent] [--lines count] [--json]
           wait agent-status <pane-id> <idle|working|ready|done> [--timeout ms]
           wait output <pane-id> <text> [--timeout ms]
+          worktree remove <branch> [--cwd dir] [--force]   tear down a --worktree split
+          worktree prune [--cwd dir]                       drop stale worktree entries
           events [--follow]   stream agent-state / command / diff events as JSONL
         """)
         exit(1)

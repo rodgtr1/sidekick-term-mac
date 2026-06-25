@@ -96,4 +96,53 @@ final class EventStreamAndWorktreeTests: XCTestCase {
         let path = WorktreeService.worktreePath(forBranch: "feature/login", repoRoot: "/Users/x/myrepo")
         XCTAssertEqual(path, "/Users/x/myrepo.worktrees/feature-login")
     }
+
+    // MARK: - WorktreeService teardown (real git)
+
+    func testRemoveAndPruneWorktreeEndToEnd() throws {
+        let fm = FileManager.default
+        let repo = fm.temporaryDirectory.appendingPathComponent("sk-wt-\(UUID().uuidString)")
+        try fm.createDirectory(at: repo, withIntermediateDirectories: true)
+        var cleanup: [URL] = [repo]
+        defer { cleanup.forEach { try? fm.removeItem(at: $0) } }
+
+        func git(_ args: [String]) throws {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = args
+            p.currentDirectoryURL = repo
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            try p.run()
+            p.waitUntilExit()
+        }
+
+        // Minimal repo with one commit so a branch can be created.
+        try git(["init", "-q"])
+        try git(["config", "user.email", "t@example.com"])
+        try git(["config", "user.name", "Test"])
+        try "hi".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "init"])
+
+        let service = WorktreeService()
+        let created = try service.ensureWorktree(forBranch: "feature/x", directory: repo.path)
+        cleanup.append(URL(fileURLWithPath: created).deletingLastPathComponent())  // <repo>.worktrees
+        XCTAssertTrue(fm.fileExists(atPath: created))
+
+        let removed = try service.removeWorktree(forBranch: "feature/x", directory: repo.path)
+        // git's porcelain reports the canonical path (/private/var vs /var on a
+        // temp dir), so assert the suffix and that the checkout is actually gone
+        // rather than comparing the full string.
+        XCTAssertTrue(removed.hasSuffix(".worktrees/feature-x"))
+        XCTAssertFalse(fm.fileExists(atPath: created))
+        XCTAssertFalse(fm.fileExists(atPath: removed))
+
+        // Idempotency: the branch no longer has a worktree.
+        XCTAssertThrowsError(try service.removeWorktree(forBranch: "feature/x", directory: repo.path)) { error in
+            XCTAssertEqual(error as? WorktreeService.WorktreeError, .noWorktreeForBranch("feature/x"))
+        }
+
+        // Prune is a no-op here but must still succeed.
+        XCTAssertNoThrow(try service.pruneWorktrees(directory: repo.path))
+    }
 }

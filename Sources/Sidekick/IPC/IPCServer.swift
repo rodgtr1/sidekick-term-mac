@@ -21,9 +21,10 @@ struct IPCCommand: Codable {
     let timeoutMS: Int?
     let format: String?
     let worktree: String?
+    let force: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format, worktree
+        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format, worktree, force
         case paneID = "pane_id"
         case timeoutMS = "timeout_ms"
     }
@@ -114,6 +115,8 @@ enum IPCCommandType {
     case paneRead(paneID: UUID, source: String, lines: Int?, json: Bool)
     case waitAgentStatus(paneID: UUID, status: AgentState, timeoutMS: Int)
     case waitOutput(paneID: UUID, match: String, timeoutMS: Int)
+    case worktreeRemove(branch: String, cwd: String?, force: Bool)
+    case worktreePrune(cwd: String?)
 
     static func from(_ command: IPCCommand) -> IPCCommandType? {
         switch command.action {
@@ -202,6 +205,14 @@ enum IPCCommandType {
                   let match = command.match, !match.isEmpty, match.count <= 16_384,
                   let timeout = validTimeout(command.timeoutMS) else { return nil }
             return .waitOutput(paneID: paneID, match: match, timeoutMS: timeout)
+        case "worktree_remove":
+            guard let rawBranch = command.worktree,
+                  let branch = validatedBranchName(rawBranch),
+                  let cwd = optionalDirectory(command.cwd) else { return nil }
+            return .worktreeRemove(branch: branch, cwd: cwd, force: command.force ?? false)
+        case "worktree_prune":
+            guard let cwd = optionalDirectory(command.cwd) else { return nil }
+            return .worktreePrune(cwd: cwd)
         default:
             return nil
         }
@@ -209,6 +220,16 @@ enum IPCCommandType {
 
     private static func uuid(_ value: String?) -> UUID? {
         value.flatMap(UUID.init(uuidString:))
+    }
+
+    /// Validates an optional `cwd`: nil stays nil (resolve from the active pane
+    /// later), a present value must be a real directory. Returns `.some(nil)`
+    /// for absent, `.some(dir)` for valid, and `nil` to signal "present but
+    /// invalid" so the command is rejected.
+    private static func optionalDirectory(_ value: String?) -> String?? {
+        guard let value else { return .some(nil) }
+        guard let valid = validatedDirectory(value) else { return nil }
+        return .some(valid)
     }
 
     private static func splitDirection(_ value: String?) -> SplitDirection? {

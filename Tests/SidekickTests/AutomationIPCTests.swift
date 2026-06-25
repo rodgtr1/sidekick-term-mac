@@ -50,6 +50,63 @@ final class AutomationIPCTests: XCTestCase {
         }
     }
 
+    func testWorktreeRemoveParsesBranchCwdAndForce() throws {
+        let json = """
+        {"action":"worktree_remove","worktree":"feature/login","cwd":"/tmp","force":true}
+        """
+        let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
+        guard case let .worktreeRemove(branch, cwd, force) = IPCCommandType.from(command) else {
+            return XCTFail("Expected worktreeRemove")
+        }
+        XCTAssertEqual(branch, "feature/login")
+        XCTAssertEqual(cwd, "/tmp")
+        XCTAssertTrue(force)
+    }
+
+    func testWorktreeRemoveDefaultsForceFalseAndNilCwd() throws {
+        let json = #"{"action":"worktree_remove","worktree":"feature/x"}"#
+        let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
+        guard case let .worktreeRemove(branch, cwd, force) = IPCCommandType.from(command) else {
+            return XCTFail("Expected worktreeRemove")
+        }
+        XCTAssertEqual(branch, "feature/x")
+        XCTAssertNil(cwd)
+        XCTAssertFalse(force)
+    }
+
+    func testWorktreeRemoveRejectsOptionInjectingBranch() throws {
+        // Same ref-name guard as pane split --worktree.
+        for bad in ["--force", "-b", "has space"] {
+            let json = """
+            {"action":"worktree_remove","worktree":"\(bad)"}
+            """
+            let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
+            XCTAssertNil(IPCCommandType.from(command), "Expected \(bad) to be rejected")
+        }
+    }
+
+    func testWorktreeRemoveRejectsMissingBranchAndInvalidCwd() throws {
+        let missingBranch = #"{"action":"worktree_remove"}"#
+        XCTAssertNil(IPCCommandType.from(try JSONDecoder().decode(IPCCommand.self, from: Data(missingBranch.utf8))))
+
+        let badCwd = #"{"action":"worktree_remove","worktree":"x","cwd":"/no/such/dir/zzz"}"#
+        XCTAssertNil(IPCCommandType.from(try JSONDecoder().decode(IPCCommand.self, from: Data(badCwd.utf8))))
+    }
+
+    func testWorktreePruneParsesWithAndWithoutCwd() throws {
+        let withCwd = #"{"action":"worktree_prune","cwd":"/tmp"}"#
+        guard case let .worktreePrune(cwd) = IPCCommandType.from(try JSONDecoder().decode(IPCCommand.self, from: Data(withCwd.utf8))) else {
+            return XCTFail("Expected worktreePrune")
+        }
+        XCTAssertEqual(cwd, "/tmp")
+
+        let noCwd = #"{"action":"worktree_prune"}"#
+        guard case let .worktreePrune(nilCwd) = IPCCommandType.from(try JSONDecoder().decode(IPCCommand.self, from: Data(noCwd.utf8))) else {
+            return XCTFail("Expected worktreePrune")
+        }
+        XCTAssertNil(nilCwd)
+    }
+
     func testPaneReadRejectsUnboundedLineCount() throws {
         let json = """
         {"action":"pane_read","pane_id":"\(UUID().uuidString)","lines":10001}
