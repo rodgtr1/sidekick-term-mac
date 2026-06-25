@@ -12,6 +12,7 @@ let package = Package(
         .executable(name: "sidekick-agent-status", targets: ["SidekickAgentStatus"]),
         .executable(name: "sidekick-hook", targets: ["SidekickHook"]),
         .executable(name: "sidekick-mcp", targets: ["SidekickMCP"]),
+        .executable(name: "sidekick-telemetry", targets: ["SidekickTelemetry"]),
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.13.0"),
@@ -30,6 +31,7 @@ let package = Package(
             dependencies: [
                 "SwiftTerm",
                 "TOMLKit",
+                "SidekickTelemetryCore",
             ],
             path: "Sources/Sidekick",
             swiftSettings: [
@@ -61,6 +63,14 @@ let package = Package(
         .executableTarget(
             name: "SidekickMCP",
             path: "Sources/sidekick-mcp",
+            swiftSettings: [
+                .unsafeFlags(["-swift-version", "5"])
+            ]
+        ),
+        .executableTarget(
+            name: "SidekickTelemetry",
+            dependencies: ["SidekickTelemetryCore"],
+            path: "Sources/sidekick-telemetry",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "5"])
             ]

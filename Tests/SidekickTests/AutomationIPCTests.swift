@@ -1,5 +1,6 @@
 import XCTest
 @testable import Sidekick
+import SidekickTelemetryCore
 
 final class AutomationIPCTests: XCTestCase {
     func testPaneSplitCommandDecodesStructuredArguments() throws {
@@ -105,6 +106,34 @@ final class AutomationIPCTests: XCTestCase {
             return XCTFail("Expected worktreePrune")
         }
         XCTAssertNil(nilCwd)
+    }
+
+    func testReportTelemetryDecodesPaneAndUsage() throws {
+        let usage = TranscriptUsage(
+            model: "claude-opus-4-8", inputTokens: 1000, outputTokens: 500,
+            cacheReadTokens: 200, cacheCreation5mTokens: 50, assistantResponses: 3, userPrompts: 2
+        )
+        let blob = String(data: try JSONEncoder().encode(usage), encoding: .utf8)!
+        let paneID = UUID()
+        let cmd = try JSONDecoder().decode(IPCCommand.self, from: JSONSerialization.data(
+            withJSONObject: ["action": "report_telemetry", "pane_id": paneID.uuidString, "telemetry": blob]))
+
+        guard case let .reportTelemetry(decodedPane, decodedUsage) = IPCCommandType.from(cmd) else {
+            return XCTFail("Expected reportTelemetry")
+        }
+        XCTAssertEqual(decodedPane, paneID)
+        XCTAssertEqual(decodedUsage, usage)
+    }
+
+    func testReportTelemetryRejectsBadPaneOrMissingBlob() throws {
+        let blob = String(data: try JSONEncoder().encode(TranscriptUsage()), encoding: .utf8)!
+        let badPane = try JSONDecoder().decode(IPCCommand.self, from: JSONSerialization.data(
+            withJSONObject: ["action": "report_telemetry", "pane_id": "not-a-uuid", "telemetry": blob]))
+        XCTAssertNil(IPCCommandType.from(badPane))
+
+        let noBlob = try JSONDecoder().decode(IPCCommand.self, from: JSONSerialization.data(
+            withJSONObject: ["action": "report_telemetry", "pane_id": UUID().uuidString]))
+        XCTAssertNil(IPCCommandType.from(noBlob))
     }
 
     func testPaneReadRejectsUnboundedLineCount() throws {

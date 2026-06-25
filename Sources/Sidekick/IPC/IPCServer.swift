@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import SidekickTelemetryCore
 
 // MARK: - IPC Command Types
 struct IPCCommand: Codable {
@@ -24,9 +25,11 @@ struct IPCCommand: Codable {
     let force: Bool?
     /// Event-type filter for an `events` subscription (e.g. "agent_state").
     let type: String?
+    /// JSON-encoded `TranscriptUsage` blob for a `report_telemetry` call.
+    let telemetry: String?
 
     enum CodingKeys: String, CodingKey {
-        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format, worktree, force, type
+        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format, worktree, force, type, telemetry
         case paneID = "pane_id"
         case timeoutMS = "timeout_ms"
     }
@@ -119,6 +122,7 @@ enum IPCCommandType {
     case waitOutput(paneID: UUID, match: String, timeoutMS: Int)
     case worktreeRemove(branch: String, cwd: String?, force: Bool)
     case worktreePrune(cwd: String?)
+    case reportTelemetry(paneID: UUID, usage: TranscriptUsage)
 
     static func from(_ command: IPCCommand) -> IPCCommandType? {
         switch command.action {
@@ -215,6 +219,12 @@ enum IPCCommandType {
         case "worktree_prune":
             guard let cwd = optionalDirectory(command.cwd) else { return nil }
             return .worktreePrune(cwd: cwd)
+        case "report_telemetry":
+            guard let paneID = uuid(command.paneID),
+                  let json = command.telemetry,
+                  let data = json.data(using: .utf8),
+                  let usage = try? JSONDecoder().decode(TranscriptUsage.self, from: data) else { return nil }
+            return .reportTelemetry(paneID: paneID, usage: usage)
         default:
             return nil
         }

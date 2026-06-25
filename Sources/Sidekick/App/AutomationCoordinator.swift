@@ -1,4 +1,5 @@
 import AppKit
+import SidekickTelemetryCore
 
 /// The surface `AutomationCoordinator` needs from the window controller to
 /// resolve panes and drive the UI. MainWindowController stays the source of
@@ -40,6 +41,11 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     /// Session-scoped "approve & remember" grants from the review sheet. Reset
     /// on relaunch, like the auto-approve menu toggle.
     private var sessionApprovals = SessionApprovals()
+
+    /// Latest telemetry (model, tokens, est. cost) per pane, reported by the
+    /// `sidekick-telemetry` hook helper. Written on the main thread (the IPC
+    /// delegate hops there); read by the agents-panel dashboard (P3).
+    private(set) var paneTelemetry: [UUID: TranscriptUsage] = [:]
 
     /// In-flight `wait agent-status` requests, resolved by the
     /// PaneAgentStateChanged push rather than a poll. Keyed by request id so a
@@ -432,6 +438,14 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
                     }
                 }
             }
+
+        case .reportTelemetry(let paneID, let usage):
+            // Store the latest per-pane usage for the dashboard (P3). Keep it
+            // even for a pane we can't currently resolve — it may be mid-churn.
+            paneTelemetry[paneID] = usage
+            let cost = usage.estimatedCostUSD().map { String(format: "$%.4f", $0) } ?? "n/a"
+            Log.debug("telemetry pane=\(paneID.uuidString.prefix(8)) model=\(usage.model ?? "?") in=\(usage.totalInputTokens) out=\(usage.outputTokens) est=\(cost)", category: "telemetry")
+            completion(IPCResponse(ok: true))
 
         case .worktreePrune(let cwd):
             let directory = worktreeDirectory(cwd: cwd)
