@@ -185,10 +185,33 @@ sidekick-ctl pane current
 sidekick-ctl pane split "$SIDEKICK_PANE_ID" \
   --direction right --cwd "$PWD" --no-focus --exec claude
 
+# Fan out a parallel agent onto its own git worktree (created if needed)
+sidekick-ctl pane split "$SIDEKICK_PANE_ID" \
+  --worktree feature/login --no-focus --exec claude
+
 # Control and inspect the returned pane ID
 sidekick-ctl pane run "$PANE_ID" "Review the API error handling"
 sidekick-ctl pane read "$PANE_ID" --source recent --lines 100
 sidekick-ctl wait agent-status "$PANE_ID" done --timeout 600000
+
+# Subscribe to a live event stream (JSONL): agent-state transitions,
+# command completions (OSC 133), and edit-approval decisions
+sidekick-ctl events --follow
+```
+
+`pane split --worktree <branch>` resolves the git repo containing the source
+pane, creates (or reuses) a worktree for the branch in a sibling
+`<repo>.worktrees/<branch>` directory, and opens the new pane there — so
+parallel agents can work without clobbering each other's tree.
+
+`events --follow` holds the connection open and emits one JSON object per line
+as things happen, so a supervising agent can react instead of polling:
+
+```json
+{"type":"hello","at":"2026-06-25T12:00:00.000Z"}
+{"type":"agent_state","at":"…","pane_id":"…","tab_id":"…","state":"working"}
+{"type":"command","at":"…","pane_id":"…","command":"swift build","exit_code":0,"duration":4.9}
+{"type":"diff","at":"…","path":"/repo/src/api.swift","decision":"accepted"}
 ```
 
 Managed terminals receive `SIDEKICK_ENV`, `SIDEKICK_SOCKET_PATH`, and

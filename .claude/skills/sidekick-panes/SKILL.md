@@ -55,7 +55,14 @@ sidekick-ctl pane split "$SIDEKICK_PANE_ID" \
   --exec claude -p "Run the focused test suite and diagnose failures"
 ```
 
-Use separate git worktrees when multiple workers may modify overlapping files. Shared panes do not isolate filesystem changes.
+When multiple workers may modify overlapping files, isolate each on its own git worktree — shared panes do not isolate filesystem changes. Pass `--worktree <branch>` to create (or reuse) a worktree for that branch and open the new pane in it, instead of setting up the worktree by hand:
+
+```sh
+sidekick-ctl pane split "$SIDEKICK_PANE_ID" \
+  --worktree feature/login --no-focus --exec claude
+```
+
+The worktree is created in a sibling `<repo>.worktrees/<branch>` directory from the repo containing the source pane. `--worktree` overrides `--cwd`.
 
 ## Coordinate panes
 
@@ -84,6 +91,15 @@ sidekick-ctl wait agent-status "$WORKER_PANE" done --timeout 600000
 ```
 
 Wait commands return exit status 1 on timeout. After waiting, always read the pane rather than assuming success.
+
+To supervise several panes at once without polling each, subscribe to the event stream instead. It holds the connection open and emits one JSON object per line as things happen — agent-state transitions, finished commands (OSC 133), and edit-approval decisions:
+
+```sh
+sidekick-ctl events --follow
+# {"type":"agent_state","pane_id":"…","tab_id":"…","state":"ready","at":"…"}
+# {"type":"command","pane_id":"…","command":"swift build","exit_code":0,"duration":4.9,"at":"…"}
+# {"type":"diff","path":"/repo/src/api.swift","decision":"accepted","at":"…"}
+```
 
 Send input without or with Enter:
 

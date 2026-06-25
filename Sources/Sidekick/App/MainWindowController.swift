@@ -559,49 +559,49 @@ class MainWindowController: NSWindowController {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(terminalCWDChanged(_:)),
-            name: NSNotification.Name("TerminalCWDChanged"),
+            name: .terminalCWDChanged,
             object: nil
         )
 
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(paneDirtyStateChanged(_:)),
-            name: NSNotification.Name("PaneDirtyStateChanged"),
+            name: .paneDirtyStateChanged,
             object: nil
         )
 
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(paneTitleChanged(_:)),
-            name: NSNotification.Name("PaneTitleChanged"),
+            name: .paneTitleChanged,
             object: nil
         )
 
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(paneCommandStatusChanged(_:)),
-            name: NSNotification.Name("PaneCommandStatusChanged"),
+            name: .paneCommandStatusChanged,
             object: nil
         )
 
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(paneOpenURLRequested(_:)),
-            name: NSNotification.Name("PaneOpenURLRequested"),
+            name: .paneOpenURLRequested,
             object: nil
         )
 
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(paneOpenFileRequested(_:)),
-            name: NSNotification.Name("PaneOpenFileRequested"),
+            name: .paneOpenFileRequested,
             object: nil
         )
 
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(paneAgentStateChanged(_:)),
-            name: NSNotification.Name("PaneAgentStateChanged"),
+            name: .paneAgentStateChanged,
             object: nil
         )
     }

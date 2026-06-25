@@ -20,9 +20,10 @@ struct IPCCommand: Codable {
     let match: String?
     let timeoutMS: Int?
     let format: String?
+    let worktree: String?
 
     enum CodingKeys: String, CodingKey {
-        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format
+        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format, worktree
         case paneID = "pane_id"
         case timeoutMS = "timeout_ms"
     }
@@ -105,7 +106,7 @@ enum IPCCommandType {
     case agentIdle
     case paneList
     case paneCurrent(paneID: UUID?)
-    case paneSplit(paneID: UUID, direction: SplitDirection, cwd: String?, command: [String]?, focus: Bool)
+    case paneSplit(paneID: UUID, direction: SplitDirection, cwd: String?, command: [String]?, focus: Bool, worktree: String?)
     case paneFocus(paneID: UUID)
     case paneClose(paneID: UUID)
     case paneSendText(paneID: UUID, text: String)
@@ -155,12 +156,20 @@ enum IPCCommandType {
             if let argv = command.command, argv.isEmpty || argv.count > 256 || argv.contains(where: { $0.count > 32_768 }) {
                 return nil
             }
+            let worktree: String?
+            if let requestedBranch = command.worktree {
+                guard let validBranch = validatedBranchName(requestedBranch) else { return nil }
+                worktree = validBranch
+            } else {
+                worktree = nil
+            }
             return .paneSplit(
                 paneID: paneID,
                 direction: direction,
                 cwd: cwd,
                 command: command.command,
-                focus: command.focus ?? true
+                focus: command.focus ?? true,
+                worktree: worktree
             )
         case "pane_focus":
             guard let paneID = uuid(command.paneID) else { return nil }
@@ -213,6 +222,20 @@ enum IPCCommandType {
     private static func validTimeout(_ value: Int?) -> Int? {
         let timeout = value ?? 30_000
         return (1...3_600_000).contains(timeout) ? timeout : nil
+    }
+
+    /// Accepts a git branch name for `pane split --worktree`. Leaves the full
+    /// ref-name rules to git itself (an invalid name just fails the command),
+    /// but rejects the cases that would be a problem before git sees them: an
+    /// empty/oversized value, a leading `-` (would parse as a git option), and
+    /// whitespace/control characters (never valid in a ref, and a shell-paste
+    /// hazard in logs/UI).
+    private static func validatedBranchName(_ branch: String) -> String? {
+        guard !branch.isEmpty, branch.count <= 255, !branch.hasPrefix("-") else { return nil }
+        let invalid = branch.unicodeScalars.contains { scalar in
+            scalar.value < 0x20 || scalar == " " || scalar == "\u{7F}"
+        }
+        return invalid ? nil : branch
     }
 
     /// Resolves symlinks and requires an absolute path. The file may not
@@ -456,6 +479,18 @@ class IPCServer {
             print("IPCServer: Failed to parse command: \(error)")
             sendResponse(IPCResponse(ok: false, error: "Invalid JSON command"), to: clientFD)
             close(clientFD)
+            return
+        }
+
+        // `events` is a long-lived stream, not a request/response: hand the
+        // socket to the broadcaster and block this connection thread reading it
+        // so the client's hang-up unblocks promptly for cleanup. The reader is
+        // the sole owner of close() (see EventBroadcaster).
+        if command.action == "events" {
+            EventBroadcaster.shared.addSubscriber(clientFD)
+            var drain = [UInt8](repeating: 0, count: 256)
+            while read(clientFD, &drain, drain.count) > 0 { /* clients don't send */ }
+            EventBroadcaster.shared.removeSubscriber(clientFD)
             return
         }
 

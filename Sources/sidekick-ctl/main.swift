@@ -11,6 +11,15 @@ struct SidekickCtl {
             ?? NSString("~/.config/sidekick/sidekick.sock").expandingTildeInPath
         let client = IPCClient(socketPath: socketPath)
 
+        // `events` is a long-lived JSONL stream, not a single request/response:
+        // connect, then print each line as it arrives until the app hangs up.
+        if args.first == "events" {
+            guard client.stream(["action": "events"]) else {
+                fail("Sidekick is not responding")
+            }
+            return
+        }
+
         do {
             let request = try makeRequest(args)
             guard let response = client.send(request) else {
@@ -96,6 +105,10 @@ struct SidekickCtl {
                     index += 1
                     guard index < args.count else { throw CLIError("--cwd requires a directory") }
                     request["cwd"] = NSString(string: args[index]).expandingTildeInPath
+                case "--worktree":
+                    index += 1
+                    guard index < args.count else { throw CLIError("--worktree requires a branch name") }
+                    request["worktree"] = args[index]
                 case "--no-focus":
                     request["focus"] = false
                 case "--exec":
@@ -189,12 +202,13 @@ struct SidekickCtl {
           ping | new-tab [cwd] | open-diff <file>
           agent-ready | agent-busy | agent-done | agent-idle
           pane list | current
-          pane split <pane-id> [--direction right|down] [--cwd dir] [--no-focus] [--exec command args...]
+          pane split <pane-id> [--direction right|down] [--cwd dir] [--worktree branch] [--no-focus] [--exec command args...]
           pane focus|close <pane-id>
           pane send-text <pane-id> <text> | send-key <pane-id> <key> | run <pane-id> <command>
           pane read <pane-id> [--source visible|recent] [--lines count] [--json]
           wait agent-status <pane-id> <idle|working|ready|done> [--timeout ms]
           wait output <pane-id> <text> [--timeout ms]
+          events [--follow]   stream agent-state / command / diff events as JSONL
         """)
         exit(1)
     }
@@ -215,14 +229,57 @@ private final class IPCClient {
     init(socketPath: String) { self.socketPath = socketPath }
 
     func send(_ command: [String: Any]) -> [String: Any]? {
+        guard let socketFD = openConnection(command, halfCloseWrite: true) else { return nil }
+        defer { close(socketFD) }
+
+        var response = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while response.count < 16 * 1024 * 1024 {
+            let count = read(socketFD, &buffer, buffer.count)
+            if count <= 0 { break }
+            response.append(contentsOf: buffer[0..<count])
+            if buffer[0..<count].contains(UInt8(ascii: "\n")) { break }
+        }
+        return try? JSONSerialization.jsonObject(with: response) as? [String: Any]
+    }
+
+    /// Opens a streaming connection and prints each newline-delimited line to
+    /// stdout as it arrives, until the server hangs up (or the user Ctrl+C's).
+    /// Returns false only if the connection couldn't be established.
+    func stream(_ command: [String: Any]) -> Bool {
+        // Keep the write side open: the server detects disconnect by reading
+        // this socket, so a half-close would end the subscription immediately.
+        guard let socketFD = openConnection(command, halfCloseWrite: false) else { return false }
+        defer { close(socketFD) }
+
+        let stdout = FileHandle.standardOutput
+        var pending = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = read(socketFD, &buffer, buffer.count)
+            if count <= 0 { break }
+            pending.append(contentsOf: buffer[0..<count])
+            // Flush whole lines immediately so downstream pipes (jq, tee) see
+            // each event without waiting for the next one.
+            while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+                let line = pending[pending.startIndex...newline]
+                stdout.write(Data(line))
+                pending = pending[pending.index(after: newline)...]
+            }
+        }
+        return true
+    }
+
+    /// Connects, writes the command (newline-terminated), and half-closes the
+    /// write side. Returns the readable FD, or nil on failure.
+    private func openConnection(_ command: [String: Any], halfCloseWrite: Bool) -> Int32? {
         let socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard socketFD >= 0 else { return nil }
-        defer { close(socketFD) }
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let maxPathLength = MemoryLayout.size(ofValue: address.sun_path)
-        guard socketPath.utf8CString.count <= maxPathLength else { return nil }
+        guard socketPath.utf8CString.count <= maxPathLength else { close(socketFD); return nil }
         socketPath.withCString { path in
             withUnsafeMutablePointer(to: &address.sun_path.0) { destination in
                 strncpy(destination, path, maxPathLength - 1)
@@ -235,7 +292,7 @@ private final class IPCClient {
             }
         }
         guard connected == 0,
-              var payload = try? JSONSerialization.data(withJSONObject: command) else { return nil }
+              var payload = try? JSONSerialization.data(withJSONObject: command) else { close(socketFD); return nil }
         payload.append(UInt8(ascii: "\n"))
         let wroteAll = payload.withUnsafeBytes { bytes -> Bool in
             guard var cursor = bytes.baseAddress else { return false }
@@ -248,17 +305,8 @@ private final class IPCClient {
             }
             return true
         }
-        guard wroteAll else { return nil }
-        shutdown(socketFD, SHUT_WR)
-
-        var response = Data()
-        var buffer = [UInt8](repeating: 0, count: 4096)
-        while response.count < 16 * 1024 * 1024 {
-            let count = read(socketFD, &buffer, buffer.count)
-            if count <= 0 { break }
-            response.append(contentsOf: buffer[0..<count])
-            if buffer[0..<count].contains(UInt8(ascii: "\n")) { break }
-        }
-        return try? JSONSerialization.jsonObject(with: response) as? [String: Any]
+        guard wroteAll else { close(socketFD); return nil }
+        if halfCloseWrite { shutdown(socketFD, SHUT_WR) }
+        return socketFD
     }
 }

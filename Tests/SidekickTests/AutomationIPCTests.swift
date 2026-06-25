@@ -16,7 +16,7 @@ final class AutomationIPCTests: XCTestCase {
         """
         let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
 
-        guard case let .paneSplit(decodedID, direction, cwd, argv, focus) = IPCCommandType.from(command) else {
+        guard case let .paneSplit(decodedID, direction, cwd, argv, focus, worktree) = IPCCommandType.from(command) else {
             return XCTFail("Expected paneSplit")
         }
         XCTAssertEqual(decodedID, paneID)
@@ -24,6 +24,30 @@ final class AutomationIPCTests: XCTestCase {
         XCTAssertEqual(cwd, "/tmp")
         XCTAssertEqual(argv ?? [], ["claude", "-p", "review tests"])
         XCTAssertFalse(focus)
+        XCTAssertNil(worktree)
+    }
+
+    func testPaneSplitParsesWorktreeBranch() throws {
+        let json = """
+        {"action":"pane_split","pane_id":"\(UUID().uuidString)","direction":"right","worktree":"feature/login"}
+        """
+        let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
+        guard case let .paneSplit(_, _, _, _, _, worktree) = IPCCommandType.from(command) else {
+            return XCTFail("Expected paneSplit")
+        }
+        XCTAssertEqual(worktree, "feature/login")
+    }
+
+    func testPaneSplitRejectsOptionInjectingBranch() throws {
+        // A leading dash would be parsed as a git option, and whitespace is
+        // never a valid ref — both must be rejected before git sees them.
+        for bad in ["--force", "-b", "has space", "\(String(repeating: "x", count: 256))"] {
+            let json = """
+            {"action":"pane_split","pane_id":"\(UUID().uuidString)","direction":"right","worktree":"\(bad)"}
+            """
+            let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
+            XCTAssertNil(IPCCommandType.from(command), "Expected \(bad) to be rejected")
+        }
     }
 
     func testPaneReadRejectsUnboundedLineCount() throws {

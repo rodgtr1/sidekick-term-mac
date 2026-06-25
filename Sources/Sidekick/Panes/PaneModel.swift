@@ -90,14 +90,14 @@ class PaneModel: Identifiable, Hashable {
             NotificationCenter.default.removeObserver(existingObserver)
         }
         editorDirtyStateObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("EditorModifiedStateChanged"),
+            forName: .editorModifiedStateChanged,
             object: editorVC,
             queue: .main
         ) { [weak self] notification in
             if let isModified = notification.userInfo?["isModified"] as? Bool {
                 // Notify the tab about dirty state change
                 NotificationCenter.default.post(
-                    name: NSNotification.Name("PaneDirtyStateChanged"),
+                    name: .paneDirtyStateChanged,
                     object: self,
                     userInfo: ["isDirty": isModified]
                 )
@@ -189,7 +189,7 @@ class PaneModel: Identifiable, Hashable {
 
         // Notify that the pane title has changed
         NotificationCenter.default.post(
-            name: NSNotification.Name("PaneTitleChanged"),
+            name: .paneTitleChanged,
             object: self,
             userInfo: ["title": title]
         )
@@ -252,7 +252,7 @@ extension PaneModel: TerminalViewControllerDelegate {
 
         // Notify about CWD change
         NotificationCenter.default.post(
-            name: NSNotification.Name("TerminalCWDChanged"),
+            name: .terminalCWDChanged,
             object: self,
             userInfo: ["directory": directory, "branch": branch as Any]
         )
@@ -264,7 +264,7 @@ extension PaneModel: TerminalViewControllerDelegate {
             agentStateChangedAt = Date()
         }
         NotificationCenter.default.post(
-            name: NSNotification.Name("PaneAgentStateChanged"),
+            name: .paneAgentStateChanged,
             object: self,
             userInfo: ["agentState": state]
         )
@@ -276,7 +276,7 @@ extension PaneModel: TerminalViewControllerDelegate {
             userInfo["line"] = line
         }
         NotificationCenter.default.post(
-            name: NSNotification.Name("PaneOpenFileRequested"),
+            name: .paneOpenFileRequested,
             object: self,
             userInfo: userInfo
         )
@@ -284,7 +284,7 @@ extension PaneModel: TerminalViewControllerDelegate {
 
     func terminalRequestsOpenURL(_ terminal: TerminalViewController, url: URL) {
         NotificationCenter.default.post(
-            name: NSNotification.Name("PaneOpenURLRequested"),
+            name: .paneOpenURLRequested,
             object: self,
             userInfo: ["url": url]
         )
@@ -296,7 +296,7 @@ extension PaneModel: TerminalViewControllerDelegate {
             userInfo["status"] = status
         }
         NotificationCenter.default.post(
-            name: NSNotification.Name("PaneCommandStatusChanged"),
+            name: .paneCommandStatusChanged,
             object: self,
             userInfo: userInfo
         )

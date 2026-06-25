@@ -41,7 +41,7 @@ final class AgentDashboardViewController: NSViewController {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(agentStateChanged),
-            name: NSNotification.Name("PaneAgentStateChanged"),
+            name: .paneAgentStateChanged,
             object: nil
         )
     }

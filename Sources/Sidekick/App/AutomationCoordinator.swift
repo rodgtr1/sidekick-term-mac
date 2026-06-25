@@ -62,7 +62,13 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(paneAgentStateChanged(_:)),
-            name: NSNotification.Name("PaneAgentStateChanged"),
+            name: .paneAgentStateChanged,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(paneCommandStatusChanged(_:)),
+            name: .paneCommandStatusChanged,
             object: nil
         )
     }
@@ -198,6 +204,52 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         for id in matched.keys {
             resolveStatusWait(id, matched: true)
         }
+        emitAgentStateEvent(for: pane)
+    }
+
+    @objc private func paneCommandStatusChanged(_ notification: Notification) {
+        // Posted on both command start (status nil) and finish (status set);
+        // the event stream only reports finished commands.
+        guard let pane = notification.object as? PaneModel,
+              let status = notification.userInfo?["status"] as? TerminalCommandStatus else { return }
+        emitCommandEvent(for: pane, status: status)
+    }
+
+    // MARK: - Event stream emission
+
+    private func emitAgentStateEvent(for pane: PaneModel) {
+        guard EventBroadcaster.shared.hasSubscribers,
+              let context = automationPane(id: pane.id) else { return }
+        var event = SidekickEvent(type: "agent_state", at: pane.agentStateChangedAt)
+        event.paneID = pane.id.uuidString.lowercased()
+        event.tabID = context.tab.id.uuidString.lowercased()
+        event.state = pane.agentState.rawValue
+        EventBroadcaster.shared.emit(event)
+    }
+
+    private func emitCommandEvent(for pane: PaneModel, status: TerminalCommandStatus) {
+        guard EventBroadcaster.shared.hasSubscribers,
+              let context = automationPane(id: pane.id) else { return }
+        // The just-finished command line lives in the terminal's last record;
+        // fall back to the status alone if integration didn't capture it.
+        let lastRecord = pane.terminalViewController?.recentCommandRecords(limit: 1).last
+        var event = SidekickEvent(type: "command")
+        event.paneID = pane.id.uuidString.lowercased()
+        event.tabID = context.tab.id.uuidString.lowercased()
+        event.command = lastRecord?.command
+        event.exitCode = status.exitCode
+        event.duration = status.duration
+        EventBroadcaster.shared.emit(event)
+    }
+
+    /// Emits a `diff` event for the hook edit-approval lifecycle so a supervisor
+    /// can see edits queue and resolve without polling.
+    private func emitDiffEvent(path: String, decision: String) {
+        guard EventBroadcaster.shared.hasSubscribers else { return }
+        var event = SidekickEvent(type: "diff")
+        event.path = path
+        event.decision = decision
+        EventBroadcaster.shared.emit(event)
     }
 
     // MARK: - IPCServerDelegate
@@ -222,10 +274,13 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
                 completion(IPCResponse(ok: true))
             } else if host?.shouldAutoApproveEdits == true {
                 // Auto-approve mode (config or session toggle): allow silently.
+                emitDiffEvent(path: path, decision: "accepted")
                 completion(IPCResponse(ok: true, accepted: true))
             } else {
                 // Hook approval: hold the response until the user decides.
-                enqueueDiffApproval(path: path, old: old, new: new) { accepted in
+                emitDiffEvent(path: path, decision: "pending")
+                enqueueDiffApproval(path: path, old: old, new: new) { [weak self] accepted in
+                    self?.emitDiffEvent(path: path, decision: accepted ? "accepted" : "rejected")
                     completion(IPCResponse(ok: true, accepted: accepted))
                 }
             }
@@ -259,24 +314,31 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
                 pane: automationPaneInfo(tab: context.tab, pane: context.pane, controller: context.controller)
             )))
 
-        case .paneSplit(let paneID, let direction, let cwd, let command, let focus):
+        case .paneSplit(let paneID, let direction, let cwd, let command, let focus, let worktree):
             guard let context = automationPane(id: paneID) else {
                 completion(IPCResponse(ok: false, error: "Pane not found"))
                 return
             }
-            guard let pane = context.controller.splitPane(
-                direction: direction,
-                targetPaneID: paneID,
-                initialDirectory: cwd,
-                command: command,
-                focus: focus
-            ) else {
-                completion(IPCResponse(ok: false, error: "Unable to split pane (the tab may be at its pane limit)"))
+            guard let branch = worktree else {
+                completeSplit(paneID: paneID, direction: direction, cwd: cwd, command: command, focus: focus, completion: completion)
                 return
             }
-            completion(IPCResponse(result: IPCResult(
-                pane: automationPaneInfo(tab: context.tab, pane: pane, controller: context.controller)
-            )))
+            // Creating the worktree shells out to git (checks out files), so do
+            // it off the main thread, then hop back to perform the UI split in
+            // the resulting directory.
+            let repoDirectory = context.pane.resolvedWorkingDirectory()
+                ?? cwd ?? FileManager.default.currentDirectoryPath
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let result = Result { try WorktreeService().ensureWorktree(forBranch: branch, directory: repoDirectory) }
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let worktreePath):
+                        self?.completeSplit(paneID: paneID, direction: direction, cwd: worktreePath, command: command, focus: focus, completion: completion)
+                    case .failure(let error):
+                        completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
+                    }
+                }
+            }
 
         case .paneFocus(let paneID):
             guard let context = automationPane(id: paneID), context.controller.focusPane(id: paneID) else {
@@ -347,6 +409,49 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             waitForOutput(terminal: terminal, match: match, timeoutMS: timeoutMS) { matched in
                 completion(IPCResponse(result: IPCResult(matched: matched)))
             }
+        }
+    }
+
+    // MARK: - Pane split
+
+    /// Performs the UI split and replies with the new pane, re-resolving the
+    /// target so a worktree split (which detoured through a background queue)
+    /// still finds it.
+    private func completeSplit(
+        paneID: UUID,
+        direction: SplitDirection,
+        cwd: String?,
+        command: [String]?,
+        focus: Bool,
+        completion: @escaping (IPCResponse) -> Void
+    ) {
+        guard let context = automationPane(id: paneID) else {
+            completion(IPCResponse(ok: false, error: "Pane not found"))
+            return
+        }
+        guard let pane = context.controller.splitPane(
+            direction: direction,
+            targetPaneID: paneID,
+            initialDirectory: cwd,
+            command: command,
+            focus: focus
+        ) else {
+            completion(IPCResponse(ok: false, error: "Unable to split pane (the tab may be at its pane limit)"))
+            return
+        }
+        completion(IPCResponse(result: IPCResult(
+            pane: automationPaneInfo(tab: context.tab, pane: pane, controller: context.controller)
+        )))
+    }
+
+    private static func worktreeErrorMessage(_ error: Error) -> String {
+        switch error {
+        case WorktreeService.WorktreeError.notAGitRepository:
+            return "Not a git repository — --worktree needs the pane to be inside one"
+        case WorktreeService.WorktreeError.gitFailed(let message):
+            return "git worktree failed: \(message)"
+        default:
+            return "Unable to create worktree: \(error.localizedDescription)"
         }
     }
 

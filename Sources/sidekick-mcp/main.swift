@@ -163,7 +163,8 @@ private let tools: [Tool] = [
             "direction": ["type": "string", "enum": ["right", "down"], "description": "Split direction. Defaults to right."],
             "cwd": ["type": "string", "description": "Absolute directory for the new pane."],
             "command": ["type": "array", "items": ["type": "string"], "description": "argv to launch in the new pane (e.g. [\"claude\", \"-p\", \"review tests\"])."],
-            "focus": ["type": "boolean", "description": "Whether to focus the new pane. Defaults to true."]
+            "focus": ["type": "boolean", "description": "Whether to focus the new pane. Defaults to true."],
+            "worktree": ["type": "string", "description": "Branch name. Creates (or reuses) a git worktree for it from the source pane's repo and opens the new pane there — safe fan-out for parallel agents. Overrides cwd."]
         ], required: ["pane_id"]),
         buildRequest: { args in
             var request: [String: Any] = [
@@ -174,6 +175,7 @@ private let tools: [Tool] = [
             ]
             if let cwd = args["cwd"] as? String { request["cwd"] = cwd }
             if let command = args["command"] as? [String], !command.isEmpty { request["command"] = command }
+            if let worktree = args["worktree"] as? String { request["worktree"] = worktree }
             return request
         },
         render: { result in prettyJSON(result?["pane"] ?? [:]) }

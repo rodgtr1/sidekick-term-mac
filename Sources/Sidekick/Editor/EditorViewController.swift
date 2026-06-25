@@ -16,7 +16,7 @@ class EditorViewController: NSViewController {
 
             // Notify about modified state change
             NotificationCenter.default.post(
-                name: NSNotification.Name("EditorModifiedStateChanged"),
+                name: .editorModifiedStateChanged,
                 object: self,
                 userInfo: ["isModified": isModified]
             )

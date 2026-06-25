@@ -1,0 +1,42 @@
+import Foundation
+
+/// Typed names for the cross-cutting events that flow between panes, the window
+/// controller, the agents dashboard, and the automation coordinator. These were
+/// previously raw `NSNotification.Name("PaneAgentStateChanged")` string literals
+/// scattered across the poster and every observer — no compile-time safety, easy
+/// to typo, hard to trace. Posting and observing through these constants makes
+/// the set discoverable in one place and typo-proof; the event stream
+/// (`sidekick-ctl events --follow`) leans on the same signals.
+///
+/// Raw values are unchanged from the old literals so anything that still posts a
+/// string by hand keeps interoperating during the migration.
+extension Notification.Name {
+    /// A pane's agent state changed (idle/working/ready/done). `object` is the
+    /// `PaneModel`; `userInfo["agentState"]` carries the new `AgentState`.
+    static let paneAgentStateChanged = Notification.Name("PaneAgentStateChanged")
+
+    /// A shell command finished (OSC 133 D mark). `object` is the `PaneModel`;
+    /// `userInfo["status"]` carries a `TerminalCommandStatus` when one is known.
+    static let paneCommandStatusChanged = Notification.Name("PaneCommandStatusChanged")
+
+    /// A pane's title (cwd/branch) changed. `object` is the `PaneModel`.
+    static let paneTitleChanged = Notification.Name("PaneTitleChanged")
+
+    /// A pane's dirty/modified state changed. `object` is the `PaneModel`.
+    static let paneDirtyStateChanged = Notification.Name("PaneDirtyStateChanged")
+
+    /// A pane asked the app to open a file. `object` is the `PaneModel`;
+    /// `userInfo["path"]` is the path and `userInfo["line"]` an optional line.
+    static let paneOpenFileRequested = Notification.Name("PaneOpenFileRequested")
+
+    /// A pane asked the app to open a URL. `object` is the `PaneModel`;
+    /// `userInfo["url"]` is the `URL`.
+    static let paneOpenURLRequested = Notification.Name("PaneOpenURLRequested")
+
+    /// A terminal reported a new working directory (OSC 7). `object` is the
+    /// `PaneModel`; `userInfo["directory"]` and `userInfo["branch"]`.
+    static let terminalCWDChanged = Notification.Name("TerminalCWDChanged")
+
+    /// An editor pane's modified state changed. `object` is the editor.
+    static let editorModifiedStateChanged = Notification.Name("EditorModifiedStateChanged")
+}
