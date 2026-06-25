@@ -54,7 +54,13 @@ struct SidekickEvent: Codable {
 /// the main thread (notifications fire there); to a dead or wedged consumer it
 /// `shutdown`s the socket — never `close`s it — so the owning reader closes it
 /// and no FD number can be reused out from under an in-flight write.
-final class EventBroadcaster {
+// @unchecked Sendable: all mutable state (`subscribers`) is accessed only under
+// `lock`, so this is safe to share across the main thread (where `emit` runs)
+// and the per-connection IPC threads (which add/remove subscribers). The unsafe
+// FD writes are serialized by the same lock-guarded membership set. Marked
+// explicitly to prep for the Swift 6 strict-concurrency migration without
+// flipping the language mode yet.
+final class EventBroadcaster: @unchecked Sendable {
     static let shared = EventBroadcaster()
 
     private let lock = NSLock()

@@ -692,13 +692,23 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // For now, users can copy URLs manually and open them
     }
 
+    /// Appends `chunk` to a rolling buffer, keeping roughly the last `cap`
+    /// characters. The old `buffer = String(buffer.suffix(cap))` reallocated and
+    /// copied the whole buffer on *every* output chunk once it reached `cap`.
+    /// Here the grapheme-aware trim runs only after the buffer grows a quarter
+    /// past `cap`, so under noisy throughput (builds, log tails) it amortizes to
+    /// one trim per slack-of-growth instead of one per chunk.
+    private static func appendBounded(_ chunk: String, to buffer: inout String, cap: Int) {
+        buffer += chunk
+        if buffer.count > cap + cap / 4 {
+            buffer = String(buffer.suffix(cap))
+        }
+    }
+
     private func queueAgentDetection(_ output: String) {
         // Coalesce high-throughput output into ~10Hz detection passes so the
         // regex scanning doesn't run once per output chunk.
-        pendingDetectionOutput += output
-        if pendingDetectionOutput.count > 16_000 {
-            pendingDetectionOutput = String(pendingDetectionOutput.suffix(16_000))
-        }
+        Self.appendBounded(output, to: &pendingDetectionOutput, cap: 16_000)
 
         guard !detectionFlushScheduled else { return }
         detectionFlushScheduled = true
@@ -713,10 +723,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func appendAutomationOutput(_ output: String) {
-        automationOutput += output
-        if automationOutput.count > 64_000 {
-            automationOutput = String(automationOutput.suffix(64_000))
-        }
+        Self.appendBounded(output, to: &automationOutput, cap: 64_000)
 
         if !outputMatchers.isEmpty {
             feedOutputMatchers(strippedChunk: stripANSIEscapes(output))
@@ -725,10 +732,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // While a command is running (between OSC 133 C and D), accumulate its
         // output for the command-record history. ANSI is stripped at finalize.
         if inFlightCommand != nil {
-            inFlightCommand!.output += output
-            if inFlightCommand!.output.count > Self.maxCommandOutputChars {
-                inFlightCommand!.output = String(inFlightCommand!.output.suffix(Self.maxCommandOutputChars))
-            }
+            Self.appendBounded(output, to: &inFlightCommand!.output, cap: Self.maxCommandOutputChars)
         }
     }
 
@@ -750,10 +754,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // (resetAgentState clears hasExplicitAgentStatus).
         if hasExplicitAgentStatus { return }
 
-        recentOutput += output
-        if recentOutput.count > 8_000 {
-            recentOutput = String(recentOutput.suffix(8_000))
-        }
+        Self.appendBounded(output, to: &recentOutput, cap: 8_000)
 
         let normalizedRecentOutput = normalizeTerminalOutput(recentOutput)
         let normalizedCurrentOutput = normalizeTerminalOutput(output)

@@ -274,8 +274,30 @@ protocol IPCServerDelegate: AnyObject {
     )
 }
 
+/// A thread-safe "fire exactly once" latch. `claim()` returns true only for the
+/// first caller. Used to guard a deferred IPC completion against a delegate that
+/// invokes it more than once: a reference-captured latch is data-race free where
+/// a captured `var Bool` is not, so this satisfies strict concurrency's
+/// mutable-capture check (prep for the Swift 6 migration).
+final class OnceLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if fired { return false }
+        fired = true
+        return true
+    }
+}
+
 // MARK: - IPC Server
-class IPCServer {
+// @unchecked Sendable: mutable state (`isRunning`) is guarded by `stateLock`;
+// `serverFD` is assigned once at startup before the accept loop reads it. The
+// accept loop runs on a background thread and per-connection work hops to the
+// main queue. Marked explicitly to prep for the Swift 6 strict-concurrency
+// migration without flipping the language mode yet.
+final class IPCServer: @unchecked Sendable {
     private let socketURL: URL
     private var serverFD: Int32 = -1
     private let stateLock = NSLock()
@@ -516,10 +538,9 @@ class IPCServer {
                 return
             }
 
-            var responded = false
+            let responded = OnceLatch()
             delegate.ipcServer(self, didReceiveCommand: commandType) { [weak self] response in
-                guard !responded else { return }
-                responded = true
+                guard responded.claim() else { return }
                 self?.sendResponse(response, to: clientFD)
                 close(clientFD)
             }
