@@ -18,6 +18,13 @@ let package = Package(
         .package(url: "https://github.com/LebJe/TOMLKit", from: "0.5.0"),
     ],
     targets: [
+        .target(
+            name: "SidekickTelemetryCore",
+            path: "Sources/SidekickTelemetryCore",
+            swiftSettings: [
+                .unsafeFlags(["-swift-version", "5"])
+            ]
+        ),
         .executableTarget(
             name: "Sidekick",
             dependencies: [
@@ -60,7 +67,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SidekickTests",
-            dependencies: ["Sidekick"],
+            dependencies: ["Sidekick", "SidekickTelemetryCore"],
             path: "Tests/SidekickTests"
         ),
     ]
