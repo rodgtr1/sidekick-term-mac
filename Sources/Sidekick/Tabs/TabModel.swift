@@ -1,5 +1,6 @@
 import Foundation
 import Cocoa
+import SidekickTelemetryCore
 
 enum AgentState: String, Codable, CaseIterable {
     case idle       // No agent activity
@@ -45,6 +46,11 @@ class TabModel: Identifiable {
     // Last finished command (from shell integration); nil while one runs
     var lastCommandFailed: Bool = false
     var lastCommandTooltip: String?
+
+    /// Aggregated agent telemetry (model, token usage) for this tab's primary
+    /// agent pane, set by AutomationCoordinator when the sidekick-telemetry hook
+    /// reports. Read by the agents-panel dashboard.
+    var telemetry: TranscriptUsage?
 
     // Backward compatibility
     var isAgentReady: Bool {

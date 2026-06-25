@@ -57,4 +57,25 @@ final class TranscriptUsageTests: XCTestCase {
         XCTAssertNil(TranscriptUsage(model: nil, inputTokens: 100).estimatedCostUSD())
         XCTAssertNil(TranscriptUsage(model: "gpt-4o", inputTokens: 100).estimatedCostUSD())
     }
+
+    // MARK: - Presentation formatting
+
+    func testShortModel() {
+        XCTAssertEqual(TelemetryFormat.shortModel("claude-opus-4-8"), "opus-4.8")
+        XCTAssertEqual(TelemetryFormat.shortModel("claude-sonnet-4-6"), "sonnet-4.6")
+        XCTAssertEqual(TelemetryFormat.shortModel("claude-haiku-4-5-20251001"), "haiku-4.5")
+        XCTAssertEqual(TelemetryFormat.shortModel("claude-fable-5"), "fable-5")
+    }
+
+    func testCompactTokens() {
+        XCTAssertEqual(TelemetryFormat.compactTokens(847), "847")
+        XCTAssertEqual(TelemetryFormat.compactTokens(50_483), "50k")
+        XCTAssertEqual(TelemetryFormat.compactTokens(146_587_198), "146.6M")
+    }
+
+    func testCostFloor() {
+        XCTAssertEqual(TelemetryFormat.cost(0.0001), "<$0.01")
+        XCTAssertEqual(TelemetryFormat.cost(0.36), "$0.36")
+        XCTAssertEqual(TelemetryFormat.cost(73.4), "$73.40")
+    }
 }

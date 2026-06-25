@@ -1,4 +1,5 @@
 import Cocoa
+import SidekickTelemetryCore
 
 protocol AgentDashboardDelegate: AnyObject {
     func agentDashboardTabs(_ dashboard: AgentDashboardViewController) -> [TabModel]
@@ -21,6 +22,7 @@ final class AgentDashboardViewController: NSViewController {
         let state: AgentState
         let since: Date
         let isActive: Bool
+        let usage: TranscriptUsage?
     }
 
     private var rows: [Row] = []
@@ -42,6 +44,12 @@ final class AgentDashboardViewController: NSViewController {
             self,
             selector: #selector(agentStateChanged),
             name: .paneAgentStateChanged,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(agentStateChanged),
+            name: .paneTelemetryChanged,
             object: nil
         )
     }
@@ -136,7 +144,8 @@ final class AgentDashboardViewController: NSViewController {
                 title: tab.title,
                 state: tab.agentState,
                 since: tab.agentStateChangedAt,
-                isActive: tab.isActive
+                isActive: tab.isActive,
+                usage: tab.telemetry
             )
         }
         // Actionable tabs first: needs-input, then working, then done.
@@ -178,6 +187,28 @@ final class AgentDashboardViewController: NSViewController {
         if seconds < 60 { return "\(seconds)s" }
         if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
         return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
+    }
+
+    // MARK: - Telemetry formatting
+
+    /// Compact one-line telemetry for a row: `opus-4.8 · $0.36 · 7t`. Cost and
+    /// turns are dropped when unavailable. Returns nil when there's nothing
+    /// billed yet to show.
+    fileprivate static func telemetryLine(_ usage: TranscriptUsage) -> String? {
+        guard usage.assistantResponses > 0 else { return nil }
+        var parts: [String] = []
+        if let model = usage.model { parts.append(TelemetryFormat.shortModel(model)) }
+        if let cost = usage.estimatedCostUSD() { parts.append(TelemetryFormat.cost(cost)) }
+        if usage.userPrompts > 0 { parts.append("\(usage.userPrompts)t") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Full breakdown for the row tooltip.
+    fileprivate static func telemetryTooltip(_ usage: TranscriptUsage) -> String {
+        var lines = ["in \(TelemetryFormat.compactTokens(usage.totalInputTokens)) · out \(TelemetryFormat.compactTokens(usage.outputTokens))"]
+        if usage.cacheReadTokens > 0 { lines.append("cache read \(TelemetryFormat.compactTokens(usage.cacheReadTokens))") }
+        lines.append("\(usage.assistantResponses) responses · \(usage.userPrompts) prompts")
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -248,10 +279,29 @@ extension AgentDashboardViewController: NSTableViewDelegate {
             detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8)
         ])
 
+        // Telemetry line (model · est$ · turns), with the full breakdown on hover.
+        if let usage = rowData.usage, let line = Self.telemetryLine(usage) {
+            let telemetryLabel = NSTextField(labelWithString: line)
+            telemetryLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+            telemetryLabel.textColor = AppTheme.mutedText
+            telemetryLabel.lineBreakMode = .byTruncatingTail
+            telemetryLabel.toolTip = Self.telemetryTooltip(usage)
+            telemetryLabel.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(telemetryLabel)
+            NSLayoutConstraint.activate([
+                telemetryLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+                telemetryLabel.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 2),
+                telemetryLabel.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8)
+            ])
+        }
+
         return cell
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        42
+        guard row < rows.count, let usage = rows[row].usage, Self.telemetryLine(usage) != nil else {
+            return 42
+        }
+        return 58
     }
 }

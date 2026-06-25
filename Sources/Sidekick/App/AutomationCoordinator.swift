@@ -257,6 +257,22 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         EventBroadcaster.shared.emit(event)
     }
 
+    /// Emits a `telemetry` event so a supervisor following the stream sees token
+    /// usage and est. cost per pane as it updates — the same data the dashboard
+    /// shows. Guarded by `hasSubscribers` like the other non-state events.
+    private func emitTelemetryEvent(paneID: UUID, tab: TabModel?, usage: TranscriptUsage) {
+        guard EventBroadcaster.shared.hasSubscribers else { return }
+        var event = SidekickEvent(type: "telemetry")
+        event.paneID = paneID.uuidString.lowercased()
+        event.tabID = tab?.id.uuidString.lowercased()
+        event.model = usage.model
+        event.inputTokens = usage.totalInputTokens
+        event.outputTokens = usage.outputTokens
+        event.costUSD = usage.estimatedCostUSD()
+        event.turns = usage.userPrompts
+        EventBroadcaster.shared.emit(event)
+    }
+
     /// Emits a `diff` event for the hook edit-approval lifecycle so a supervisor
     /// can see edits queue and resolve without polling.
     private func emitDiffEvent(path: String, decision: String) {
@@ -440,11 +456,17 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             }
 
         case .reportTelemetry(let paneID, let usage):
-            // Store the latest per-pane usage for the dashboard (P3). Keep it
-            // even for a pane we can't currently resolve — it may be mid-churn.
+            // Store the latest per-pane usage. Keep it even for a pane we can't
+            // currently resolve — it may be mid-churn.
             paneTelemetry[paneID] = usage
             let cost = usage.estimatedCostUSD().map { String(format: "$%.4f", $0) } ?? "n/a"
             Log.debug("telemetry pane=\(paneID.uuidString.prefix(8)) model=\(usage.model ?? "?") in=\(usage.totalInputTokens) out=\(usage.outputTokens) est=\(cost)", category: "telemetry")
+            // Surface it on the owning tab so the agents-panel dashboard can read
+            // it, and nudge the panel to refresh.
+            let tab = automationPane(id: paneID)?.tab
+            tab.map(updateTabTelemetry)
+            NotificationCenter.default.post(name: .paneTelemetryChanged, object: tab)
+            emitTelemetryEvent(paneID: paneID, tab: tab, usage: usage)
             completion(IPCResponse(ok: true))
 
         case .worktreePrune(let cwd):
@@ -461,6 +483,19 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
                 }
             }
         }
+    }
+
+    /// Sets `tab.telemetry` to its primary agent pane's usage: the active pane's
+    /// if it reported, else the pane with the most billed responses. Avoids
+    /// summing across panes, which would conflate distinct agents/models.
+    private func updateTabTelemetry(_ tab: TabModel) {
+        if let active = tab.activePane, let usage = paneTelemetry[active.id] {
+            tab.telemetry = usage
+            return
+        }
+        tab.telemetry = tab.panes
+            .compactMap { paneTelemetry[$0.id] }
+            .max(by: { $0.assistantResponses < $1.assistantResponses })
     }
 
     /// Resolves the directory a worktree command operates from: an explicit

@@ -22,12 +22,21 @@ struct SidekickEvent: Codable {
     var duration: Double?
     var path: String?
     var decision: String?
+    // `telemetry` events
+    var model: String?
+    var inputTokens: Int?
+    var outputTokens: Int?
+    var costUSD: Double?
+    var turns: Int?
 
     enum CodingKeys: String, CodingKey {
-        case type, at, state, command, duration, path, decision
+        case type, at, state, command, duration, path, decision, model, turns
         case paneID = "pane_id"
         case tabID = "tab_id"
         case exitCode = "exit_code"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case costUSD = "cost_usd"
     }
 
     private static let timestampFormatter: ISO8601DateFormatter = {

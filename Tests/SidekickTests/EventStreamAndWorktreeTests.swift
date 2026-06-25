@@ -50,6 +50,30 @@ final class EventStreamAndWorktreeTests: XCTestCase {
         XCTAssertTrue(at.hasPrefix("1970-01-01T00:00:00"), "Unexpected timestamp: \(at)")
     }
 
+    func testTelemetryEventEncodesSnakeCaseAndOmitsNils() throws {
+        var event = SidekickEvent(type: "telemetry")
+        event.paneID = "p1"
+        event.model = "claude-opus-4-8"
+        event.inputTokens = 1000
+        event.outputTokens = 500
+        event.costUSD = 0.36
+        event.turns = 7
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(event)) as? [String: Any]
+        )
+        XCTAssertEqual(object["type"] as? String, "telemetry")
+        XCTAssertEqual(object["pane_id"] as? String, "p1")
+        XCTAssertEqual(object["model"] as? String, "claude-opus-4-8")
+        XCTAssertEqual(object["input_tokens"] as? Int, 1000)
+        XCTAssertEqual(object["output_tokens"] as? Int, 500)
+        XCTAssertEqual(object["cost_usd"] as? Double, 0.36)
+        XCTAssertEqual(object["turns"] as? Int, 7)
+        // Unrelated event fields stay omitted.
+        XCTAssertNil(object["state"])
+        XCTAssertNil(object["command"])
+        XCTAssertNil(object["decision"])
+    }
+
     // MARK: - Event filtering & backlog snapshot
 
     private func event(_ type: String, pane: String? = nil, state: String? = nil) -> SidekickEvent {

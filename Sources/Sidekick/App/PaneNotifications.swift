@@ -15,6 +15,10 @@ extension Notification.Name {
     /// `PaneModel`; `userInfo["agentState"]` carries the new `AgentState`.
     static let paneAgentStateChanged = Notification.Name("PaneAgentStateChanged")
 
+    /// A pane reported new agent telemetry (token usage) via the
+    /// sidekick-telemetry hook. `object` is the affected `TabModel`, if known.
+    static let paneTelemetryChanged = Notification.Name("PaneTelemetryChanged")
+
     /// A shell command finished (OSC 133 D mark). `object` is the `PaneModel`;
     /// `userInfo["status"]` carries a `TerminalCommandStatus` when one is known.
     static let paneCommandStatusChanged = Notification.Name("PaneCommandStatusChanged")
