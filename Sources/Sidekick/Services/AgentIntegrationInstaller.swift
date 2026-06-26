@@ -76,7 +76,8 @@ enum AgentIntegrationInstaller {
                 contentsOf: home.appendingPathComponent(".claude/settings.json"),
                 encoding: .utf8
             )) ?? ""
-            return settings.contains("sidekick-agent-status") ? .installed : .available
+            guard settings.contains("sidekick-agent-status") else { return .available }
+            return telemetryFullyInstalled(in: settings) ? .installed : .available
         case .codex:
             guard directoryExists(home.appendingPathComponent(".codex")) else { return .notDetected }
             guard helperURL(named: "sidekick-agent-status") != nil else { return .helperMissing }
@@ -84,12 +85,31 @@ enum AgentIntegrationInstaller {
                 contentsOf: home.appendingPathComponent(".codex/config.toml"),
                 encoding: .utf8
             )) ?? ""
-            return config.contains("sidekick-agent-status") ? .installed : .available
+            guard config.contains("sidekick-agent-status") else { return .available }
+            return telemetryFullyInstalled(in: config) ? .installed : .available
         case .pi:
             guard directoryExists(home.appendingPathComponent(".pi/agent")) else { return .notDetected }
             let extensionURL = home.appendingPathComponent(".pi/agent/extensions/sidekick-status.ts")
-            return FileManager.default.fileExists(atPath: extensionURL.path) ? .installed : .available
+            guard let ext = try? String(contentsOf: extensionURL, encoding: .utf8) else { return .available }
+            // The telemetry-enabled extension defines reportTelemetry.
+            if isTelemetryHelperBundled, !ext.contains("reportTelemetry") { return .available }
+            return .installed
         }
+    }
+
+    /// Whether the telemetry helper is bundled and thus expected in a fully
+    /// installed integration. When it isn't (a build without the helper), the
+    /// status shouldn't perpetually read "available".
+    private static var isTelemetryHelperBundled: Bool {
+        helperURL(named: "sidekick-telemetry") != nil
+    }
+
+    /// True when an integration that has the status hook is also wired for
+    /// telemetry — i.e. the config already references `sidekick-telemetry`, or
+    /// the helper isn't bundled to install one. Drives the reinstall prompt when
+    /// a pre-telemetry integration is detected.
+    private static func telemetryFullyInstalled(in config: String) -> Bool {
+        !isTelemetryHelperBundled || config.contains("sidekick-telemetry")
     }
 
     private static func directoryExists(_ url: URL) -> Bool {
