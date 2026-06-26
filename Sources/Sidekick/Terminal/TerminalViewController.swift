@@ -42,6 +42,55 @@ struct TerminalCommandRecord {
     let finishedAt: Date
 }
 
+/// Classifies the raw byte sequences the terminal sends upstream to the child
+/// process, so we can tell genuine keystrokes from terminal-generated reports
+/// (focus / mouse) and, within mouse reports, pointer motion from button clicks.
+enum MouseReportClassifier {
+    /// True when `data` is purely a focus-tracking (CSI I / CSI O) or
+    /// mouse-report (CSI M… / CSI <…) sequence the terminal generated on its
+    /// own, rather than a genuine keystroke or paste.
+    nonisolated static func isTerminalGeneratedReport(_ data: ArraySlice<UInt8>) -> Bool {
+        guard data.count >= 3 else { return false }
+        let bytes = Array(data)
+        guard bytes[0] == 0x1B, bytes[1] == 0x5B else { return false } // ESC [
+        switch bytes[2] {
+        case 0x49, 0x4F:          // CSI I / CSI O — focus in / focus out
+            return bytes.count == 3
+        case 0x4D, 0x3C:          // CSI M / CSI < — mouse report (X10 / SGR)
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// True when `data` is a mouse *motion* report (the pointer moved) rather
+    /// than a button press or release. Motion is flagged by bit 5 (value 0x20)
+    /// of the button field, in both SGR (`CSI < Cb ; Cx ; Cy`) and X10
+    /// (`CSI M Cb Cx Cy`, each byte offset by 32) encodings. Clicks and
+    /// releases leave that bit clear.
+    nonisolated static func isMouseMotionReport(_ data: ArraySlice<UInt8>) -> Bool {
+        guard data.count >= 4 else { return false }
+        let bytes = Array(data)
+        guard bytes[0] == 0x1B, bytes[1] == 0x5B else { return false } // ESC [
+        switch bytes[2] {
+        case 0x3C: // SGR: ESC [ < Cb ; Cx ; Cy (M | m)
+            var value = 0
+            var sawDigit = false
+            for b in bytes[3...] {
+                guard b >= 0x30, b <= 0x39 else { break }
+                value = value * 10 + Int(b - 0x30)
+                sawDigit = true
+            }
+            return sawDigit && (value & 0x20) != 0
+        case 0x4D: // X10: ESC [ M Cb Cx Cy
+            let cb = Int(bytes[3]) - 32
+            return cb >= 0 && (cb & 0x20) != 0
+        default:
+            return false
+        }
+    }
+}
+
 private final class AgentAwareTerminalView: LocalProcessTerminalView {
     var onOutput: ((String) -> Void)?
     var onInput: (() -> Void)?
@@ -54,31 +103,28 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
     }
 
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        // On the normal screen the mouse belongs to Sidekick — selection,
+        // scrollback scrolling, and link hover — not to inline apps. Claude
+        // Code keeps motion reporting (DECSET 1003) on for its hover-to-expand
+        // effect, but forwarding that motion makes it re-render on every pixel
+        // of movement, which flickers and can wedge SwiftTerm's
+        // synchronized-output (CSI 2026) snapshot so the screen freezes on a
+        // stale frame while the agent waits for unseen input. Drop motion on
+        // the normal screen only; alternate-screen TUIs (vim, htop, lazygit)
+        // still get the full mouse, and clicks/releases still reach the app.
+        // Mirrors the scroll-wheel gate in 925c08b.
+        if MouseReportClassifier.isMouseMotionReport(data),
+           !getTerminal().isCurrentBufferAlternate {
+            return
+        }
         // Focus and mouse reports are emitted by the emulator itself when the
         // view is focused, clicked, or hovered — the user didn't type them, so
         // they must not count as "the user is working" (that flipped a finished
         // agent back to Working whenever its tab was activated).
-        if !Self.isTerminalGeneratedReport(data) {
+        if !MouseReportClassifier.isTerminalGeneratedReport(data) {
             onInput?()
         }
         super.send(source: source, data: data)
-    }
-
-    /// True when `data` is purely a focus-tracking (CSI I / CSI O) or
-    /// mouse-report (CSI M… / CSI <…) sequence the terminal generated on its
-    /// own, rather than a genuine keystroke or paste.
-    private static func isTerminalGeneratedReport(_ data: ArraySlice<UInt8>) -> Bool {
-        guard data.count >= 3 else { return false }
-        let bytes = Array(data)
-        guard bytes[0] == 0x1B, bytes[1] == 0x5B else { return false } // ESC [
-        switch bytes[2] {
-        case 0x49, 0x4F:          // CSI I / CSI O — focus in / focus out
-            return bytes.count == 3
-        case 0x4D, 0x3C:          // CSI M / CSI < — mouse report (X10 / SGR)
-            return true
-        default:
-            return false
-        }
     }
 }
 
