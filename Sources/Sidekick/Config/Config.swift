@@ -193,6 +193,9 @@ always_ask = []
     public func save(to path: String = "~/.config/sidekick/config.toml") {
         let expandedPath = NSString(string: path).expandingTildeInPath
         let fileURL = URL(fileURLWithPath: expandedPath)
+        // Write to the real target when the config is a stowed symlink, so the
+        // atomic write doesn't replace the link with a regular file.
+        let writeURL = Self.resolvingSymlinkForWrite(fileURL)
 
         do {
             let encoder = TOMLEncoder()
@@ -200,13 +203,30 @@ always_ask = []
             let tomlString = toml.description
 
             // Create directory if needed
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
+            try FileManager.default.createDirectory(at: writeURL.deletingLastPathComponent(),
                                                    withIntermediateDirectories: true)
 
-            try tomlString.write(to: fileURL, atomically: true, encoding: .utf8)
+            try tomlString.write(to: writeURL, atomically: true, encoding: .utf8)
         } catch {
-            print("Failed to save config: \(error)")
+            Log.error("Failed to save config: \(error)", category: "config")
         }
+    }
+
+    /// If `url` is a symlink (e.g. a dotfile stow-linked into `~/.config`),
+    /// returns the link's real target so an atomic write (temp file + rename)
+    /// replaces the linked file rather than clobbering the symlink — keeping a
+    /// dotfiles/stow setup and its version control intact. Otherwise returns
+    /// `url` unchanged. Resolves only the final component, by design: a relative
+    /// stow target is resolved against the symlink's own directory.
+    static func resolvingSymlinkForWrite(_ url: URL) -> URL {
+        guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else {
+            return url
+        }
+        if (target as NSString).isAbsolutePath {
+            return URL(fileURLWithPath: target).standardizedFileURL
+        }
+        return URL(fileURLWithPath: target, relativeTo: url.deletingLastPathComponent())
+            .standardizedFileURL
     }
 }
 
