@@ -282,4 +282,57 @@ final class EventStreamAndWorktreeTests: XCTestCase {
         // Prune is a no-op here but must still succeed.
         XCTAssertNoThrow(try service.pruneWorktrees(directory: repo.path))
     }
+
+    func testEnsureWorktreeCopiesWorktreeIncludeFiles() throws {
+        let fm = FileManager.default
+        let repo = fm.temporaryDirectory.appendingPathComponent("sk-wt-\(UUID().uuidString)")
+        try fm.createDirectory(at: repo, withIntermediateDirectories: true)
+        var cleanup: [URL] = [repo]
+        defer { cleanup.forEach { try? fm.removeItem(at: $0) } }
+
+        func git(_ args: [String]) throws {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = args
+            p.currentDirectoryURL = repo
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            try p.run()
+            p.waitUntilExit()
+        }
+
+        try git(["init", "-q"])
+        try git(["config", "user.email", "t@example.com"])
+        try git(["config", "user.name", "Test"])
+        try "hi".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        // .gitignore so .env and build/ are ignored; loose.txt is not.
+        try ".env\nbuild/\n".write(to: repo.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        try ".env\nbuild/\nloose.txt\n".write(to: repo.appendingPathComponent(".worktreeinclude"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "init"])
+
+        // Untracked, gitignored, and matched by .worktreeinclude → copied.
+        try "SECRET=1".write(to: repo.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        try fm.createDirectory(at: repo.appendingPathComponent("build"), withIntermediateDirectories: true)
+        try "obj".write(to: repo.appendingPathComponent("build/out.o"), atomically: true, encoding: .utf8)
+        // Matched by .worktreeinclude but NOT gitignored → must not be copied.
+        try "loose".write(to: repo.appendingPathComponent("loose.txt"), atomically: true, encoding: .utf8)
+
+        let service = WorktreeService()
+        let created = try service.ensureWorktree(forBranch: "feature/x", directory: repo.path)
+        cleanup.append(URL(fileURLWithPath: created).deletingLastPathComponent())
+        let worktree = URL(fileURLWithPath: created)
+
+        XCTAssertEqual(
+            try? String(contentsOf: worktree.appendingPathComponent(".env"), encoding: .utf8),
+            "SECRET=1"
+        )
+        XCTAssertEqual(
+            try? String(contentsOf: worktree.appendingPathComponent("build/out.o"), encoding: .utf8),
+            "obj"
+        )
+        XCTAssertFalse(
+            fm.fileExists(atPath: worktree.appendingPathComponent("loose.txt").path),
+            "a matched-but-not-gitignored file must not be copied"
+        )
+    }
 }

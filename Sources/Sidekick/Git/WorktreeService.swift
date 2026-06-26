@@ -68,7 +68,61 @@ nonisolated struct WorktreeService: Sendable {
             let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw WorktreeError.gitFailed(message.isEmpty ? "git worktree add failed" : message)
         }
+
+        // A fresh checkout omits gitignored files (`.env`, local caches), so
+        // honour a `.worktreeinclude` at the repo root the same way `claude
+        // --worktree` does — otherwise the same file works or doesn't depending
+        // on whether Sidekick or Claude Code created the worktree. Best-effort:
+        // a copy failure must not fail the split.
+        copyIncludedFiles(repoRoot: repoRoot, into: path)
         return path
+    }
+
+    /// Copies files named by a `.worktreeinclude` at the repo root into a freshly
+    /// created worktree, matching Claude Code's behaviour. The file uses
+    /// `.gitignore` syntax; a path is copied only when it matches an include
+    /// pattern *and* is gitignored, so tracked files (already in the checkout)
+    /// are never duplicated. Files are copied, not symlinked, so each worktree
+    /// gets its own isolated copy.
+    private func copyIncludedFiles(repoRoot: String, into worktreePath: String) {
+        let includeFile = URL(fileURLWithPath: repoRoot).appendingPathComponent(".worktreeinclude").path
+        guard FileManager.default.fileExists(atPath: includeFile) else { return }
+
+        // Untracked files matching the include patterns. `--others` already drops
+        // tracked files, so they can never be duplicated.
+        let matched = untrackedFiles(repoRoot: repoRoot, excludeArgs: ["--exclude-from=\(includeFile)"])
+        guard !matched.isEmpty else { return }
+
+        // Intersect with everything git ignores so an included path is copied only
+        // when it's also gitignored — CC's rule. Computing the intersection from
+        // two `ls-files` runs keeps NUL-clean paths and avoids `check-ignore`,
+        // whose `-z` output needs a stdin we can't feed through GitService.
+        let gitignored = Set(untrackedFiles(repoRoot: repoRoot, excludeArgs: ["--exclude-standard"]))
+
+        let sourceRoot = URL(fileURLWithPath: repoRoot)
+        let destRoot = URL(fileURLWithPath: worktreePath)
+        for relativePath in matched where gitignored.contains(relativePath) {
+            let source = sourceRoot.appendingPathComponent(relativePath)
+            let destination = destRoot.appendingPathComponent(relativePath)
+            // Don't clobber anything `git worktree add` already wrote.
+            guard !FileManager.default.fileExists(atPath: destination.path) else { continue }
+            try? FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? FileManager.default.copyItem(at: source, to: destination)
+        }
+    }
+
+    /// Untracked files in `repoRoot` that the given exclude arguments mark as
+    /// ignored, as repo-relative paths. `-z` keeps paths unquoted and
+    /// NUL-separated so exotic names survive intact.
+    private func untrackedFiles(repoRoot: String, excludeArgs: [String]) -> [String] {
+        guard let result = try? git.run(
+            repositoryRoot: repoRoot,
+            arguments: ["ls-files", "-z", "--others", "--ignored"] + excludeArgs
+        ), result.succeeded else { return [] }
+        return result.stdout.components(separatedBy: "\0").filter { !$0.isEmpty }
     }
 
     /// Removes the worktree registered for `branch` in the repo containing
