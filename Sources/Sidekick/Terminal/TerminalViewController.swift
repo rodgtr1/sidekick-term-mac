@@ -218,13 +218,16 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
-    /// SwiftTerm's scrollWheel only ever scrolls the scrollback buffer.
-    /// That breaks two cases that other terminals handle:
-    ///  - apps with mouse reporting enabled (Claude Code) expect wheel
-    ///    events so they can scroll their own content;
-    ///  - alternate-screen apps without mouse reporting (vim, less) have
-    ///    no scrollback, so wheel events should become arrow keys.
-    /// Plain shells still fall through to normal scrollback scrolling.
+    /// SwiftTerm's scrollWheel only ever scrolls the scrollback buffer, which
+    /// breaks full-screen (alternate-buffer) apps:
+    ///  - alternate-screen apps WITH mouse reporting want the wheel as xterm
+    ///    button 4/5 so they can scroll their own viewport;
+    ///  - alternate-screen apps WITHOUT mouse reporting (vim, less) have no
+    ///    scrollback, so wheel events should become arrow keys.
+    /// On the NORMAL screen we always scroll our own scrollback — even when the
+    /// app (e.g. Claude Code) keeps mouse reporting on for clicks — so scrolling
+    /// over an inline prompt can't silently pick an option. Plain shells fall
+    /// through to normal scrollback scrolling too.
     private func setupAlternateScreenScrolling() {
         scrollEventMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.scrollWheel, .leftMouseUp, .leftMouseDragged]
@@ -323,7 +326,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         let terminal = terminalView.getTerminal()
         let reportsMouse = terminal.mouseMode != .off
-        guard reportsMouse || terminal.isCurrentBufferAlternate else { return event }
+        // Only hijack the wheel for full-screen (alternate-buffer) apps. Claude
+        // Code and other normal-screen REPLs keep mouse reporting on to catch
+        // clicks, so forwarding the wheel to them turns a scroll over an inline
+        // prompt into a silent selection. On the normal screen the wheel scrolls
+        // our own scrollback instead — which IS the app's output — matching
+        // Ghostty/iTerm/xterm.
+        guard terminal.isCurrentBufferAlternate else { return event }
 
         // Only handle events over this terminal's view.
         let pointInView = terminalView.convert(event.locationInWindow, from: nil)
