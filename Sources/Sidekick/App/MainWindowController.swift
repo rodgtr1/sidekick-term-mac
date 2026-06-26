@@ -1,6 +1,9 @@
 import Cocoa
 import SwiftTerm
-import UserNotifications
+// UserNotifications isn't Sendable-audited for strict concurrency yet, so import
+// it @preconcurrency to downgrade its cross-actor Sendable diagnostics (e.g.
+// capturing UNUserNotificationCenter in the authorization completion handler).
+@preconcurrency import UserNotifications
 import SidekickTelemetryCore
 
 @_silgen_name("CGSDefaultConnectionForThread")
@@ -212,7 +215,7 @@ class MainWindowController: NSWindowController {
 
     private func setupSessionPersistence() {
         sessionSaveTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            self?.saveSession()
+            MainActor.assumeIsolated { self?.saveSession() }
         }
 
         if let window = window {

@@ -104,39 +104,35 @@ class DiffViewController: NSViewController {
         self.filePath = filePath
         self.isInteractiveMode = isInteractive
 
-        loadGitDiff(for: filePath) { [weak self] result in
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let diffContent):
-                    Log.debug("📝 DiffViewController: Loaded diff content (\(diffContent.count) chars)", category: "editor")
-                    self?.displayDiff(diffContent)
-                case .failure(let error):
-                    Log.error("❌ DiffViewController: Failed to load diff: \(error.localizedDescription)", category: "diff")
-                    self?.showError("Failed to load diff: \(error.localizedDescription)")
-                }
+        // Load the diff off the main actor (loadGitDiff is nonisolated async),
+        // then return here on the main actor to render. The enclosing Task
+        // inherits main-actor isolation, so the post-await UI calls are safe.
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let diffContent = try await self.loadGitDiff(for: filePath)
+                Log.debug("📝 DiffViewController: Loaded diff content (\(diffContent.count) chars)", category: "editor")
+                self.displayDiff(diffContent)
+            } catch {
+                Log.error("❌ DiffViewController: Failed to load diff: \(error.localizedDescription)", category: "diff")
+                self.showError("Failed to load diff: \(error.localizedDescription)")
             }
         }
     }
 
-    private func loadGitDiff(for filePath: String, completion: @escaping (Result<String, Error>) -> Void) {
+    private nonisolated func loadGitDiff(for filePath: String) async throws -> String {
         Log.debug("📝 loadGitDiff: filePath = \(filePath)", category: "editor")
 
-        DispatchQueue.global(qos: .userInitiated).async { [gitService] in
-            let gitRoot = gitService.repositoryRoot(from: filePath) ?? URL(fileURLWithPath: filePath).deletingLastPathComponent().path
-            Log.debug("📝 loadGitDiff: gitRoot = \(gitRoot)", category: "editor")
+        let gitRoot = gitService.repositoryRoot(from: filePath) ?? URL(fileURLWithPath: filePath).deletingLastPathComponent().path
+        Log.debug("📝 loadGitDiff: gitRoot = \(gitRoot)", category: "editor")
 
-            let workspace = WorkspaceContext(workingDirectory: gitRoot, repositoryRoot: gitRoot)
-            let relativePath = workspace.relativePath(for: filePath)
-            Log.debug("📝 loadGitDiff: relativePath = \(relativePath)", category: "editor")
+        let workspace = WorkspaceContext(workingDirectory: gitRoot, repositoryRoot: gitRoot)
+        let relativePath = workspace.relativePath(for: filePath)
+        Log.debug("📝 loadGitDiff: relativePath = \(relativePath)", category: "editor")
 
-            do {
-                let diff = try gitService.diff(relativePath: relativePath, repositoryRoot: gitRoot)
-                Log.debug("📝 loadGitDiff: git diff output length = \(diff.count)", category: "editor")
-                completion(.success(diff))
-            } catch {
-                completion(.failure(error))
-            }
-        }
+        let diff = try gitService.diff(relativePath: relativePath, repositoryRoot: gitRoot)
+        Log.debug("📝 loadGitDiff: git diff output length = \(diff.count)", category: "editor")
+        return diff
     }
 
     private func displayDiff(_ content: String) {

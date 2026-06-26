@@ -1,7 +1,9 @@
 import Foundation
 import Darwin
 
-class CWDDetector {
+// Pure kernel queries (proc_pidinfo) with no shared state — runs off the main
+// actor from the terminal's CWD-polling background queue.
+nonisolated class CWDDetector {
     static func getCWD(for pid: pid_t) -> String? {
         // Ask the kernel directly for the process's current directory.
         // Unlike spawning lsof, this costs microseconds and no subprocess.

@@ -2,8 +2,13 @@ import Foundation
 
 class GitIgnoreChecker {
     private let rootPath: String
-    private var ignoredFiles: Set<String> = []
-    private var isLoaded = false
+    // Written on the main actor after the git load completes, read by isIgnored
+    // on the file-tree background queue. Both accesses go through `stateLock`,
+    // so the nonisolated(unsafe) opt-out is backed by real synchronization
+    // (assigning a Set across threads without it is a data race / UB).
+    private let stateLock = NSLock()
+    private nonisolated(unsafe) var ignoredFiles: Set<String> = []
+    private nonisolated(unsafe) var isLoaded = false
     private var isLoading = false
     private let queue = DispatchQueue(label: "com.sidekick.gitignore", qos: .userInitiated)
 
@@ -15,20 +20,24 @@ class GitIgnoreChecker {
         startLoadingIgnoredFiles()
     }
 
-    func isIgnored(path: String) -> Bool {
-        // Return false if not loaded yet - we'll refresh the UI when loading completes
-        guard isLoaded else { return false }
-
+    nonisolated func isIgnored(path: String) -> Bool {
         // Convert to relative path from root
         let relativePath = path.hasPrefix(rootPath)
             ? String(path.dropFirst(rootPath.count + 1))
             : path
 
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        // Return false if not loaded yet - we'll refresh the UI when loading completes
+        guard isLoaded else { return false }
         return ignoredFiles.contains(relativePath)
     }
 
     private func startLoadingIgnoredFiles() {
-        guard !isLoading && !isLoaded else { return }
+        stateLock.lock()
+        let alreadyLoaded = isLoaded
+        stateLock.unlock()
+        guard !isLoading && !alreadyLoaded else { return }
         isLoading = true
 
         // The git invocation runs off-main and touches no instance state; the
@@ -39,10 +48,12 @@ class GitIgnoreChecker {
             let loaded = Self.loadIgnoredFiles(rootPath: root)
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                if let loaded = loaded {
-                    self.ignoredFiles = loaded
+                self.stateLock.withLock {
+                    if let loaded = loaded {
+                        self.ignoredFiles = loaded
+                    }
+                    self.isLoaded = true
                 }
-                self.isLoaded = true
                 self.isLoading = false
                 self.onLoadComplete?()
             }

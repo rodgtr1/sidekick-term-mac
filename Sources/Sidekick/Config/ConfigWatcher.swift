@@ -28,8 +28,11 @@ nonisolated final class ConfigWatcher: @unchecked Sendable {
     /// if the file does not exist yet.
     private func resolved(_ path: String) -> String {
         var buffer = [Int8](repeating: 0, count: Int(PATH_MAX))
-        if realpath(path, &buffer) != nil {
-            return String(cString: buffer)
+        // Use the pointer-returning result of realpath so we hit String's
+        // (non-deprecated) UnsafePointer<CChar> overload rather than the
+        // deprecated [CChar] array initializer.
+        if let resolvedPtr = realpath(path, &buffer) {
+            return String(cString: resolvedPtr)
         }
         return path
     }

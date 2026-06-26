@@ -179,7 +179,7 @@ final class DiffApprovalPanel {
 
     /// Produces a unified diff of two strings with /usr/bin/diff. Falls back
     /// to a whole-file remove/add diff if that fails.
-    static func unifiedDiff(old: String, new: String, path: String) -> String {
+    nonisolated static func unifiedDiff(old: String, new: String, path: String) -> String {
         let temp = FileManager.default.temporaryDirectory
         let oldURL = temp.appendingPathComponent("sidekick-diff-old-\(UUID().uuidString)")
         let newURL = temp.appendingPathComponent("sidekick-diff-new-\(UUID().uuidString)")

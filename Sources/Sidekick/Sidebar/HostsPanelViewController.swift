@@ -4,7 +4,7 @@ import Cocoa
 /// readability handler. Reference-typed so strict concurrency accepts the
 /// capture (a captured `var` mutated off the main actor is rejected even when
 /// lock-guarded); the lock makes the concurrent appends data-race free.
-private final class LockedData: @unchecked Sendable {
+private nonisolated final class LockedData: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
 
@@ -278,7 +278,7 @@ final class HostsPanelViewController: NSViewController {
 
     /// Runs tsh with a hard timeout, killing the process if it hangs
     /// (e.g. waiting for interactive reauthentication).
-    private static func runTsh(_ url: URL, arguments: [String], timeout: TimeInterval) -> TshResult {
+    nonisolated private static func runTsh(_ url: URL, arguments: [String], timeout: TimeInterval) -> TshResult {
         let task = Process()
         task.executableURL = url
         task.arguments = arguments

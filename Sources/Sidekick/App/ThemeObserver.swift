@@ -10,12 +10,16 @@ final class ThemeObserver {
     // nonisolated deinit at end-of-life (no other reference can exist then).
     nonisolated(unsafe) private var token: NSObjectProtocol?
 
-    init(_ handler: @escaping () -> Void) {
+    init(_ handler: @escaping @MainActor () -> Void) {
         token = NotificationCenter.default.addObserver(
             forName: .themeDidChange,
             object: nil,
             queue: .main
-        ) { _ in handler() }
+        ) { _ in
+            // The observer is delivered on the main queue (queue: .main above),
+            // so it's safe to run the main-actor handler synchronously here.
+            MainActor.assumeIsolated { handler() }
+        }
     }
 
     deinit {

@@ -80,7 +80,7 @@ final class AgentDashboardViewController: NSViewController {
         reload()
         // Tick to keep elapsed times fresh while the panel is visible.
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.reload()
+            MainActor.assumeIsolated { self?.reload() }
         }
     }
 

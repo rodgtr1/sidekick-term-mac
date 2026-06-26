@@ -520,7 +520,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     private func startCWDTracking() {
         cwdTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.updateCWD()
+            MainActor.assumeIsolated { self?.updateCWD() }
         }
     }
 
@@ -548,11 +548,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func updateTitle() {
-        let cwdURL = URL(fileURLWithPath: currentCWD)
+        // Read the main-actor cwd once here and pass it into the background
+        // git lookup, rather than touching `currentCWD` from the off-main closure.
+        let cwd = currentCWD
+        let cwdURL = URL(fileURLWithPath: cwd)
         let basename = cwdURL.lastPathComponent.isEmpty ? "~" : cwdURL.lastPathComponent
 
         DispatchQueue.global(qos: .background).async { [weak self] in
-            let branch = self?.getGitBranch(at: self?.currentCWD ?? "")
+            let branch = self?.getGitBranch(at: cwd)
 
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
@@ -570,7 +573,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
     }
 
-    private func getGitBranch(at path: String) -> String? {
+    nonisolated private func getGitBranch(at path: String) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         task.arguments = ["-C", path, "symbolic-ref", "--short", "HEAD"]
@@ -597,7 +600,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
     }
 
-    private func getGitBranchDetached(at path: String) -> String? {
+    nonisolated private func getGitBranchDetached(at path: String) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         task.arguments = ["-C", path, "rev-parse", "--short", "HEAD"]
@@ -1237,8 +1240,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private func scheduleDoneAfterQuietPeriod() {
         agentDoneTimer?.invalidate()
         agentDoneTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
-            guard let self = self, self.lastDetectedAgentState == .working else { return }
-            self.notifyDetectedAgentState(.done)
+            MainActor.assumeIsolated {
+                guard let self = self, self.lastDetectedAgentState == .working else { return }
+                self.notifyDetectedAgentState(.done)
+            }
         }
     }
 
@@ -1274,7 +1279,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             suppressedPromptMarkers = agentPromptMarkers(in: screen)
         }
         blockedPollingTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            self?.pollForBlockedState()
+            MainActor.assumeIsolated { self?.pollForBlockedState() }
         }
     }
 

@@ -86,7 +86,7 @@ nonisolated struct EventFilter {
 // subscribers). The unsafe FD writes are serialized by the same lock-guarded
 // membership set. Marked explicitly to prep for the Swift 6 strict-concurrency
 // migration without flipping the language mode yet.
-final class EventBroadcaster: @unchecked Sendable {
+nonisolated final class EventBroadcaster: @unchecked Sendable {
     static let shared = EventBroadcaster()
 
     private let lock = NSLock()

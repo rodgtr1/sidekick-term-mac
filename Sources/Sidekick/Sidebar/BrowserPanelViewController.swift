@@ -437,7 +437,11 @@ class BrowserPanelViewController: NSViewController {
         return host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
 
-    private func clearWebsiteData(for url: URL, completion: @escaping () -> Void) {
+    // `completion` is @MainActor: WKWebsiteDataStore's callbacks fire on a
+    // background queue, but we always hop back to main before invoking it (it
+    // touches the web view), and a main-actor closure is Sendable so it can be
+    // captured in those @Sendable callbacks.
+    private func clearWebsiteData(for url: URL, completion: @escaping @MainActor () -> Void) {
         let dataStore = WKWebsiteDataStore.default()
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
 
@@ -449,12 +453,12 @@ class BrowserPanelViewController: NSViewController {
             }
 
             guard !matchingRecords.isEmpty else {
-                DispatchQueue.main.async(execute: completion)
+                Task { @MainActor in completion() }
                 return
             }
 
             dataStore.removeData(ofTypes: types, for: matchingRecords) {
-                DispatchQueue.main.async(execute: completion)
+                Task { @MainActor in completion() }
             }
         }
     }
@@ -490,19 +494,21 @@ class BrowserPanelViewController: NSViewController {
 
 // MARK: - WKNavigationDelegate
 extension BrowserPanelViewController: WKNavigationDelegate {
+    // Async delegate variant: the completion-handler form silently fails to
+    // satisfy WKNavigationDelegate's @MainActor requirement under strict
+    // concurrency (the closure's Sendability no longer matches), so it would
+    // never be called. The async form matches cleanly.
     func webView(
         _ webView: WKWebView,
-        decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-    ) {
+        decidePolicyFor navigationAction: WKNavigationAction
+    ) async -> WKNavigationActionPolicy {
         // Block web content from navigating to local files; the embedded
         // browser is for http(s) dev servers and docs only.
         if let scheme = navigationAction.request.url?.scheme?.lowercased(),
            scheme == "file" {
-            decisionHandler(.cancel)
-            return
+            return .cancel
         }
-        decisionHandler(.allow)
+        return .allow
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -540,27 +546,27 @@ extension BrowserPanelViewController: WKUIDelegate {
         return nil
     }
 
-    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+    // Async WKUIDelegate variants — see the note on the navigation delegate
+    // above for why the completion-handler forms are replaced.
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async {
         let alert = NSAlert()
         alert.messageText = "Web Page Alert"
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.runModal()
-        completionHandler()
     }
 
-    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async -> Bool {
         let alert = NSAlert()
         alert.messageText = "Web Page Confirmation"
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Cancel")
 
-        let response = alert.runModal()
-        completionHandler(response == .alertFirstButtonReturn)
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
-    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo) async -> String? {
         let alert = NSAlert()
         alert.messageText = "Web Page Input"
         alert.informativeText = prompt
@@ -571,11 +577,6 @@ extension BrowserPanelViewController: WKUIDelegate {
         textField.stringValue = defaultText ?? ""
         alert.accessoryView = textField
 
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            completionHandler(textField.stringValue)
-        } else {
-            completionHandler(nil)
-        }
+        return alert.runModal() == .alertFirstButtonReturn ? textField.stringValue : nil
     }
 }

@@ -315,7 +315,7 @@ protocol IPCServerDelegate: AnyObject {
 /// invokes it more than once: a reference-captured latch is data-race free where
 /// a captured `var Bool` is not, so this satisfies strict concurrency's
 /// mutable-capture check (prep for the Swift 6 migration).
-final class OnceLatch: @unchecked Sendable {
+nonisolated final class OnceLatch: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false
 
@@ -333,7 +333,7 @@ final class OnceLatch: @unchecked Sendable {
 // accept loop runs on a background thread and per-connection work hops to the
 // main queue. Marked explicitly to prep for the Swift 6 strict-concurrency
 // migration without flipping the language mode yet.
-final class IPCServer: @unchecked Sendable {
+nonisolated final class IPCServer: @unchecked Sendable {
     private let socketURL: URL
     private var serverFD: Int32 = -1
     private let stateLock = NSLock()
@@ -563,22 +563,26 @@ final class IPCServer: @unchecked Sendable {
         // response is written (and the socket closed) once the delegate calls
         // the completion — which may be deferred (e.g. diff approval).
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                close(clientFD)
-                return
-            }
+            // Delivered on the main queue, so the main-actor `delegate` access
+            // below is safe to run synchronously.
+            MainActor.assumeIsolated {
+                guard let self = self else {
+                    close(clientFD)
+                    return
+                }
 
-            guard let delegate = self.delegate else {
-                self.sendResponse(IPCResponse(ok: false, error: "No delegate"), to: clientFD)
-                close(clientFD)
-                return
-            }
+                guard let delegate = self.delegate else {
+                    self.sendResponse(IPCResponse(ok: false, error: "No delegate"), to: clientFD)
+                    close(clientFD)
+                    return
+                }
 
-            let responded = OnceLatch()
-            delegate.ipcServer(self, didReceiveCommand: commandType) { [weak self] response in
-                guard responded.claim() else { return }
-                self?.sendResponse(response, to: clientFD)
-                close(clientFD)
+                let responded = OnceLatch()
+                delegate.ipcServer(self, didReceiveCommand: commandType) { [weak self] response in
+                    guard responded.claim() else { return }
+                    self?.sendResponse(response, to: clientFD)
+                    close(clientFD)
+                }
             }
         }
     }

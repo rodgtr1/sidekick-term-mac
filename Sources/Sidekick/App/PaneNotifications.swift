@@ -10,7 +10,10 @@ import Foundation
 ///
 /// Raw values are unchanged from the old literals so anything that still posts a
 /// string by hand keeps interoperating during the migration.
-extension Notification.Name {
+// These names are immutable Sendable constants observed and posted from both
+// main-actor and background contexts (the IPC event stream, file watchers), so
+// the extension opts out of the module's default main-actor isolation.
+nonisolated extension Notification.Name {
     /// A pane's agent state changed (idle/working/ready/done). `object` is the
     /// `PaneModel`; `userInfo["agentState"]` carries the new `AgentState`.
     static let paneAgentStateChanged = Notification.Name("PaneAgentStateChanged")

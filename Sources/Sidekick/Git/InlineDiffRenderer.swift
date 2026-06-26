@@ -49,7 +49,7 @@ enum InlineDiffRenderer {
     /// Whole-line background, painted full-width by
     /// `DiffLineBackgroundLayoutManager` (use this for added/removed/conflict
     /// lines; reserve `.backgroundColor` for intraline emphasis only).
-    static let lineFillColor = NSAttributedString.Key("InlineDiffLineFillColor")
+    nonisolated static let lineFillColor = NSAttributedString.Key("InlineDiffLineFillColor")
 
     private static var textColor: NSColor { AppTheme.primaryText }
     private static var gutterColor: NSColor { AppTheme.mutedText }

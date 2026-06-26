@@ -23,8 +23,10 @@ class FileTreeViewController: NSViewController {
     private var currentPath: String = ""
     private var showHidden: Bool = false
     private var gitIgnoreChecker: GitIgnoreChecker?
-    private var eventStream: FSEventStreamRef?
-    private var refreshWorkItem: DispatchWorkItem?
+    // Touched on the main actor while watching; read once by the nonisolated
+    // deinit's stopWatching() at end-of-life (no other reference exists then).
+    nonisolated(unsafe) private var eventStream: FSEventStreamRef?
+    nonisolated(unsafe) private var refreshWorkItem: DispatchWorkItem?
     private var lastRefreshFromFileEvent: Date?
     /// Expanded folders remembered per project root, so switching tabs and
     /// coming back restores the tree instead of collapsing it.
@@ -336,7 +338,7 @@ class FileTreeViewController: NSViewController {
         FSEventStreamStart(stream)
     }
 
-    private func stopWatching() {
+    nonisolated private func stopWatching() {
         refreshWorkItem?.cancel()
         refreshWorkItem = nil
 
@@ -367,7 +369,7 @@ class FileTreeViewController: NSViewController {
         }
     }
 
-    private func loadExpandedDescendants(
+    private nonisolated func loadExpandedDescendants(
         from node: FileTreeNode,
         expandedPaths: Set<String>,
         showHidden: Bool,

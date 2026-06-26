@@ -35,7 +35,6 @@ let package = Package(
             ],
             path: "Sources/Sidekick",
             swiftSettings: [
-                .enableUpcomingFeature("BareSlashRegexLiterals"),
                 // The app is overwhelmingly AppKit main-thread code, so the whole
                 // module defaults to the main actor; the genuinely-background
                 // types (GitService, WorktreeService, ProcessRunner, IPC value

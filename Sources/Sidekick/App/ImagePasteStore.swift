@@ -4,7 +4,7 @@ import Foundation
 /// lives in one dedicated folder under the user's temp directory (which
 /// macOS also purges on its own), and files older than a day are pruned at
 /// every launch so pastes never accumulate.
-enum ImagePasteStore {
+nonisolated enum ImagePasteStore {
     private static let maxAge: TimeInterval = 24 * 60 * 60
 
     static var directory: URL {

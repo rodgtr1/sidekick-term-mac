@@ -154,7 +154,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     ) {
         let id = UUID()
         let timer = Timer.scheduledTimer(withTimeInterval: Double(timeoutMS) / 1000, repeats: false) { [weak self] _ in
-            self?.resolveOutputWait(id, matched: false)
+            MainActor.assumeIsolated { self?.resolveOutputWait(id, matched: false) }
         }
         guard let matcherID = terminal.registerOutputMatcher(match, onMatch: { [weak self] in
             self?.resolveOutputWait(id, matched: true)
@@ -192,7 +192,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         }
         let id = UUID()
         let timer = Timer.scheduledTimer(withTimeInterval: Double(timeoutMS) / 1000, repeats: false) { [weak self] _ in
-            self?.resolveStatusWait(id, matched: false)
+            MainActor.assumeIsolated { self?.resolveStatusWait(id, matched: false) }
         }
         statusWaits[id] = StatusWait(paneID: paneID, target: target, completion: completion, deadlineTimer: timer)
     }

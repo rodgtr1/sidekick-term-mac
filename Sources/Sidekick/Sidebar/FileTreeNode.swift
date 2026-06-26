@@ -2,7 +2,12 @@ import Foundation
 import Cocoa
 import UniformTypeIdentifiers
 
-class FileTreeNode {
+// Deliberately non-isolated: the file tree is built and walked on background
+// queues (see FileTreeViewController.loadFileTree) to keep directory scans off
+// the main thread. Access is serialized by that dispatch pattern, so the class
+// is an unchecked Sendable. Under the target's default MainActor isolation,
+// leaving this isolated makes loadChildren() trap when called off-main.
+nonisolated final class FileTreeNode: @unchecked Sendable {
     let url: URL
     let name: String
     let isDirectory: Bool
