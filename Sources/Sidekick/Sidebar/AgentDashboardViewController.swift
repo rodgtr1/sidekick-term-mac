@@ -16,7 +16,7 @@ final class AgentDashboardViewController: NSViewController {
     private var emptyLabel: NSTextField!
     private var refreshTimer: Timer?
 
-    private struct Row {
+    private struct Row: Equatable {
         let tabIndex: Int
         let title: String
         let state: AgentState
@@ -27,6 +27,12 @@ final class AgentDashboardViewController: NSViewController {
     }
 
     private var rows: [Row] = []
+
+    /// Tag on each row's "state · elapsed" label, so the per-second tick can
+    /// refresh it in place instead of reloading the table. A full reloadData
+    /// rebuilds the cells and resets their tooltip tracking rects, which is why
+    /// the telemetry tooltip never survived long enough to appear.
+    private static let detailLabelTag = 0x5DE7A11   // "sidetail"
 
     override func loadView() {
         view = NSView()
@@ -138,7 +144,7 @@ final class AgentDashboardViewController: NSViewController {
         guard isViewLoaded else { return }
         let tabs = delegate?.agentDashboardTabs(self) ?? []
 
-        rows = tabs.enumerated().compactMap { index, tab in
+        var newRows = tabs.enumerated().compactMap { index, tab -> Row? in
             guard tab.agentState != .idle else { return nil }
             return Row(
                 tabIndex: index,
@@ -151,13 +157,37 @@ final class AgentDashboardViewController: NSViewController {
             )
         }
         // Actionable tabs first: needs-input, then working, then done.
-        rows.sort { lhs, rhs in
+        newRows.sort { lhs, rhs in
             let l = Self.sortPriority(lhs.state), r = Self.sortPriority(rhs.state)
             return l == r ? lhs.tabIndex < rhs.tabIndex : l < r
         }
 
+        // Nothing structural changed (the common per-second tick): just advance
+        // the elapsed times in place. Avoiding reloadData keeps the cells — and
+        // their telemetry tooltip tracking — alive long enough to show on hover.
+        if newRows == rows {
+            refreshElapsedInPlace()
+            return
+        }
+
+        rows = newRows
         emptyLabel.isHidden = !rows.isEmpty
         tableView.reloadData()
+    }
+
+    /// Updates each visible row's "state · elapsed" label from its current data,
+    /// without rebuilding the cell.
+    private func refreshElapsedInPlace() {
+        let visible = tableView.rows(in: tableView.visibleRect)
+        guard visible.length > 0 else { return }
+        for row in visible.location ..< (visible.location + visible.length) {
+            guard row < rows.count,
+                  let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false),
+                  let detail = cell.viewWithTag(Self.detailLabelTag) as? NSTextField else { continue }
+            let rowData = rows[row]
+            let (stateLabel, _) = Self.describe(rowData.state)
+            detail.stringValue = "\(stateLabel) · \(Self.elapsedString(since: rowData.since))"
+        }
     }
 
     @objc private func rowClicked() {
@@ -262,6 +292,7 @@ extension AgentDashboardViewController: NSTableViewDelegate {
         )
         detailLabel.font = NSFont.systemFont(ofSize: 11)
         detailLabel.textColor = stateColor
+        detailLabel.tag = Self.detailLabelTag
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
 
         cell.addSubview(dot)
