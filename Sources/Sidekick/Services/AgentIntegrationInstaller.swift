@@ -340,30 +340,45 @@ enum AgentIntegrationInstaller {
             at: extensionsDirectory,
             withIntermediateDirectories: true
         )
-        try piExtensionSource.write(
+        // Embed the absolute telemetry-helper path (best-effort: empty when the
+        // helper isn't bundled, in which case the extension skips telemetry).
+        let telemetryPath = helperURL(named: "sidekick-telemetry")?.path ?? ""
+        let escaped = telemetryPath
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let source = piExtensionSource.replacingOccurrences(
+            of: "__SIDEKICK_TELEMETRY_BIN__", with: escaped
+        )
+        try source.write(
             to: extensionsDirectory.appendingPathComponent("sidekick-status.ts"),
             atomically: true,
             encoding: .utf8
         )
     }
 
-    /// Pi status extension. Mirror of scripts/pi-sidekick-status.ts — embedded
-    /// like ShellIntegration's scripts so the app needs no source checkout.
+    /// Pi status + telemetry extension. Mirror of scripts/pi-sidekick-status.ts —
+    /// embedded like ShellIntegration's scripts so the app needs no source
+    /// checkout. `__SIDEKICK_TELEMETRY_BIN__` is replaced at install time with the
+    /// absolute sidekick-telemetry path (or "" to disable telemetry).
     private static let piExtensionSource = #"""
-    // Sidekick agent-status extension for the Pi coding agent.
+    // Sidekick agent-status + telemetry extension for the Pi coding agent.
     //
     // Reports Pi's lifecycle to Sidekick's agents panel using the same OSC 666
     // termprop sequence that sidekick-agent-status emits for Claude Code/Codex
-    // hooks. Installed by Sidekick (Preferences -> Agents).
+    // hooks, and on each turn end hands Pi's session transcript to
+    // sidekick-telemetry for the token/cost dashboard. Installed by Sidekick
+    // (Preferences -> Agents).
     //
     // Mapping:
     //   agent_start            -> busy  (working on a prompt)
-    //   agent_end              -> done  (back at the input prompt)
+    //   agent_end              -> done  (back at the input prompt) + telemetry
     //   session_shutdown(quit) -> idle  (removed from the agents panel)
     import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
     import { closeSync, openSync, writeSync } from "node:fs";
+    import { spawn } from "node:child_process";
 
     const TERMPROP = "vte.ext.sidekick.agent";
+    const TELEMETRY_BIN = "__SIDEKICK_TELEMETRY_BIN__";
 
     function report(status: "busy" | "ready" | "done" | "idle"): void {
       try {
@@ -378,9 +393,34 @@ enum AgentIntegrationInstaller {
       }
     }
 
+    // Best-effort: hand the session transcript to sidekick-telemetry, tagged via
+    // the SIDEKICK_PANE_ID the helper reads from the inherited environment. Never
+    // throws into Pi.
+    function reportTelemetry(sessionFile: string | undefined): void {
+      if (!TELEMETRY_BIN || !sessionFile || !process.env.SIDEKICK_PANE_ID) return;
+      try {
+        const child = spawn(TELEMETRY_BIN, ["pi"], {
+          stdio: ["pipe", "ignore", "ignore"],
+          env: process.env,
+        });
+        child.on("error", () => {});
+        child.stdin.write(JSON.stringify({ transcript_path: sessionFile }));
+        child.stdin.end();
+      } catch {
+        // ignore
+      }
+    }
+
     export default function (pi: ExtensionAPI) {
       pi.on("agent_start", async () => report("busy"));
-      pi.on("agent_end", async () => report("done"));
+      pi.on("agent_end", async (_event, ctx) => {
+        report("done");
+        try {
+          reportTelemetry(ctx.sessionManager.getSessionFile());
+        } catch {
+          // ignore
+        }
+      });
       pi.on("session_shutdown", async (event) => {
         if (event.reason === "quit") {
           report("idle");

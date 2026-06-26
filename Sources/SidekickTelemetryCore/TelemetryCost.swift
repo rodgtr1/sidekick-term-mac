@@ -48,6 +48,8 @@ public extension TranscriptUsage {
     /// nil when the model has no known rate (e.g. a non-Claude agent), so the
     /// dashboard can show tokens without a misleading "$0.00".
     func estimatedCostUSD(rates: [String: TelemetryRate] = TelemetryRates.defaults) -> Double? {
+        // An agent-reported cost (Pi) is authoritative — no rate card needed.
+        if let reportedCostUSD { return reportedCostUSD }
         guard let rate = TelemetryRates.rate(forModel: model, rates: rates) else { return nil }
         let inRate = rate.inputPerMTok / 1_000_000
         let outRate = rate.outputPerMTok / 1_000_000

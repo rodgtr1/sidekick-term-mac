@@ -22,6 +22,11 @@ public struct TranscriptUsage: Equatable, Codable {
     /// a tool-result array). The dashboard surfaces this as "turns".
     public var userPrompts: Int
 
+    /// A cost the agent reported itself (e.g. Pi sums `usage.cost.total`). When
+    /// present it's authoritative and takes precedence over the rate-card
+    /// estimate — handy for agents whose model isn't in the rate card.
+    public var reportedCostUSD: Double?
+
     public init(
         model: String? = nil,
         inputTokens: Int = 0,
@@ -30,7 +35,8 @@ public struct TranscriptUsage: Equatable, Codable {
         cacheCreation5mTokens: Int = 0,
         cacheCreation1hTokens: Int = 0,
         assistantResponses: Int = 0,
-        userPrompts: Int = 0
+        userPrompts: Int = 0,
+        reportedCostUSD: Double? = nil
     ) {
         self.model = model
         self.inputTokens = inputTokens
@@ -40,6 +46,7 @@ public struct TranscriptUsage: Equatable, Codable {
         self.cacheCreation1hTokens = cacheCreation1hTokens
         self.assistantResponses = assistantResponses
         self.userPrompts = userPrompts
+        self.reportedCostUSD = reportedCostUSD
     }
 
     /// All cache-creation (cache-write) tokens, 5-minute + 1-hour.

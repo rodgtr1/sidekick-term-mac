@@ -24,6 +24,7 @@ struct SidekickTelemetry {
         let parsed: TranscriptUsage?
         switch agent {
         case "codex": parsed = CodexTranscriptParser.aggregate(contentsOfFile: transcriptPath)
+        case "pi":    parsed = PiTranscriptParser.aggregate(contentsOfFile: transcriptPath)
         default:      parsed = TranscriptParser.aggregate(contentsOfFile: transcriptPath)
         }
 
