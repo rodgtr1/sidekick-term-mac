@@ -2,6 +2,7 @@ import XCTest
 import TOMLKit
 @testable import Sidekick
 
+@MainActor
 final class ApprovalConfigTests: XCTestCase {
     private func approval(from toml: String) throws -> ApprovalConfig {
         try TOMLDecoder().decode(ApprovalConfig.self, from: try TOMLTable(string: toml))

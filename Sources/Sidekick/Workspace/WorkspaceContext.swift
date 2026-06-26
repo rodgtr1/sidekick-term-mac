@@ -1,6 +1,6 @@
 import Foundation
 
-struct WorkspaceContext: Equatable {
+nonisolated struct WorkspaceContext: Equatable, Sendable {
     let workingDirectory: String
     let repositoryRoot: String?
 
@@ -35,7 +35,7 @@ struct WorkspaceContext: Equatable {
     }
 }
 
-enum WorkspaceResolver {
+nonisolated enum WorkspaceResolver {
     static func gitRoot(from path: String, runner: ProcessRunning = ProcessRunner.shared) -> String? {
         do {
             let result = try runner.run(

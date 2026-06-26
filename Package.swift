@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
@@ -36,7 +36,12 @@ let package = Package(
             path: "Sources/Sidekick",
             swiftSettings: [
                 .enableUpcomingFeature("BareSlashRegexLiterals"),
-                .unsafeFlags(["-swift-version", "5"])
+                // The app is overwhelmingly AppKit main-thread code, so the whole
+                // module defaults to the main actor; the genuinely-background
+                // types (GitService, WorktreeService, ProcessRunner, IPC value
+                // types, …) are marked nonisolated/Sendable individually.
+                .defaultIsolation(MainActor.self),
+                .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .executableTarget(

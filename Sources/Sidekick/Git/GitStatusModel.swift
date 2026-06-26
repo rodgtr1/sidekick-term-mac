@@ -2,7 +2,7 @@ import Foundation
 import Cocoa
 import CoreServices
 
-enum GitFileStatus: String, CaseIterable {
+nonisolated enum GitFileStatus: String, CaseIterable, Sendable {
     case modified = "M"
     case added = "A"
     case deleted = "D"
@@ -27,7 +27,9 @@ enum GitFileStatus: String, CaseIterable {
         }
     }
 
-    var color: NSColor {
+    // Reads the (main-actor) theme palette, so it stays main-isolated even
+    // though the rest of the enum is nonisolated for background construction.
+    @MainActor var color: NSColor {
         switch self {
         case .modified: return AppTheme.peach
         case .added: return AppTheme.success
@@ -42,7 +44,7 @@ enum GitFileStatus: String, CaseIterable {
     }
 }
 
-struct GitFileItem {
+nonisolated struct GitFileItem: Sendable {
     let path: String
     let filename: String
     let stagedStatus: GitFileStatus
@@ -88,9 +90,10 @@ class GitStatusModel: ObservableObject {
     // Fallback poll for changes FSEvents can't see (e.g. edits over NFS).
     private let fallbackRefreshInterval: TimeInterval = 30.0
     private let refreshDebounce: TimeInterval = 0.3
-    private var refreshTimer: Timer?
-    private var eventStream: FSEventStreamRef?
-    private var pendingRefresh: DispatchWorkItem?
+    // Set on the main actor; torn down in the nonisolated deinit at end-of-life.
+    nonisolated(unsafe) private var refreshTimer: Timer?
+    nonisolated(unsafe) private var eventStream: FSEventStreamRef?
+    nonisolated(unsafe) private var pendingRefresh: DispatchWorkItem?
     private let gitService: GitService
     private var refreshGeneration: Int = 0
 
@@ -102,8 +105,17 @@ class GitStatusModel: ObservableObject {
         return _repositoryPath
     }
 
+    // Tear down the timer and FSEvents stream directly: the resource handles are
+    // nonisolated(unsafe) so this nonisolated deinit can reach them without
+    // hopping to the main actor (which a deinit can't await).
     deinit {
-        stopAutoRefresh()
+        refreshTimer?.invalidate()
+        pendingRefresh?.cancel()
+        if let eventStream {
+            FSEventStreamStop(eventStream)
+            FSEventStreamInvalidate(eventStream)
+            FSEventStreamRelease(eventStream)
+        }
     }
 
     func setRepositoryPath(_ path: String) {
@@ -145,15 +157,17 @@ class GitStatusModel: ObservableObject {
             let counts = self.getAheadBehindCounts(repositoryRoot: repositoryPath)
 
             DispatchQueue.main.async {
-                guard self.refreshGeneration == generation,
-                      self._repositoryPath == repositoryPath else { return }
+                MainActor.assumeIsolated {
+                    guard self.refreshGeneration == generation,
+                          self._repositoryPath == repositoryPath else { return }
 
-                self.currentBranch = branch
-                self.aheadCount = counts.ahead
-                self.behindCount = counts.behind
-                self.files = statusItems
-                self.isClean = statusItems.isEmpty
-                self.isLoading = false
+                    self.currentBranch = branch
+                    self.aheadCount = counts.ahead
+                    self.behindCount = counts.behind
+                    self.files = statusItems
+                    self.isClean = statusItems.isEmpty
+                    self.isLoading = false
+                }
             }
         }
     }
@@ -161,7 +175,7 @@ class GitStatusModel: ObservableObject {
     private func startAutoRefresh() {
         stopAutoRefresh()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: fallbackRefreshInterval, repeats: true) { [weak self] _ in
-            self?.refreshStatus()
+            MainActor.assumeIsolated { self?.refreshStatus() }
         }
     }
 
@@ -178,10 +192,12 @@ class GitStatusModel: ObservableObject {
     private func startWatchingRepository(_ repositoryRoot: String) {
         stopWatchingRepository()
 
+        // The stream is dispatched to the main queue (below), so the callback
+        // already runs on the main actor — assert that to reach the model.
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info = info else { return }
             let model = Unmanaged<GitStatusModel>.fromOpaque(info).takeUnretainedValue()
-            model.scheduleDebouncedRefresh()
+            MainActor.assumeIsolated { model.scheduleDebouncedRefresh() }
         }
 
         var context = FSEventStreamContext(
@@ -201,7 +217,7 @@ class GitStatusModel: ObservableObject {
             0.5,
             FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
         ) else {
-            print("GitStatusModel: Failed to create FSEvents stream for \(repositoryRoot)")
+            Log.error("GitStatusModel: Failed to create FSEvents stream for \(repositoryRoot)", category: "git")
             return
         }
 
@@ -221,13 +237,17 @@ class GitStatusModel: ObservableObject {
     private func scheduleDebouncedRefresh() {
         pendingRefresh?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.refreshStatus()
+            MainActor.assumeIsolated { self?.refreshStatus() }
         }
         pendingRefresh = work
         DispatchQueue.main.asyncAfter(deadline: .now() + refreshDebounce, execute: work)
     }
 
-    private func getCurrentBranch(repositoryRoot: String) -> String {
+    // These run on the background queue from refreshStatus. They touch only the
+    // Sendable `gitService` (an immutable let) and their arguments, so they're
+    // nonisolated; results are folded back into @Published state on the main
+    // actor by the caller.
+    private nonisolated func getCurrentBranch(repositoryRoot: String) -> String {
         do {
             return try gitService.currentBranch(repositoryRoot: repositoryRoot)
         } catch {
@@ -235,18 +255,19 @@ class GitStatusModel: ObservableObject {
         }
     }
 
-    private func getAheadBehindCounts(repositoryRoot: String) -> (ahead: Int, behind: Int) {
+    private nonisolated func getAheadBehindCounts(repositoryRoot: String) -> (ahead: Int, behind: Int) {
         ((try? gitService.aheadBehindCounts(repositoryRoot: repositoryRoot)) ?? nil) ?? (ahead: 0, behind: 0)
     }
 
-    private func getGitStatus(repositoryRoot: String) -> [GitFileItem] {
+    private nonisolated func getGitStatus(repositoryRoot: String) -> [GitFileItem] {
         do {
             return try gitService.status(repositoryRoot: repositoryRoot)
                 .map { GitFileItem(path: $0.path, stagedChar: $0.stagedStatus, unstagedChar: $0.unstagedStatus) }
                 .sorted { $0.filename < $1.filename }
         } catch {
-            DispatchQueue.main.async {
-                self.error = "Failed to get git status: \(error.localizedDescription)"
+            let message = error.localizedDescription
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.error = "Failed to get git status: \(message)" }
             }
         }
 
@@ -287,18 +308,16 @@ class GitStatusModel: ObservableObject {
         }
     }
 
-    func commit(message: String, completion: @escaping (Bool, String?) -> Void) {
+    func commit(message: String, completion: @escaping @MainActor (Bool, String?) -> Void) {
         guard !message.isEmpty else {
             completion(false, "Commit message cannot be empty")
             return
         }
 
-        executeGitCommand(["commit", "-m", message]) { success in
+        executeGitCommand(["commit", "-m", message]) { [weak self] success in
             if success {
-                DispatchQueue.main.async {
-                    self.commitMessage = ""
-                    self.refreshStatus()
-                }
+                self?.commitMessage = ""
+                self?.refreshStatus()
                 completion(true, nil)
             } else {
                 completion(false, "Failed to commit changes")
@@ -312,17 +331,17 @@ class GitStatusModel: ObservableObject {
         // Handle different file states
         if file.unstagedStatus == .untracked {
             // For untracked files, just remove them
+            let fullPath = _repositoryPath + "/" + file.path
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self = self else { return }
-                let fullPath = self._repositoryPath + "/" + file.path
                 do {
                     try FileManager.default.removeItem(atPath: fullPath)
                     DispatchQueue.main.async {
-                        self.refreshStatus()
+                        MainActor.assumeIsolated { self?.refreshStatus() }
                     }
                 } catch {
+                    let message = error.localizedDescription
                     DispatchQueue.main.async {
-                        self.error = "Failed to remove file: \(error.localizedDescription)"
+                        MainActor.assumeIsolated { self?.error = "Failed to remove file: \(message)" }
                     }
                 }
             }
@@ -342,12 +361,10 @@ class GitStatusModel: ObservableObject {
         }
     }
 
-    func pull(completion: @escaping (Bool, String?) -> Void) {
-        executeGitCommandWithOutput(["pull"]) { success, output, errorOutput in
+    func pull(completion: @escaping @MainActor (Bool, String?) -> Void) {
+        executeGitCommandWithOutput(["pull"]) { [weak self] success, output, errorOutput in
             if success {
-                DispatchQueue.main.async {
-                    self.refreshStatus()
-                }
+                self?.refreshStatus()
                 completion(true, output)
             } else {
                 completion(false, errorOutput ?? "Failed to pull changes")
@@ -355,12 +372,10 @@ class GitStatusModel: ObservableObject {
         }
     }
 
-    func push(completion: @escaping (Bool, String?) -> Void) {
-        executeGitCommandWithOutput(["push"]) { success, output, errorOutput in
+    func push(completion: @escaping @MainActor (Bool, String?) -> Void) {
+        executeGitCommandWithOutput(["push"]) { [weak self] success, output, errorOutput in
             if success {
-                DispatchQueue.main.async {
-                    self.refreshStatus()
-                }
+                self?.refreshStatus()
                 completion(true, output)
             } else {
                 completion(false, errorOutput ?? "Failed to push changes")
@@ -368,12 +383,10 @@ class GitStatusModel: ObservableObject {
         }
     }
 
-    func fetch(completion: @escaping (Bool, String?) -> Void) {
-        executeGitCommandWithOutput(["fetch"]) { success, output, errorOutput in
+    func fetch(completion: @escaping @MainActor (Bool, String?) -> Void) {
+        executeGitCommandWithOutput(["fetch"]) { [weak self] success, output, errorOutput in
             if success {
-                DispatchQueue.main.async {
-                    self.refreshStatus()
-                }
+                self?.refreshStatus()
                 completion(true, output)
             } else {
                 completion(false, errorOutput ?? "Failed to fetch changes")
@@ -381,36 +394,46 @@ class GitStatusModel: ObservableObject {
         }
     }
 
-    private func executeGitCommand(_ arguments: [String], completion: @escaping (Bool) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
+    private func executeGitCommand(_ arguments: [String], completion: @escaping @MainActor (Bool) -> Void) {
+        let service = gitService
+        let repoPath = _repositoryPath
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let result = try self.gitService.run(repositoryRoot: self._repositoryPath, arguments: arguments)
+                let result = try service.run(repositoryRoot: repoPath, arguments: arguments)
                 let success = result.succeeded
                 DispatchQueue.main.async {
-                    completion(success)
+                    MainActor.assumeIsolated { completion(success) }
                 }
             } catch {
+                let message = error.localizedDescription
                 DispatchQueue.main.async {
-                    self.error = "Failed to execute git command: \(error.localizedDescription)"
-                    completion(false)
+                    MainActor.assumeIsolated {
+                        self?.error = "Failed to execute git command: \(message)"
+                        completion(false)
+                    }
                 }
             }
         }
     }
 
-    private func executeGitCommandWithOutput(_ arguments: [String], completion: @escaping (Bool, String?, String?) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
+    private func executeGitCommandWithOutput(_ arguments: [String], completion: @escaping @MainActor (Bool, String?, String?) -> Void) {
+        let service = gitService
+        let repoPath = _repositoryPath
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let result = try self.gitService.run(repositoryRoot: self._repositoryPath, arguments: arguments)
+                let result = try service.run(repositoryRoot: repoPath, arguments: arguments)
                 let success = result.succeeded
 
                 DispatchQueue.main.async {
-                    completion(success, result.stdout, result.stderr)
+                    MainActor.assumeIsolated { completion(success, result.stdout, result.stderr) }
                 }
             } catch {
+                let message = error.localizedDescription
                 DispatchQueue.main.async {
-                    self.error = "Failed to execute git command: \(error.localizedDescription)"
-                    completion(false, nil, error.localizedDescription)
+                    MainActor.assumeIsolated {
+                        self?.error = "Failed to execute git command: \(message)"
+                        completion(false, nil, message)
+                    }
                 }
             }
         }

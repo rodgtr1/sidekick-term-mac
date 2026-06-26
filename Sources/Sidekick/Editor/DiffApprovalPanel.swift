@@ -77,9 +77,14 @@ final class DiffApprovalPanel {
         textView.string = "Computing diff…"
         DispatchQueue.global(qos: .userInitiated).async { [weak textView] in
             let diffText = Self.unifiedDiff(old: old, new: new, path: path)
-            let rendered = InlineDiffRenderer.render(diffText, fileExtension: (path as NSString).pathExtension.lowercased())
+            let ext = (path as NSString).pathExtension.lowercased()
+            // Render on the main actor: it reads the theme palette (main-actor
+            // state), and it's cheap next to the diff shell-out above.
             DispatchQueue.main.async {
-                textView?.textStorage?.setAttributedString(rendered)
+                MainActor.assumeIsolated {
+                    let rendered = InlineDiffRenderer.render(diffText, fileExtension: ext)
+                    textView?.textStorage?.setAttributedString(rendered)
+                }
             }
         }
 

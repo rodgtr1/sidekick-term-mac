@@ -8,7 +8,7 @@ import Foundation
 /// Backs `wait output`: each output chunk is fed once as it arrives, replacing a
 /// timer that re-scanned a snapshot and could miss a string appearing and
 /// scrolling past between two polls.
-struct StreamingMatcher {
+nonisolated struct StreamingMatcher {
     let needle: String
     private var carry: String
 

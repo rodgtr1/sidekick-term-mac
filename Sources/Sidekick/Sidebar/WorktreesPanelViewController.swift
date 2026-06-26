@@ -54,7 +54,7 @@ final class WorktreesPanelViewController: NSViewController {
     /// Monotonic token so a slow background load can't overwrite a newer one.
     private var loadGeneration = 0
 
-    private struct Row: Equatable {
+    nonisolated private struct Row: Equatable, Sendable {
         let branch: String?
         let path: String
         let agentState: AgentState?
@@ -257,7 +257,9 @@ final class WorktreesPanelViewController: NSViewController {
     /// inside it), or nil when no pane is there. Prefers a higher-priority
     /// (more actionable) state so a working agent wins over an idle shell in the
     /// same tree.
-    private static func paneState(
+    // Pure ordering/path helpers below run inside the background worktree-listing
+    // pass, so they opt out of the view controller's main-actor isolation.
+    nonisolated private static func paneState(
         for worktreePath: String,
         in panes: [(cwd: String, state: AgentState)]
     ) -> AgentState? {
@@ -271,19 +273,19 @@ final class WorktreesPanelViewController: NSViewController {
 
     /// Actionable first: needs-input, working, done; then dirty over clean;
     /// the primary checkout always sinks to the bottom.
-    private static func order(_ lhs: Row, _ rhs: Row) -> Bool {
+    nonisolated private static func order(_ lhs: Row, _ rhs: Row) -> Bool {
         if lhs.isPrimary != rhs.isPrimary { return !lhs.isPrimary }
         let lp = rowPriority(lhs), rp = rowPriority(rhs)
         if lp != rp { return lp < rp }
         return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
     }
 
-    private static func rowPriority(_ row: Row) -> Int {
+    nonisolated private static func rowPriority(_ row: Row) -> Int {
         if let state = row.agentState, state != .idle { return sortPriority(state) }
         return row.summary.clean ? 5 : 4   // dirty above clean, both below active agents
     }
 
-    private static func sortPriority(_ state: AgentState) -> Int {
+    nonisolated private static func sortPriority(_ state: AgentState) -> Int {
         switch state {
         case .ready: return 0
         case .working: return 1
@@ -294,16 +296,16 @@ final class WorktreesPanelViewController: NSViewController {
 
     // MARK: - Path helpers
 
-    private static func samePath(_ a: String, _ b: String) -> Bool {
+    nonisolated private static func samePath(_ a: String, _ b: String) -> Bool {
         standardized(a) == standardized(b)
     }
 
-    private static func isInside(_ child: String, _ parent: String) -> Bool {
+    nonisolated private static func isInside(_ child: String, _ parent: String) -> Bool {
         let p = standardized(parent)
         return standardized(child).hasPrefix(p.hasSuffix("/") ? p : p + "/")
     }
 
-    private static func standardized(_ path: String) -> String {
+    nonisolated private static func standardized(_ path: String) -> String {
         URL(fileURLWithPath: path).standardizedFileURL.path
     }
 

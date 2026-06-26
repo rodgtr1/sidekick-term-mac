@@ -2,6 +2,7 @@ import XCTest
 import Cocoa
 @testable import Sidekick
 
+@MainActor
 final class FontZoomTests: XCTestCase {
     override func tearDown() {
         FontZoom.shared.reset()
@@ -35,6 +36,7 @@ final class FontZoomTests: XCTestCase {
     }
 }
 
+@MainActor
 final class KeyboardCommandRouterZoomTests: XCTestCase {
     private let router = KeyboardCommandRouter()
 

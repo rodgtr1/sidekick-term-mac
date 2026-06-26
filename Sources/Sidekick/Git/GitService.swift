@@ -1,6 +1,6 @@
 import Foundation
 
-struct GitStatusEntry: Equatable {
+nonisolated struct GitStatusEntry: Equatable, Sendable {
     let path: String
     let stagedStatus: Character
     let unstagedStatus: Character
@@ -29,7 +29,7 @@ struct GitStatusEntry: Equatable {
 /// One-glance dirtiness of a working tree, for the Worktrees panel. `conflicted`
 /// counts files in a merge-conflict state; `changed` counts every other
 /// modified/untracked file. `clean` means no entries at all.
-struct WorktreeStatusSummary: Equatable {
+nonisolated struct WorktreeStatusSummary: Equatable, Sendable {
     let changed: Int
     let conflicted: Int
 
@@ -55,7 +55,10 @@ struct WorktreeStatusSummary: Equatable {
     }
 }
 
-final class GitService {
+// Pure git porcelain over ProcessRunner — no UI state, invoked from the
+// background queues that feed the git/worktree panels, so it opts out of the
+// module's default main-actor isolation.
+nonisolated final class GitService: Sendable {
     private let runner: ProcessRunning
 
     init(runner: ProcessRunning = ProcessRunner.shared) {

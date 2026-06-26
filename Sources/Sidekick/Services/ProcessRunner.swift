@@ -1,6 +1,6 @@
 import Foundation
 
-struct ProcessResult {
+nonisolated struct ProcessResult: Sendable {
     let terminationStatus: Int32
     let stdout: String
     let stderr: String
@@ -10,11 +10,11 @@ struct ProcessResult {
     }
 }
 
-enum ProcessRunnerError: Error {
+nonisolated enum ProcessRunnerError: Error {
     case executableNotFound(String)
 }
 
-protocol ProcessRunning {
+nonisolated protocol ProcessRunning: Sendable {
     func run(
         executableURL: URL,
         arguments: [String],
@@ -23,7 +23,7 @@ protocol ProcessRunning {
     ) throws -> ProcessResult
 }
 
-extension ProcessRunning {
+nonisolated extension ProcessRunning {
     func run(
         executableURL: URL,
         arguments: [String],
@@ -39,7 +39,9 @@ extension ProcessRunning {
     }
 }
 
-final class ProcessRunner: ProcessRunning {
+// Stateless and called from background git/worktree work, so it opts out of the
+// module's default main-actor isolation and is safely Sendable.
+nonisolated final class ProcessRunner: ProcessRunning {
     static let shared = ProcessRunner()
 
     func run(

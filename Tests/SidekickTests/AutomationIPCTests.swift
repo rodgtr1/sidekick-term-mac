@@ -2,6 +2,7 @@ import XCTest
 @testable import Sidekick
 import SidekickTelemetryCore
 
+@MainActor
 final class AutomationIPCTests: XCTestCase {
     func testPaneSplitCommandDecodesStructuredArguments() throws {
         let paneID = UUID()

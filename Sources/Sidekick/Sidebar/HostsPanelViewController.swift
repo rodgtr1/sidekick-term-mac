@@ -1,5 +1,24 @@
 import Cocoa
 
+/// A lock-guarded `Data` accumulator safe to mutate from a background pipe
+/// readability handler. Reference-typed so strict concurrency accepts the
+/// capture (a captured `var` mutated off the main actor is rejected even when
+/// lock-guarded); the lock makes the concurrent appends data-race free.
+private final class LockedData: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock(); defer { lock.unlock() }
+        data.append(chunk)
+    }
+
+    func snapshot() -> Data {
+        lock.lock(); defer { lock.unlock() }
+        return data
+    }
+}
+
 protocol HostsPanelDelegate: AnyObject {
     func hostsPanel(_ panel: HostsPanelViewController, didRequestConnectCommand command: String)
 }
@@ -277,16 +296,16 @@ final class HostsPanelViewController: NSViewController {
         // read-to-EOF: pipe FDs are inherited by any child process the app
         // spawns while tsh runs (shells, git), and a long-lived child holding
         // the write end means EOF never arrives even after tsh exits.
-        let bufferLock = NSLock()
-        var buffer = Data()
+        // A reference-typed, lock-guarded box instead of a captured `var`: the
+        // readability handler runs on a background queue, and strict concurrency
+        // rejects mutating a captured local from it (the lock alone isn't proof).
+        let buffer = LockedData()
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let chunk = handle.availableData
             if chunk.isEmpty {
                 handle.readabilityHandler = nil
             } else {
-                bufferLock.lock()
                 buffer.append(chunk)
-                bufferLock.unlock()
             }
         }
 
@@ -314,9 +333,7 @@ final class HostsPanelViewController: NSViewController {
         // Brief grace period so the handler drains any final output.
         usleep(100_000)
         pipe.fileHandleForReading.readabilityHandler = nil
-        bufferLock.lock()
-        let data = buffer
-        bufferLock.unlock()
+        let data = buffer.snapshot()
 
         let exitCode = task.isRunning ? -1 : task.terminationStatus
         return TshResult(exitCode: exitCode, stdout: data, timedOut: timedOut)

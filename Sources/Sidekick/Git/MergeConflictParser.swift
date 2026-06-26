@@ -2,7 +2,7 @@ import Foundation
 
 /// One `<<<<<<< / ======= / >>>>>>>` conflict block found in a file.
 /// Ranges are UTF-16 offsets so they map directly onto `NSTextView`/`NSString`.
-struct MergeConflict: Equatable {
+nonisolated struct MergeConflict: Equatable, Sendable {
     /// The whole block, from the start of the `<<<<<<<` line through the end
     /// of the `>>>>>>>` line (including that line's trailing newline, if any).
     let fullRange: NSRange
@@ -28,7 +28,7 @@ enum MergeConflictResolution {
     case current, incoming, both
 }
 
-enum MergeConflictParser {
+nonisolated enum MergeConflictParser {
     /// Scans `text` for conflict blocks. Partial/unterminated blocks are
     /// ignored, so a stray `<<<<<<<` in a string literal never half-matches.
     static func conflicts(in text: String) -> [MergeConflict] {

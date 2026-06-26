@@ -1,6 +1,7 @@
 import XCTest
 @testable import Sidekick
 
+@MainActor
 final class ImagePasteStoreTests: XCTestCase {
     func testStoreWritesIntoDedicatedDirectoryAndPrunePreservesFreshFiles() throws {
         let url = try ImagePasteStore.store(png: Data([0x89, 0x50, 0x4E, 0x47]))

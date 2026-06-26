@@ -3,7 +3,7 @@ import Foundation
 /// How long a user-granted "approve & remember" allowance lasts. Every scope
 /// is session-only (cleared on relaunch), matching the Auto-approve Agent Edits
 /// menu toggle — nothing here is persisted to disk.
-enum RememberScope: String {
+nonisolated enum RememberScope: String {
     case none       // Just this once
     case file       // This exact file, rest of session
     case folder     // This folder and everything under it, rest of session
@@ -12,7 +12,7 @@ enum RememberScope: String {
 
 /// The outcome of a diff-approval sheet: whether the edit was accepted, and
 /// whether the user asked to remember the decision for similar future edits.
-struct ApprovalOutcome {
+nonisolated struct ApprovalOutcome {
     let accepted: Bool
     let remember: RememberScope
 
@@ -21,7 +21,7 @@ struct ApprovalOutcome {
 
 /// Session-scoped allowances the user granted through "approve & remember".
 /// In-memory only; relaunch resets it.
-struct SessionApprovals {
+nonisolated struct SessionApprovals {
     var sessionWide = false
     private(set) var files: Set<String> = []
     private(set) var folders: [String] = []
@@ -55,7 +55,7 @@ struct SessionApprovals {
 ///   2. session "approve & remember" allowances.
 ///   3. `auto_allow` globs — silent approve even while the global mode is "ask".
 ///   4. global auto toggle — the `[approval] mode` config plus the menu toggle.
-enum ApprovalPolicy {
+nonisolated enum ApprovalPolicy {
     enum Decision { case ask, allow }
 
     static func decide(

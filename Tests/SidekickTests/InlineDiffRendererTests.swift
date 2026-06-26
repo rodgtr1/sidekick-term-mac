@@ -1,6 +1,7 @@
 import XCTest
 @testable import Sidekick
 
+@MainActor
 final class InlineDiffRendererTests: XCTestCase {
     private let sampleDiff = """
     diff --git a/doc.mdx b/doc.mdx

@@ -25,7 +25,8 @@ class PaneModel: Identifiable, Hashable {
     var browserViewController: BrowserPanelViewController?
     var view: NSView?
     var paneType: PaneType = .terminal
-    private var editorDirtyStateObserver: NSObjectProtocol?
+    // Set on the main actor; read once in the nonisolated deinit at end-of-life.
+    nonisolated(unsafe) private var editorDirtyStateObserver: NSObjectProtocol?
 
     enum PaneType {
         case terminal

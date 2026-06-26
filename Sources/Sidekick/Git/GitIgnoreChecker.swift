@@ -31,13 +31,27 @@ class GitIgnoreChecker {
         guard !isLoading && !isLoaded else { return }
         isLoading = true
 
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            self.loadIgnoredFiles()
+        // The git invocation runs off-main and touches no instance state; the
+        // result is folded back in on the main actor, so this MainActor class
+        // never mutates from two threads.
+        let root = rootPath
+        queue.async {
+            let loaded = Self.loadIgnoredFiles(rootPath: root)
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                if let loaded = loaded {
+                    self.ignoredFiles = loaded
+                }
+                self.isLoaded = true
+                self.isLoading = false
+                self.onLoadComplete?()
+            }
         }
     }
 
-    private func loadIgnoredFiles() {
+    /// Runs `git ls-files` for ignored entries off the main actor. Returns the
+    /// relative paths, or nil when git is unavailable / the dir isn't a repo.
+    private nonisolated static func loadIgnoredFiles(rootPath: String) -> Set<String>? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         task.arguments = ["-C", rootPath, "ls-files", "--ignored", "--exclude-standard", "--others"]
@@ -55,25 +69,12 @@ class GitIgnoreChecker {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             task.waitUntilExit()
 
-            if task.terminationStatus == 0 {
-                if let output = String(data: data, encoding: .utf8) {
-                    ignoredFiles = Set(output.split(separator: "\n").map { String($0) })
-                }
-            }
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.isLoaded = true
-                self.isLoading = false
-                self.onLoadComplete?()
-            }
+            guard task.terminationStatus == 0,
+                  let output = String(data: data, encoding: .utf8) else { return nil }
+            return Set(output.split(separator: "\n").map { String($0) })
         } catch {
             // Git not available or not a git repo, ignore silently
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.isLoaded = true
-                self.isLoading = false
-            }
+            return nil
         }
     }
 }

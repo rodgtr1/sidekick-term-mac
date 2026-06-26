@@ -280,7 +280,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     func ipcServer(
         _ server: IPCServer,
         didReceiveCommand command: IPCCommandType,
-        completion: @escaping (IPCResponse) -> Void
+        completion: @escaping @Sendable (IPCResponse) -> Void
     ) {
         switch command {
         case .ping:
@@ -511,7 +511,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         cwd: String?,
         command: [String]?,
         focus: Bool,
-        completion: @escaping (IPCResponse) -> Void
+        completion: @escaping @Sendable (IPCResponse) -> Void
     ) {
         guard let context = automationPane(id: paneID) else {
             completion(IPCResponse(ok: false, error: "Pane not found"))

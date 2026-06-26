@@ -4,8 +4,13 @@ import Foundation
 /// queue) when its contents change. The parent directory is watched, not the
 /// file itself, so atomic saves (write-temp-then-rename, used by most
 /// editors) are detected too.
-final class ConfigWatcher {
-    var onChange: (() -> Void)?
+// `nonisolated` + `@unchecked Sendable`: the watcher lives on its own
+// DispatchSource / debounce queues (utility), never the main actor. Its mutable
+// state is touched only from those serialized contexts plus start()/stop() at
+// setup/teardown — the same hand-audited concurrency contract the IPC layer
+// uses. The only hop back to the UI is `onChange`, a main-actor callback.
+nonisolated final class ConfigWatcher: @unchecked Sendable {
+    var onChange: (@MainActor () -> Void)?
 
     private var source: DispatchSourceFileSystemObject?
     private var directoryFD: Int32 = -1
@@ -36,7 +41,7 @@ final class ConfigWatcher {
         let directory = (watchedPath as NSString).deletingLastPathComponent
         directoryFD = open(directory, O_EVTONLY)
         guard directoryFD >= 0 else {
-            print("ConfigWatcher: cannot open \(directory)")
+            Log.error("ConfigWatcher: cannot open \(directory)", category: "config")
             return
         }
 
@@ -75,7 +80,9 @@ final class ConfigWatcher {
             guard current != self.lastModificationDate else { return }
             self.lastModificationDate = current
             DispatchQueue.main.async {
-                self.onChange?()
+                MainActor.assumeIsolated {
+                    self.onChange?()
+                }
             }
         }
         debounceWork = work

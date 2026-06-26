@@ -31,16 +31,20 @@ class LineNumberRulerView: NSRulerView {
         )
     }
 
-    override func awakeFromNib() {
-        super.awakeFromNib()
-        if let textView = clientView as? NSTextView {
-            self.textView = textView
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(textDidChange),
-                name: NSText.didChangeNotification,
-                object: textView
-            )
+    // NSRulerView.awakeFromNib is nonisolated in the SDK; AppKit always invokes
+    // it on the main thread, so we assert main-actor isolation to reach the view.
+    nonisolated override func awakeFromNib() {
+        MainActor.assumeIsolated {
+            super.awakeFromNib()
+            if let textView = clientView as? NSTextView {
+                self.textView = textView
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(textDidChange),
+                    name: NSText.didChangeNotification,
+                    object: textView
+                )
+            }
         }
     }
 

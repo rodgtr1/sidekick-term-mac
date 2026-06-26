@@ -9,7 +9,12 @@ import os
 ///
 /// Use this instead of `print()` so messages survive when the packaged `.app`
 /// is launched (stdout is discarded there).
-enum Log {
+///
+/// `nonisolated`: the logger is called from every thread (background git work,
+/// the IPC accept loop, PTY callbacks), so it must not inherit the module's
+/// default main-actor isolation. All state here is immutable and the file write
+/// is funnelled through a private serial queue.
+nonisolated enum Log {
     enum Level: String {
         case debug = "DEBUG"
         case info = "INFO"

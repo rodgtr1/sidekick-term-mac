@@ -1,6 +1,7 @@
 import XCTest
 @testable import Sidekick
 
+@MainActor
 final class AgentIntegrationInstallerTests: XCTestCase {
 
     // MARK: - Claude hook merging

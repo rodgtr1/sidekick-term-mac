@@ -10,7 +10,7 @@ import Darwin
 ///  - `agent_state`  — a pane's agent state transitioned (idle/working/ready/done).
 ///  - `command`      — a shell command finished (OSC 133 D mark).
 ///  - `diff`         — a hook edit was queued / accepted / rejected.
-struct SidekickEvent: Codable {
+nonisolated struct SidekickEvent: Codable, Sendable {
     let type: String
     let at: String
 
@@ -39,7 +39,9 @@ struct SidekickEvent: Codable {
         case costUSD = "cost_usd"
     }
 
-    private static let timestampFormatter: ISO8601DateFormatter = {
+    // Configured once and only ever read, so the shared instance is safe despite
+    // ISO8601DateFormatter not being Sendable.
+    nonisolated(unsafe) private static let timestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
@@ -66,7 +68,7 @@ struct SidekickEvent: Codable {
 /// Optional narrowing for an `events --follow` subscriber. A nil field matches
 /// everything; the `hello` connection marker is always delivered regardless, so
 /// a client always learns it connected even under a filter that excludes it.
-struct EventFilter {
+nonisolated struct EventFilter {
     var paneID: String?
     var type: String?
 

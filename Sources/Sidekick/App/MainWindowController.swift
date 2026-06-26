@@ -138,8 +138,9 @@ class MainWindowController: NSWindowController {
     private var quickOpenPanel: QuickOpenPanel?
     private var preferencesWindowController: PreferencesWindowController?
     fileprivate var commandPalette: CommandPalettePanel?
-    private var keyEventMonitor: Any?
-    private var clickEventMonitor: Any?
+    // Set on the main actor; removed in the nonisolated deinit at end-of-life.
+    nonisolated(unsafe) private var keyEventMonitor: Any?
+    nonisolated(unsafe) private var clickEventMonitor: Any?
     private let keyboardCommandRouter = KeyboardCommandRouter()
     private let configWatcher = ConfigWatcher()
     private var sessionSaveTimer: Timer?

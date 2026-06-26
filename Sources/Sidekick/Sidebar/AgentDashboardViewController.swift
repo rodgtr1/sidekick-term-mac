@@ -14,7 +14,8 @@ final class AgentDashboardViewController: NSViewController {
     private var tableView: NSTableView!
     private var scrollView: NSScrollView!
     private var emptyLabel: NSTextField!
-    private var refreshTimer: Timer?
+    // Set on the main actor; invalidated in the nonisolated deinit at end-of-life.
+    nonisolated(unsafe) private var refreshTimer: Timer?
 
     private struct Row: Equatable {
         let tabIndex: Int

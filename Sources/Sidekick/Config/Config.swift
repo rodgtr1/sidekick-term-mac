@@ -342,7 +342,7 @@ public struct BehaviorConfig: Codable {
 }
 
 // MARK: - Approval Configuration
-public struct ApprovalConfig: Codable {
+nonisolated public struct ApprovalConfig: Codable, Sendable {
     /// "ask" — show the review panel for every agent edit (default).
     /// "auto" — allow edits without prompting.
     public var mode: String
@@ -390,7 +390,7 @@ public struct TelemetryRateConfig: Codable {
 /// Overrides for the dashboard's est-$ rate card. Anything set here layers over
 /// the built-in defaults (current Claude prices), so a price change — or a new
 /// model — is a config edit, not a rebuild.
-public struct TelemetryConfig: Codable {
+nonisolated public struct TelemetryConfig: Codable, Sendable {
     public var rates: [String: TelemetryRateConfig]
 
     enum CodingKeys: String, CodingKey {

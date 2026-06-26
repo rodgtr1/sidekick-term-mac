@@ -1,6 +1,7 @@
 import XCTest
 @testable import Sidekick
 
+@MainActor
 final class DiffApprovalUnifiedDiffTests: XCTestCase {
     func testUnifiedDiffMarksChangedLines() {
         let old = "line one\nline two\nline three\n"

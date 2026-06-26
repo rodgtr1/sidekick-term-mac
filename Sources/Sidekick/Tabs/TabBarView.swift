@@ -24,7 +24,8 @@ class TabBarView: NSView {
     private var tabButtons: [NSButton] = []
     private var closeButtons: [NSButton] = []
     private var activeIndicators: [NSView] = []
-    private var pulseTimer: Timer?
+    // Set on the main actor; invalidated in the nonisolated deinit at end-of-life.
+    nonisolated(unsafe) private var pulseTimer: Timer?
     private var workingPulseIsBright = false
 
     private let tabHeight: CGFloat = 32
@@ -95,6 +96,7 @@ class TabBarView: NSView {
 
     private func startPulseTimer() {
         pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
             guard let self = self else { return }
 
             let hasWorkingTab = self.tabs.contains { $0.agentState == .working }
@@ -109,6 +111,7 @@ class TabBarView: NSView {
             for (index, tab) in self.tabs.enumerated() where tab.agentState == .working {
                 guard index < self.tabButtons.count else { continue }
                 self.tabButtons[index].attributedTitle = self.makeAttributedTitle(for: tab)
+            }
             }
         }
     }

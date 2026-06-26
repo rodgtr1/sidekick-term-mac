@@ -2,7 +2,7 @@ import Foundation
 
 /// One entry from `git worktree list --porcelain`. A pure value type so the
 /// Worktrees panel and tests can reason over it without shelling out.
-struct GitWorktree: Equatable {
+nonisolated struct GitWorktree: Equatable, Sendable {
     /// Absolute checkout path.
     let path: String
     /// Short branch name (`feature/x`), or nil when detached or bare.
@@ -18,7 +18,7 @@ struct GitWorktree: Equatable {
 /// <branch>` can open a pane on an isolated checkout. Parallel coding agents
 /// can then fan out without clobbering each other's working tree — the workflow
 /// the bundled SKILL.md already asks agents to do by hand.
-struct WorktreeService {
+nonisolated struct WorktreeService: Sendable {
     enum WorktreeError: Error, Equatable {
         case notAGitRepository
         case noWorktreeForBranch(String)

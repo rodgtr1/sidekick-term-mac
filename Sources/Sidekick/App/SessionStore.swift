@@ -1,19 +1,19 @@
 import Foundation
 
 /// Snapshot of the open tabs/panes, persisted across launches.
-struct SessionPaneState: Codable, Equatable {
+nonisolated struct SessionPaneState: Codable, Equatable, Sendable {
     let type: String // "terminal" | "browser"
     let cwd: String?
     let url: String?
 }
 
-struct SessionTabState: Codable, Equatable {
+nonisolated struct SessionTabState: Codable, Equatable, Sendable {
     let panes: [SessionPaneState]
     let activePaneIndex: Int
     let customTitle: String?
 }
 
-struct SessionState: Codable, Equatable {
+nonisolated struct SessionState: Codable, Equatable, Sendable {
     let tabs: [SessionTabState]
     let activeTabIndex: Int
 }

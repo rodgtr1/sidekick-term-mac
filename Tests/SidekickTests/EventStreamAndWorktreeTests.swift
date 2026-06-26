@@ -1,6 +1,7 @@
 import XCTest
 @testable import Sidekick
 
+@MainActor
 final class EventStreamAndWorktreeTests: XCTestCase {
 
     // MARK: - SidekickEvent JSON

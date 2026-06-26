@@ -5,7 +5,10 @@ import Cocoa
 /// solid Zed-style bars even when the line is empty (a blank-line deletion).
 /// `NSAttributedString`'s own `.backgroundColor` only paints behind glyphs, so
 /// an empty removed line would otherwise be invisible.
-final class DiffLineBackgroundLayoutManager: NSLayoutManager {
+// NSLayoutManager is nonisolated in the SDK, so this subclass opts out of the
+// module's default main-actor isolation to match its overridden declarations.
+// Layout/drawing is still driven on the main thread by the text system.
+nonisolated final class DiffLineBackgroundLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         if let storage = textStorage {
             enumerateLineFragments(forGlyphRange: glyphsToShow) { [weak self] rect, _, container, glyphRange, _ in

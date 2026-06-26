@@ -1,6 +1,7 @@
 import XCTest
 @testable import Sidekick
 
+@MainActor
 final class ConfigSaveSymlinkTests: XCTestCase {
     private let fm = FileManager.default
 

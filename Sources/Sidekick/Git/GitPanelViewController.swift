@@ -8,7 +8,8 @@ protocol GitPanelDelegate: AnyObject {
 
 class GitPanelViewController: NSViewController {
     private var gitStatusModel: GitStatusModel!
-    private var cancellables = Set<AnyCancellable>()
+    // Populated on the main actor; cleared in the nonisolated deinit at end-of-life.
+    nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
     private let gitService = GitService()
 
     weak var delegate: GitPanelDelegate?

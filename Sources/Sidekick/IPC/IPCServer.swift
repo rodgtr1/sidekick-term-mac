@@ -3,7 +3,7 @@ import Darwin
 import SidekickTelemetryCore
 
 // MARK: - IPC Command Types
-struct IPCCommand: Codable {
+nonisolated struct IPCCommand: Codable, Sendable {
     let action: String
     let path: String?
     let old: String?
@@ -35,7 +35,7 @@ struct IPCCommand: Codable {
     }
 }
 
-struct IPCPaneInfo: Codable {
+nonisolated struct IPCPaneInfo: Codable, Sendable {
     let paneID: String
     let tabID: String
     let type: String
@@ -54,7 +54,7 @@ struct IPCPaneInfo: Codable {
 }
 
 /// One finished shell command, returned by `pane_read` with `format: "json"`.
-struct IPCCommandRecord: Codable {
+nonisolated struct IPCCommandRecord: Codable, Sendable {
     let command: String
     let exitCode: Int
     let duration: Double?
@@ -66,7 +66,7 @@ struct IPCCommandRecord: Codable {
     }
 }
 
-struct IPCResult: Codable {
+nonisolated struct IPCResult: Codable, Sendable {
     let panes: [IPCPaneInfo]?
     let pane: IPCPaneInfo?
     let text: String?
@@ -88,7 +88,7 @@ struct IPCResult: Codable {
     }
 }
 
-struct IPCResponse: Codable {
+nonisolated struct IPCResponse: Codable, Sendable {
     let ok: Bool
     let error: String?
     let accepted: Bool?
@@ -102,7 +102,7 @@ struct IPCResponse: Codable {
     }
 }
 
-enum IPCCommandType {
+nonisolated enum IPCCommandType {
     case ping
     case newTab(cwd: String?)
     case showDiff(paneID: UUID?, path: String, old: String, new: String)
@@ -306,7 +306,7 @@ protocol IPCServerDelegate: AnyObject {
     func ipcServer(
         _ server: IPCServer,
         didReceiveCommand command: IPCCommandType,
-        completion: @escaping (IPCResponse) -> Void
+        completion: @escaping @Sendable (IPCResponse) -> Void
     )
 }
 

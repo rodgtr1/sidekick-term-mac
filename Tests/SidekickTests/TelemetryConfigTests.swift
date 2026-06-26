@@ -3,6 +3,7 @@ import TOMLKit
 @testable import Sidekick
 import SidekickTelemetryCore
 
+@MainActor
 final class TelemetryConfigTests: XCTestCase {
     private func telemetry(from toml: String) throws -> TelemetryConfig {
         try TOMLDecoder().decode(TelemetryConfig.self, from: try TOMLTable(string: toml))
