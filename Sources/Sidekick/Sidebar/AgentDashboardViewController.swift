@@ -23,6 +23,7 @@ final class AgentDashboardViewController: NSViewController {
         let since: Date
         let isActive: Bool
         let usage: TranscriptUsage?
+        let cost: Double?
     }
 
     private var rows: [Row] = []
@@ -145,7 +146,8 @@ final class AgentDashboardViewController: NSViewController {
                 state: tab.agentState,
                 since: tab.agentStateChangedAt,
                 isActive: tab.isActive,
-                usage: tab.telemetry
+                usage: tab.telemetry,
+                cost: tab.telemetryCostUSD
             )
         }
         // Actionable tabs first: needs-input, then working, then done.
@@ -194,11 +196,11 @@ final class AgentDashboardViewController: NSViewController {
     /// Compact one-line telemetry for a row: `opus-4.8 · $0.36 · 7t`. Cost and
     /// turns are dropped when unavailable. Returns nil when there's nothing
     /// billed yet to show.
-    fileprivate static func telemetryLine(_ usage: TranscriptUsage) -> String? {
+    fileprivate static func telemetryLine(_ usage: TranscriptUsage, cost: Double?) -> String? {
         guard usage.assistantResponses > 0 else { return nil }
         var parts: [String] = []
         if let model = usage.model { parts.append(TelemetryFormat.shortModel(model)) }
-        if let cost = usage.estimatedCostUSD() { parts.append(TelemetryFormat.cost(cost)) }
+        if let cost { parts.append(TelemetryFormat.cost(cost)) }
         if usage.userPrompts > 0 { parts.append("\(usage.userPrompts)t") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -280,7 +282,7 @@ extension AgentDashboardViewController: NSTableViewDelegate {
         ])
 
         // Telemetry line (model · est$ · turns), with the full breakdown on hover.
-        if let usage = rowData.usage, let line = Self.telemetryLine(usage) {
+        if let usage = rowData.usage, let line = Self.telemetryLine(usage, cost: rowData.cost) {
             let telemetryLabel = NSTextField(labelWithString: line)
             telemetryLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
             telemetryLabel.textColor = AppTheme.mutedText
@@ -299,7 +301,8 @@ extension AgentDashboardViewController: NSTableViewDelegate {
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard row < rows.count, let usage = rows[row].usage, Self.telemetryLine(usage) != nil else {
+        guard row < rows.count, let usage = rows[row].usage,
+              Self.telemetryLine(usage, cost: rows[row].cost) != nil else {
             return 42
         }
         return 58

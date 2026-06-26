@@ -1,6 +1,7 @@
 import Cocoa
 import SwiftTerm
 import UserNotifications
+import SidekickTelemetryCore
 
 @_silgen_name("CGSDefaultConnectionForThread")
 private func CGSDefaultConnectionForThread() -> UnsafeMutableRawPointer?
@@ -1621,6 +1622,12 @@ extension MainWindowController: AutomationHost {
     /// for the auto_allow / always_ask glob rules.
     var approvalConfig: ApprovalConfig {
         config.approval ?? ApprovalConfig()
+    }
+
+    /// Effective telemetry rate card: `[telemetry]` overrides merged over the
+    /// built-in defaults.
+    var telemetryRates: [String: TelemetryRate] {
+        config.telemetry?.resolvedRates() ?? TelemetryRates.defaults
     }
 
     /// Flips the per-session auto-approve toggle. Menu-driven.

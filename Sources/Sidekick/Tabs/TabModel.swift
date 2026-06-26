@@ -52,6 +52,11 @@ class TabModel: Identifiable {
     /// reports. Read by the agents-panel dashboard.
     var telemetry: TranscriptUsage?
 
+    /// Estimated USD cost for `telemetry`, priced against the effective
+    /// `[telemetry]` rate card by AutomationCoordinator (so the view doesn't
+    /// need the rates). Nil when the model has no known rate.
+    var telemetryCostUSD: Double?
+
     // Backward compatibility
     var isAgentReady: Bool {
         return agentState == .ready

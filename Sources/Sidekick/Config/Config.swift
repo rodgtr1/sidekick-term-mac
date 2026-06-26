@@ -1,5 +1,6 @@
 import Foundation
 import TOMLKit
+import SidekickTelemetryCore
 
 public struct Config: Codable {
     public var theme: ThemeConfig
@@ -12,6 +13,7 @@ public struct Config: Codable {
     public var editor: EditorConfig?  // Make optional for backwards compatibility
     public var hosts: HostsConfig?  // Make optional for backwards compatibility
     public var approval: ApprovalConfig?  // Make optional for backwards compatibility
+    public var telemetry: TelemetryConfig?  // Make optional for backwards compatibility
 
     public init() {
         self.theme = ThemeConfig()
@@ -24,6 +26,7 @@ public struct Config: Codable {
         self.editor = EditorConfig()
         self.hosts = HostsConfig()
         self.approval = ApprovalConfig()
+        self.telemetry = TelemetryConfig()
     }
 
     public static func load(from path: String = "~/.config/sidekick/config.toml") -> Config {
@@ -169,6 +172,16 @@ auto_allow = []
 #   Example:
 #     always_ask = [".env", "**/secrets/**", "*.pem"]
 always_ask = []
+
+[telemetry]
+# Per-model prices (USD per 1M tokens) for the agents-panel "est $" column.
+# Built-in defaults match the current Claude rate card; set entries here only
+# to override a price or add a model. Cache reads bill ~0.1x input, 5-min cache
+# writes 1.25x, 1-hour writes 2x — derived from the input rate automatically.
+# Example:
+#   [telemetry.rates."claude-opus-4-8"]
+#   input = 5.0
+#   output = 25.0
 """
 
         // Create directory if needed
@@ -344,6 +357,45 @@ public struct ApprovalConfig: Codable {
 
     /// True when edits should be approved without a popup.
     public var autoApprove: Bool { mode.lowercased() == "auto" }
+}
+
+// MARK: - Telemetry Configuration
+
+/// One model's price, in USD per 1M tokens, as written in `[telemetry.rates]`.
+public struct TelemetryRateConfig: Codable {
+    public var input: Double
+    public var output: Double
+}
+
+/// Overrides for the dashboard's est-$ rate card. Anything set here layers over
+/// the built-in defaults (current Claude prices), so a price change — or a new
+/// model — is a config edit, not a rebuild.
+public struct TelemetryConfig: Codable {
+    public var rates: [String: TelemetryRateConfig]
+
+    enum CodingKeys: String, CodingKey {
+        case rates
+    }
+
+    public init() {
+        self.rates = [:]
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        rates = try container.decodeIfPresent([String: TelemetryRateConfig].self, forKey: .rates) ?? rates
+    }
+
+    /// The effective rate card: configured overrides merged over the built-in
+    /// defaults from SidekickTelemetryCore.
+    public func resolvedRates() -> [String: TelemetryRate] {
+        var resolved = TelemetryRates.defaults
+        for (model, rate) in rates {
+            resolved[model] = TelemetryRate(inputPerMTok: rate.input, outputPerMTok: rate.output)
+        }
+        return resolved
+    }
 }
 
 // MARK: - Shell Configuration

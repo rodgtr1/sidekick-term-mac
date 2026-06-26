@@ -20,6 +20,9 @@ protocol AutomationHost: AnyObject {
     /// The active `[approval]` config, supplying the auto_allow / always_ask
     /// glob rules layered on top of `shouldAutoApproveEdits`.
     var approvalConfig: ApprovalConfig { get }
+    /// Effective telemetry rate card ([telemetry] overrides merged over the
+    /// built-in defaults), used to price per-pane token usage.
+    var telemetryRates: [String: TelemetryRate] { get }
 
     func automationSplitController(forTab tabID: UUID) -> PaneSplitController?
     func automationCreateNewTab(workingDirectory: String?)
@@ -268,7 +271,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         event.model = usage.model
         event.inputTokens = usage.totalInputTokens
         event.outputTokens = usage.outputTokens
-        event.costUSD = usage.estimatedCostUSD()
+        event.costUSD = usage.estimatedCostUSD(rates: telemetryRates)
         event.turns = usage.userPrompts
         EventBroadcaster.shared.emit(event)
     }
@@ -459,7 +462,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             // Store the latest per-pane usage. Keep it even for a pane we can't
             // currently resolve — it may be mid-churn.
             paneTelemetry[paneID] = usage
-            let cost = usage.estimatedCostUSD().map { String(format: "$%.4f", $0) } ?? "n/a"
+            let cost = usage.estimatedCostUSD(rates: telemetryRates).map { String(format: "$%.4f", $0) } ?? "n/a"
             Log.debug("telemetry pane=\(paneID.uuidString.prefix(8)) model=\(usage.model ?? "?") in=\(usage.totalInputTokens) out=\(usage.outputTokens) est=\(cost)", category: "telemetry")
             // Surface it on the owning tab so the agents-panel dashboard can read
             // it, and nudge the panel to refresh.
@@ -485,17 +488,26 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         }
     }
 
+    /// Effective rate card (config overrides over defaults), via the host.
+    private var telemetryRates: [String: TelemetryRate] {
+        host?.telemetryRates ?? TelemetryRates.defaults
+    }
+
     /// Sets `tab.telemetry` to its primary agent pane's usage: the active pane's
     /// if it reported, else the pane with the most billed responses. Avoids
-    /// summing across panes, which would conflate distinct agents/models.
+    /// summing across panes, which would conflate distinct agents/models. Prices
+    /// it once here so the view never needs the rate card.
     private func updateTabTelemetry(_ tab: TabModel) {
-        if let active = tab.activePane, let usage = paneTelemetry[active.id] {
-            tab.telemetry = usage
-            return
+        let usage: TranscriptUsage?
+        if let active = tab.activePane, let activeUsage = paneTelemetry[active.id] {
+            usage = activeUsage
+        } else {
+            usage = tab.panes
+                .compactMap { paneTelemetry[$0.id] }
+                .max(by: { $0.assistantResponses < $1.assistantResponses })
         }
-        tab.telemetry = tab.panes
-            .compactMap { paneTelemetry[$0.id] }
-            .max(by: { $0.assistantResponses < $1.assistantResponses })
+        tab.telemetry = usage
+        tab.telemetryCostUSD = usage?.estimatedCostUSD(rates: telemetryRates)
     }
 
     /// Resolves the directory a worktree command operates from: an explicit
