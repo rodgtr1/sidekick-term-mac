@@ -9,6 +9,7 @@ enum SidebarPanel: String, CaseIterable {
     case files = "Files"
     case search = "Search"
     case git = "Git"
+    case worktrees = "Worktrees"
     case agents = "Agents"
     case hosts = "Hosts"
 
@@ -16,12 +17,14 @@ enum SidebarPanel: String, CaseIterable {
         switch self {
         case .files: return "folder"
         case .git: return "arrow.branch"
+        case .worktrees: return "arrow.triangle.branch"
         case .search: return "magnifyingglass"
         case .agents: return "sparkles"
         case .hosts: return "server.rack"
         }
     }
 
+    /// Tooltip shortcut hint, or "" when the panel has no key binding yet.
     var shortcut: String {
         switch self {
         case .files: return "⌘⇧E"
@@ -29,6 +32,7 @@ enum SidebarPanel: String, CaseIterable {
         case .search: return "⌘⇧F"
         case .agents: return "⌘⇧A"
         case .hosts: return "⌘⇧H"
+        case .worktrees: return ""
         }
     }
 
@@ -41,14 +45,15 @@ enum SidebarPanel: String, CaseIterable {
         case .git: return "source-control"
         case .agents: return "sparkle"
         case .hosts: return "server"
+        case .worktrees: return "source-control"   // unused: falls back to SF Symbol
         }
     }
 
     /// This panel's icon as a tinted template image. Returns nil to fall back
-    /// to `icon` (an SF Symbol) — used for Agents, which keeps the original
-    /// `sparkles` symbol rather than the Codicon.
+    /// to `icon` (an SF Symbol) — used for Agents and Worktrees, which keep
+    /// their SF Symbol rather than a Codicon.
     func customImage(pointSize: CGFloat) -> NSImage? {
-        if self == .agents { return nil }
+        if self == .agents || self == .worktrees { return nil }
         return SidebarIcons.codicon(codiconName, pointSize: pointSize)
     }
 }
@@ -142,8 +147,10 @@ class ActivityBarView: NSView {
         button.action = #selector(activityButtonClicked(_:))
         button.tag = index
 
-        // Add tooltip
-        button.toolTip = "\(panel.rawValue) (\(panel.shortcut))"
+        // Add tooltip (omit the parens when the panel has no shortcut yet)
+        button.toolTip = panel.shortcut.isEmpty
+            ? panel.rawValue
+            : "\(panel.rawValue) (\(panel.shortcut))"
 
         // Style button
         styleButton(button, isSelected: false)

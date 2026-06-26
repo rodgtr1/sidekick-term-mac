@@ -169,6 +169,70 @@ final class EventStreamAndWorktreeTests: XCTestCase {
         XCTAssertEqual(path, "/Users/x/myrepo.worktrees/feature-login")
     }
 
+    // MARK: - parseWorktrees (full porcelain records)
+
+    func testParseWorktreesReturnsEveryRecordInOrder() {
+        let porcelain = """
+        worktree /repo
+        HEAD abc123
+        branch refs/heads/main
+
+        worktree /repo.worktrees/feature-login
+        HEAD def456
+        branch refs/heads/feature/login
+
+        """
+        let worktrees = WorktreeService.parseWorktrees(porcelain: porcelain)
+        XCTAssertEqual(worktrees.count, 2)
+        XCTAssertEqual(worktrees[0], GitWorktree(path: "/repo", branch: "main", head: "abc123",
+                                                 isDetached: false, isLocked: false, isBare: false))
+        XCTAssertEqual(worktrees[1].path, "/repo.worktrees/feature-login")
+        XCTAssertEqual(worktrees[1].branch, "feature/login")   // refs/heads/ stripped
+    }
+
+    func testParseWorktreesFlagsDetachedLockedAndBare() {
+        let porcelain = """
+        worktree /repo
+        bare
+
+        worktree /repo.worktrees/detached
+        HEAD aaa111
+        detached
+
+        worktree /repo.worktrees/pinned
+        HEAD bbb222
+        branch refs/heads/pinned
+        locked under review
+        """
+        let worktrees = WorktreeService.parseWorktrees(porcelain: porcelain)
+        XCTAssertEqual(worktrees.count, 3)
+
+        XCTAssertTrue(worktrees[0].isBare)
+        XCTAssertNil(worktrees[0].branch)
+
+        XCTAssertTrue(worktrees[1].isDetached)
+        XCTAssertNil(worktrees[1].branch)
+
+        XCTAssertTrue(worktrees[2].isLocked)   // `locked <reason>` still flags locked
+        XCTAssertEqual(worktrees[2].branch, "pinned")
+    }
+
+    func testParseWorktreesHandlesTrailingRecordWithoutBlankLine() {
+        // git's final record isn't followed by a blank line; it must still emit.
+        let porcelain = """
+        worktree /repo
+        HEAD abc123
+        branch refs/heads/main
+        """
+        let worktrees = WorktreeService.parseWorktrees(porcelain: porcelain)
+        XCTAssertEqual(worktrees.count, 1)
+        XCTAssertEqual(worktrees[0].branch, "main")
+    }
+
+    func testParseWorktreesEmptyOutputIsEmpty() {
+        XCTAssertTrue(WorktreeService.parseWorktrees(porcelain: "").isEmpty)
+    }
+
     // MARK: - WorktreeService teardown (real git)
 
     func testRemoveAndPruneWorktreeEndToEnd() throws {

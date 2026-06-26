@@ -8,6 +8,14 @@ protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainerTabs(_ container: SidebarContainerView) -> [TabModel]
     func sidebarContainer(_ container: SidebarContainerView, didRequestSwitchToTab index: Int)
     func sidebarContainer(_ container: SidebarContainerView, didRequestConnectCommand command: String)
+    /// Repository root for the active tab's pane, or nil when not in a git repo.
+    func sidebarContainerActiveRepoRoot(_ container: SidebarContainerView) -> String?
+    /// Open or focus a pane sitting in the worktree at `path`.
+    func sidebarContainer(_ container: SidebarContainerView, didRequestOpenWorktree path: String)
+    /// Create a worktree for `branch`, optionally launching `agent` in its pane.
+    func sidebarContainer(_ container: SidebarContainerView, didRequestCreateWorktree branch: String, agent: WorktreeAgent)
+    /// Remove the worktree registered for `branch`; `force` overrides the guard.
+    func sidebarContainer(_ container: SidebarContainerView, didRequestRemoveWorktree branch: String, force: Bool)
 }
 
 class SidebarContainerView: NSView {
@@ -118,6 +126,11 @@ class SidebarContainerView: NSView {
             searchPanelVC.delegate = self
             panelControllers[panel] = searchPanelVC
             return searchPanelVC.view
+        case .worktrees:
+            let worktreesVC = WorktreesPanelViewController()
+            worktreesVC.delegate = self
+            panelControllers[panel] = worktreesVC
+            return worktreesVC.view
         case .agents:
             let agentDashboardVC = AgentDashboardViewController()
             agentDashboardVC.delegate = self
@@ -159,6 +172,10 @@ class SidebarContainerView: NSView {
 
         if panel == .agents {
             (panelControllers[.agents] as? AgentDashboardViewController)?.reload()
+        }
+
+        if panel == .worktrees {
+            (panelControllers[.worktrees] as? WorktreesPanelViewController)?.reload()
         }
     }
 
@@ -215,6 +232,12 @@ class SidebarContainerView: NSView {
         }
     }
 
+    /// Re-list worktrees after a create/remove completes, so the row appears or
+    /// disappears without waiting for the next refresh trigger.
+    func refreshWorktrees() {
+        (panelControllers[.worktrees] as? WorktreesPanelViewController)?.reload()
+    }
+
     func revealFile(_ url: URL) {
         (panelControllers[.files] as? FileTreeViewController)?.revealFile(url)
     }
@@ -231,6 +254,34 @@ extension SidebarContainerView: AgentDashboardDelegate {
 
     func agentDashboard(_ dashboard: AgentDashboardViewController, didSelectTabAt index: Int) {
         delegate?.sidebarContainer(self, didRequestSwitchToTab: index)
+    }
+}
+
+extension SidebarContainerView: WorktreesPanelDelegate {
+    func worktreesPanelActiveRepoRoot(_ panel: WorktreesPanelViewController) -> String? {
+        delegate?.sidebarContainerActiveRepoRoot(self)
+    }
+
+    func worktreesPanelTabs(_ panel: WorktreesPanelViewController) -> [TabModel] {
+        delegate?.sidebarContainerTabs(self) ?? []
+    }
+
+    func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestOpenWorktree path: String) {
+        delegate?.sidebarContainer(self, didRequestOpenWorktree: path)
+    }
+
+    func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestDiffForWorktree path: String) {
+        // A worktree's diff is just its uncommitted-changes view, keyed by the
+        // checkout path — reuse the existing route.
+        delegate?.sidebarContainer(self, didRequestUncommittedChangesFor: path, focusedFilePath: nil)
+    }
+
+    func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestCreateBranch branch: String, agent: WorktreeAgent) {
+        delegate?.sidebarContainer(self, didRequestCreateWorktree: branch, agent: agent)
+    }
+
+    func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestRemoveBranch branch: String, force: Bool) {
+        delegate?.sidebarContainer(self, didRequestRemoveWorktree: branch, force: force)
     }
 }
 

@@ -753,12 +753,12 @@ class MainWindowController: NSWindowController {
         activityBarView.updateAgentsBadge(count: waiting)
     }
 
-    func createNewTab(workingDirectory: String? = nil) {
+    func createNewTab(workingDirectory: String? = nil, command: [String]? = nil) {
         let startDirectory = workingDirectory ?? currentWorkingDirectoryForNewTerminal()
 
         let tab = TabModel()
         if let firstPane = tab.panes.first {
-            firstPane.createTerminalViewController(config: config, initialDirectory: startDirectory)
+            firstPane.createTerminalViewController(config: config, initialDirectory: startDirectory, command: command)
         }
 
         installTab(tab)
@@ -1060,6 +1060,92 @@ extension MainWindowController: SidebarContainerDelegate {
         let terminal = tabs[safe: activeTabIndex]?.activePane?.terminalViewController
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             terminal?.send(text: command + "\n")
+        }
+    }
+
+    // MARK: Worktrees panel
+
+    func sidebarContainerActiveRepoRoot(_ container: SidebarContainerView) -> String? {
+        guard let cwd = currentWorkingDirectoryForNewTerminal() else { return nil }
+        return GitService().repositoryRoot(from: cwd)
+    }
+
+    func sidebarContainer(_ container: SidebarContainerView, didRequestOpenWorktree path: String) {
+        // Focus an existing pane in that checkout if there is one; else open a
+        // fresh terminal there.
+        if let index = tabs.firstIndex(where: { tab in
+            tab.panes.contains { Self.path($0.resolvedWorkingDirectory(), isWithin: path) }
+        }) {
+            switchToTab(index: index)
+        } else {
+            createNewTab(workingDirectory: path)
+        }
+    }
+
+    func sidebarContainer(_ container: SidebarContainerView, didRequestCreateWorktree branch: String, agent: WorktreeAgent) {
+        guard let repoRoot = sidebarContainerActiveRepoRoot(container) else {
+            presentWorktreeError("Worktrees need a pane inside a git repository.")
+            return
+        }
+        // Creating the worktree shells out to git (checks out files); do it off
+        // the main thread, then open the pane on the resulting directory.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try WorktreeService().ensureWorktree(forBranch: branch, directory: repoRoot) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let path):
+                    self.createNewTab(workingDirectory: path, command: agent.argv)
+                    self.sidebarContainerView.refreshWorktrees()
+                case .failure(let error):
+                    self.presentWorktreeError(Self.worktreeErrorMessage(error))
+                }
+            }
+        }
+    }
+
+    func sidebarContainer(_ container: SidebarContainerView, didRequestRemoveWorktree branch: String, force: Bool) {
+        guard let repoRoot = sidebarContainerActiveRepoRoot(container) else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try WorktreeService().removeWorktree(forBranch: branch, directory: repoRoot, force: force) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if case .failure(let error) = result {
+                    self.presentWorktreeError(Self.worktreeErrorMessage(error))
+                }
+                self.sidebarContainerView.refreshWorktrees()
+            }
+        }
+    }
+
+    /// True when `candidate` is the worktree `path` or lives inside it.
+    private static func path(_ candidate: String?, isWithin path: String) -> Bool {
+        guard let candidate else { return false }
+        let base = URL(fileURLWithPath: path).standardizedFileURL.path
+        let other = URL(fileURLWithPath: candidate).standardizedFileURL.path
+        return other == base || other.hasPrefix(base.hasSuffix("/") ? base : base + "/")
+    }
+
+    private func presentWorktreeError(_ message: String) {
+        guard let window = window else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Worktree"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window)
+    }
+
+    private static func worktreeErrorMessage(_ error: Error) -> String {
+        switch error {
+        case WorktreeService.WorktreeError.notAGitRepository:
+            return "Not a git repository — worktree commands need a directory inside one."
+        case WorktreeService.WorktreeError.noWorktreeForBranch(let branch):
+            return "No worktree registered for branch '\(branch)'."
+        case WorktreeService.WorktreeError.gitFailed(let message):
+            return "git worktree failed: \(message)"
+        default:
+            return "Worktree operation failed: \(error.localizedDescription)"
         }
     }
 

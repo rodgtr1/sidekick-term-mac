@@ -86,6 +86,37 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(GitService.parseStatusLine("?? untracked.txt")?.isConflicted, false)
     }
 
+    // MARK: - WorktreeStatusSummary
+
+    func testStatusSummaryCleanWhenNoEntries() {
+        let summary = WorktreeStatusSummary(entries: [])
+        XCTAssertTrue(summary.clean)
+        XCTAssertEqual(summary.changed, 0)
+        XCTAssertEqual(summary.conflicted, 0)
+    }
+
+    func testStatusSummaryCountsChangedAndConflictedSeparately() {
+        let entries = GitService.parseStatusOutput("""
+         M edited.swift
+        ?? brand-new.txt
+        UU conflicted.swift
+        M  staged.txt
+
+        """)
+        let summary = WorktreeStatusSummary(entries: entries)
+        XCTAssertFalse(summary.clean)
+        XCTAssertEqual(summary.changed, 3)      // edited, untracked, staged
+        XCTAssertEqual(summary.conflicted, 1)   // UU is conflicted, not "changed"
+    }
+
+    func testStatusSummaryConflictedOnlyIsNotClean() {
+        let entries = GitService.parseStatusOutput("AA both-added.txt\n")
+        let summary = WorktreeStatusSummary(entries: entries)
+        XCTAssertFalse(summary.clean)
+        XCTAssertEqual(summary.changed, 0)
+        XCTAssertEqual(summary.conflicted, 1)
+    }
+
     func testConflictMarkerDiffShowsWorkingTreeWithMarkers() {
         let content = """
         one

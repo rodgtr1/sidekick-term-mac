@@ -34,10 +34,16 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - Access with Cmd+Shift+O
 
 ✅ **Activity Bar + Sidebar**
-- VS Code-style activity bar with 4 panels
+- VS Code-style activity bar with Files, Search, Git, Worktrees, Agents, and Hosts panels
 - File tree with git integration and hidden file toggle
 - Toggle sidebar visibility
 - SF Symbols icons with tooltips
+
+✅ **Worktrees panel**
+- Lists the active repo's git worktrees, discovered live from git
+- Per-worktree agent state (from a pane in that checkout) and dirty/conflicted summary
+- Open/focus the worktree's pane, open its diff, or create a new worktree (optionally launching an agent)
+- Guarded removal that warns before discarding uncommitted work
 
 ✅ **Editor Integration**
 - Built-in text editor for file viewing/editing

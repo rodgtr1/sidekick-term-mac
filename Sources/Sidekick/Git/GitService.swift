@@ -26,6 +26,35 @@ struct GitStatusEntry: Equatable {
     }
 }
 
+/// One-glance dirtiness of a working tree, for the Worktrees panel. `conflicted`
+/// counts files in a merge-conflict state; `changed` counts every other
+/// modified/untracked file. `clean` means no entries at all.
+struct WorktreeStatusSummary: Equatable {
+    let changed: Int
+    let conflicted: Int
+
+    var clean: Bool { changed == 0 && conflicted == 0 }
+
+    static let empty = WorktreeStatusSummary(changed: 0, conflicted: 0)
+
+    /// Derives the summary from porcelain status entries: conflicted files are
+    /// counted separately, everything else rolls into `changed`.
+    init(entries: [GitStatusEntry]) {
+        var changed = 0
+        var conflicted = 0
+        for entry in entries {
+            if entry.isConflicted { conflicted += 1 } else { changed += 1 }
+        }
+        self.changed = changed
+        self.conflicted = conflicted
+    }
+
+    init(changed: Int, conflicted: Int) {
+        self.changed = changed
+        self.conflicted = conflicted
+    }
+}
+
 final class GitService {
     private let runner: ProcessRunning
 
@@ -95,6 +124,14 @@ final class GitService {
         )
         guard result.succeeded else { return [] }
         return Self.parseStatusOutput(result.stdout)
+    }
+
+    /// Dirty/clean/conflicted summary for a worktree, derived from the same
+    /// porcelain status the file list uses. A worktree path is a valid
+    /// repository root for `git status`, so the panel passes the checkout path
+    /// straight in.
+    func statusSummary(repositoryRoot: String) throws -> WorktreeStatusSummary {
+        WorktreeStatusSummary(entries: try status(repositoryRoot: repositoryRoot))
     }
 
     func status(forRelativePath relativePath: String, repositoryRoot: String) throws -> GitStatusEntry? {
