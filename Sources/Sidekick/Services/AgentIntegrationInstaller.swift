@@ -261,6 +261,23 @@ enum AgentIntegrationInstaller {
             """
         }
 
+        // Telemetry: a Stop hook reporting per-pane token usage, parsing Codex's
+        // rollout schema (hence the "codex" argument). Best-effort, dedup by the
+        // helper name + flavor.
+        if let telemetryBinary = helperURL(named: "sidekick-telemetry"),
+           !config.contains("sidekick-telemetry codex") {
+            let command = "\(telemetryBinary.path) codex"
+            config = config.trimmingTrailingNewlines() + """
+
+
+            [[hooks.Stop]]
+            [[hooks.Stop.hooks]]
+            type = "command"
+            command = \(tomlString(command))
+
+            """
+        }
+
         try FileManager.default.createDirectory(
             at: configURL.deletingLastPathComponent(),
             withIntermediateDirectories: true

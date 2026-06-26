@@ -16,8 +16,18 @@ struct SidekickTelemetry {
         guard let paneID = ProcessInfo.processInfo.environment["SIDEKICK_PANE_ID"],
               !paneID.isEmpty else { return }   // not running inside a Sidekick pane
 
-        guard let transcriptPath = hookTranscriptPath(),
-              let usage = TranscriptParser.aggregate(contentsOfFile: transcriptPath),
+        // The hook passes the agent flavor as its first argument ("codex"); Claude
+        // (no argument) is the default. It selects the transcript schema to parse.
+        let agent = CommandLine.arguments.dropFirst().first ?? "claude"
+
+        guard let transcriptPath = hookTranscriptPath() else { return }
+        let parsed: TranscriptUsage?
+        switch agent {
+        case "codex": parsed = CodexTranscriptParser.aggregate(contentsOfFile: transcriptPath)
+        default:      parsed = TranscriptParser.aggregate(contentsOfFile: transcriptPath)
+        }
+
+        guard let usage = parsed,
               usage.assistantResponses > 0,
               let usageData = try? JSONEncoder().encode(usage),
               let usageString = String(data: usageData, encoding: .utf8) else { return }
@@ -31,15 +41,17 @@ struct SidekickTelemetry {
         )
     }
 
-    /// Reads `transcript_path` from the Claude Code hook payload on stdin. Hooks
-    /// always receive JSON on stdin, so only read when stdin is a pipe (never a
-    /// TTY, which would block an interactive invocation).
+    /// Reads the transcript path from the hook payload on stdin. Both Claude and
+    /// Codex deliver JSON on stdin; Claude uses `transcript_path`, Codex
+    /// `transcript_path` or `agent_transcript_path`. Only read when stdin is a
+    /// pipe (never a TTY, which would block an interactive invocation).
     private static func hookTranscriptPath() -> String? {
         guard isatty(FileHandle.standardInput.fileDescriptor) == 0 else { return nil }
         let data = FileHandle.standardInput.readDataToEndOfFile()
         guard !data.isEmpty,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let path = json["transcript_path"] as? String, !path.isEmpty else { return nil }
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let path = (json["transcript_path"] as? String) ?? (json["agent_transcript_path"] as? String)
+        guard let path, !path.isEmpty else { return nil }
         return (path as NSString).expandingTildeInPath
     }
 
