@@ -105,7 +105,7 @@ struct IPCResponse: Codable {
 enum IPCCommandType {
     case ping
     case newTab(cwd: String?)
-    case showDiff(path: String, old: String, new: String)
+    case showDiff(paneID: UUID?, path: String, old: String, new: String)
     case agentReady
     case agentBusy
     case agentDone
@@ -135,7 +135,10 @@ enum IPCCommandType {
                   let old = command.old,
                   let new = command.new,
                   let validPath = Self.validatedDiffPath(path) else { return nil }
-            return .showDiff(path: validPath, old: old, new: new)
+            // pane_id is optional: it scopes "approve & remember" grants to the
+            // pane the edit hook ran in. Absent (or unparseable) → unscoped.
+            return .showDiff(paneID: command.paneID.flatMap(UUID.init(uuidString:)),
+                             path: validPath, old: old, new: new)
         case "agent_ready":
             return .agentReady
         case "agent_busy":

@@ -130,12 +130,16 @@ func requestApproval() -> Bool? {
         return nil
     }
 
-    let command: [String: Any] = [
+    var command: [String: Any] = [
         "action": "show_diff",
         "path": filePath,
         "old": oldContent,
         "new": newContent
     ]
+    // Scope "approve & remember" grants to the pane this hook ran in.
+    if let paneID = ProcessInfo.processInfo.environment["SIDEKICK_PANE_ID"], !paneID.isEmpty {
+        command["pane_id"] = paneID
+    }
     guard var requestData = try? JSONSerialization.data(withJSONObject: command) else { return nil }
     guard requestData.count < maxRequestBytes else {
         debugLog("serialized request too large (\(requestData.count) bytes); allowing")

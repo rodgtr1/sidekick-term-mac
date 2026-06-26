@@ -108,6 +108,26 @@ final class AutomationIPCTests: XCTestCase {
         XCTAssertNil(nilCwd)
     }
 
+    func testShowDiffCarriesOptionalPaneID() throws {
+        let paneID = UUID()
+        let withPane = try JSONDecoder().decode(IPCCommand.self, from: JSONSerialization.data(
+            withJSONObject: ["action": "show_diff", "path": "/tmp/x.swift", "old": "a", "new": "b", "pane_id": paneID.uuidString]))
+        guard case let .showDiff(p, _, old, new) = IPCCommandType.from(withPane) else {
+            return XCTFail("Expected showDiff")
+        }
+        XCTAssertEqual(p, paneID)
+        XCTAssertEqual(old, "a")
+        XCTAssertEqual(new, "b")
+
+        // Absent pane_id parses to an unscoped (nil) pane.
+        let noPane = try JSONDecoder().decode(IPCCommand.self, from: JSONSerialization.data(
+            withJSONObject: ["action": "show_diff", "path": "/tmp/x.swift", "old": "a", "new": "b"]))
+        guard case let .showDiff(nilPane, _, _, _) = IPCCommandType.from(noPane) else {
+            return XCTFail("Expected showDiff")
+        }
+        XCTAssertNil(nilPane)
+    }
+
     func testReportTelemetryDecodesPaneAndUsage() throws {
         let usage = TranscriptUsage(
             model: "claude-opus-4-8", inputTokens: 1000, outputTokens: 500,

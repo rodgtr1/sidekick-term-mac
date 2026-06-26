@@ -38,12 +38,14 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     private weak var host: AutomationHost?
 
     /// Pending hook diff approvals, shown one sheet at a time.
-    private var diffApprovalQueue: [(path: String, old: String, new: String, completion: (Bool) -> Void)] = []
+    private var diffApprovalQueue: [(paneID: UUID?, path: String, old: String, new: String, completion: (Bool) -> Void)] = []
     private var activeDiffApproval: DiffApprovalPanel?
 
-    /// Session-scoped "approve & remember" grants from the review sheet. Reset
-    /// on relaunch, like the auto-approve menu toggle.
-    private var sessionApprovals = SessionApprovals()
+    /// "Approve & remember" grants from the review sheet, scoped per pane (the
+    /// pane the edit hook ran in; nil for a hook that didn't report one). Per-pane
+    /// scoping keeps a grant in one agent's pane from auto-approving another's.
+    /// Reset on relaunch, like the auto-approve menu toggle.
+    private var sessionApprovals: [UUID?: SessionApprovals] = [:]
 
     /// Latest telemetry (model, tokens, est. cost) per pane, reported by the
     /// `sidekick-telemetry` hook helper. Written on the main thread (the IPC
@@ -301,19 +303,19 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             host?.automationCreateNewTab(workingDirectory: cwd)
             completion(IPCResponse(ok: true))
 
-        case .showDiff(let path, let old, let new):
+        case .showDiff(let paneID, let path, let old, let new):
             if old.isEmpty && new.isEmpty {
                 // `sidekick-ctl open-diff <file>`: just view the file.
                 host?.automationOpenFile(URL(fileURLWithPath: path))
                 completion(IPCResponse(ok: true))
-            } else if approvalDecision(for: path) == .allow {
+            } else if approvalDecision(for: path, pane: paneID) == .allow {
                 // Allowed silently by glob rule, "remember" grant, or auto mode.
                 emitDiffEvent(path: path, decision: "accepted")
                 completion(IPCResponse(ok: true, accepted: true))
             } else {
                 // Hook approval: hold the response until the user decides.
                 emitDiffEvent(path: path, decision: "pending")
-                enqueueDiffApproval(path: path, old: old, new: new) { [weak self] accepted in
+                enqueueDiffApproval(paneID: paneID, path: path, old: old, new: new) { [weak self] accepted in
                     self?.emitDiffEvent(path: path, decision: accepted ? "accepted" : "rejected")
                     completion(IPCResponse(ok: true, accepted: accepted))
                 }
@@ -566,25 +568,26 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     // MARK: - Hook diff approval
 
     /// Resolves the approval policy for `path` against the config glob rules,
-    /// session "remember" grants, and the global auto toggle.
-    private func approvalDecision(for path: String) -> ApprovalPolicy.Decision {
+    /// the pane's own "remember" grants, and the global auto toggle.
+    private func approvalDecision(for path: String, pane: UUID?) -> ApprovalPolicy.Decision {
         let config = host?.approvalConfig ?? ApprovalConfig()
         return ApprovalPolicy.decide(
             path: path,
             globalAuto: host?.shouldAutoApproveEdits ?? false,
             autoAllow: config.autoAllow,
             alwaysAsk: config.alwaysAsk,
-            session: sessionApprovals
+            session: sessionApprovals[pane] ?? SessionApprovals()
         )
     }
 
     private func enqueueDiffApproval(
+        paneID: UUID?,
         path: String,
         old: String,
         new: String,
         completion: @escaping (Bool) -> Void
     ) {
-        diffApprovalQueue.append((path: path, old: old, new: new, completion: completion))
+        diffApprovalQueue.append((paneID: paneID, path: path, old: old, new: new, completion: completion))
         presentNextDiffApprovalIfIdle()
     }
 
@@ -602,10 +605,12 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         let panel = DiffApprovalPanel()
         activeDiffApproval = panel
         panel.show(relativeTo: window, path: request.path, old: request.old, new: request.new) { [weak self] outcome in
-            // Record an "approve & remember" grant before resolving, so later
-            // edits in this batch already see it. always_ask still wins.
+            // Record an "approve & remember" grant into the originating pane's
+            // bucket before resolving, so later edits from that pane already see
+            // it. always_ask still wins.
             if outcome.accepted {
-                self?.sessionApprovals.record(outcome.remember, path: request.path)
+                self?.sessionApprovals[request.paneID, default: SessionApprovals()]
+                    .record(outcome.remember, path: request.path)
             }
             request.completion(outcome.accepted)
             self?.activeDiffApproval = nil
