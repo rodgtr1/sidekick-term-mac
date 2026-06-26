@@ -334,6 +334,7 @@ private func handleInitialize(id: Any, params: [String: Any]) {
     ])
 }
 
+@MainActor
 private func handleToolsList(id: Any) {
     let listed = tools.map { tool in
         ["name": tool.name, "description": tool.description, "inputSchema": tool.inputSchema] as [String: Any]
@@ -341,6 +342,7 @@ private func handleToolsList(id: Any) {
     respond(id: id, result: ["tools": listed])
 }
 
+@MainActor
 private func handleToolsCall(id: Any, params: [String: Any]) {
     guard let name = params["name"] as? String, let tool = toolsByName[name] else {
         respondError(id: id, code: -32602, message: "Unknown tool: \(params["name"] as? String ?? "<none>")")

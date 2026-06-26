@@ -43,28 +43,28 @@ let package = Package(
             name: "SidekickCtl",
             path: "Sources/sidekick-ctl",
             swiftSettings: [
-                .unsafeFlags(["-swift-version", "5"])
+                .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .executableTarget(
             name: "SidekickAgentStatus",
             path: "Sources/sidekick-agent-status",
             swiftSettings: [
-                .unsafeFlags(["-swift-version", "5"])
+                .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .executableTarget(
             name: "SidekickHook",
             path: "Sources/sidekick-hook",
             swiftSettings: [
-                .unsafeFlags(["-swift-version", "5"])
+                .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .executableTarget(
             name: "SidekickMCP",
             path: "Sources/sidekick-mcp",
             swiftSettings: [
-                .unsafeFlags(["-swift-version", "5"])
+                .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .executableTarget(
@@ -72,7 +72,7 @@ let package = Package(
             dependencies: ["SidekickTelemetryCore"],
             path: "Sources/sidekick-telemetry",
             swiftSettings: [
-                .unsafeFlags(["-swift-version", "5"])
+                .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .testTarget(
