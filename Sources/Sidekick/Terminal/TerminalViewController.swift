@@ -765,7 +765,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             agentDoneTimer?.invalidate()
             agentDoneTimer = nil
             notifyDetectedAgentState(.ready)
-        } else if containsAgentWorkingCue(normalizedCurrentOutput),
+        } else if Self.containsAgentWorkingCue(normalizedCurrentOutput),
                   lastDetectedAgentState != .ready {
             notifyDetectedAgentState(.working)
             scheduleDoneAfterQuietPeriod()
@@ -1190,11 +1190,19 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         return Set(markers.filter { output.contains($0) })
     }
 
-    private func containsAgentWorkingCue(_ output: String) -> Bool {
-        return output.contains("running...")
-            || output.contains("running…")
-            || output.contains("thinking")
-            || output.contains("working")
+    /// Heuristic "agent is working" signal for sessions WITHOUT the status hook
+    /// installed (hooked sessions never reach here — see `detectAgentState`).
+    /// Anchored to the spinner ellipsis the agents render ("Thinking…",
+    /// "Working…", "running...") and the "esc to interrupt" footer, so the bare
+    /// words don't flip state when they appear in ordinary command output. For
+    /// reliable state, install the agent hooks.
+    static func containsAgentWorkingCue(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        if lower.contains("esc to interrupt") { return true }
+        for cue in ["running", "thinking", "working", "generating"] {
+            if lower.contains("\(cue)...") || lower.contains("\(cue)…") { return true }
+        }
+        return false
     }
 
     private func handleTerminalInput() {
