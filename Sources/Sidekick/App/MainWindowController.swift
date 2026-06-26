@@ -131,10 +131,13 @@ class MainWindowController: NSWindowController {
         return saved > 0 ? CGFloat(saved) : 240
     }()
     private var editorViewController: EditorViewController?
-    private var tabs: [TabModel] = []
-    private var activeTabIndex: Int = 0
-    private var currentPaneSplitController: PaneSplitController?
-    private var tabSplitControllers: [UUID: PaneSplitController] = [:] // Map tab IDs to their split controllers
+    /// Owns the tab/pane tree, the per-tab split controllers, the tab lifecycle,
+    /// and session save/restore. MWC reads it through the forwarders below and
+    /// drives it for create/switch/close.
+    private var tabController: TabController!
+    private var tabs: [TabModel] { tabController.tabs }
+    private var activeTabIndex: Int { tabController.activeTabIndex }
+    private var currentPaneSplitController: PaneSplitController? { tabController.currentSplitController }
     private var quickOpenPanel: QuickOpenPanel?
     private var preferencesWindowController: PreferencesWindowController?
     fileprivate var commandPalette: CommandPalettePanel?
@@ -144,8 +147,6 @@ class MainWindowController: NSWindowController {
     private let keyboardCommandRouter = KeyboardCommandRouter()
     private let configWatcher = ConfigWatcher()
     private var sessionSaveTimer: Timer?
-    /// Last session state written, to skip identical autosave writes.
-    private var lastSavedSession: SessionState?
     /// Owns IPC command translation and the hook diff-approval queue.
     private var automationCoordinator: AutomationCoordinator!
     /// Per-session "auto-approve agent edits" toggle (menu-driven). Layered on
@@ -185,6 +186,7 @@ class MainWindowController: NSWindowController {
 
         self.init(window: window)
         self.config = config
+        self.tabController = TabController(host: self)
         Log.debug("✅ WindowController initialized", category: "app")
 
         setupUI()
@@ -277,89 +279,15 @@ class MainWindowController: NSWindowController {
         layoutViews()
 
         // Create initial tab(s) after all views are set up
-        if config.behavior.restoreSession, let session = SessionStore.load() {
-            restoreSession(session)
-        } else {
-            createNewTab()
-        }
+        tabController.restoreOrCreateInitialTab()
     }
 
     // MARK: - Session save/restore
 
+    /// Forwards to the tab controller, which owns the tab/pane tree. Called from
+    /// the autosave timer and windowWillClose.
     func saveSession() {
-        guard !tabs.isEmpty else { return }
-
-        let tabStates: [SessionTabState] = tabs.map { tab in
-            let panes: [SessionPaneState] = tab.panes.compactMap { pane in
-                switch pane.paneType {
-                case .terminal:
-                    return SessionPaneState(
-                        type: "terminal",
-                        cwd: pane.resolvedWorkingDirectory(),
-                        url: nil
-                    )
-                case .browser:
-                    return SessionPaneState(
-                        type: "browser",
-                        cwd: nil,
-                        url: pane.browserViewController?.pageURL?.absoluteString
-                    )
-                case .editor, .diff, .uncommittedChanges:
-                    // Transient views; don't recreate them on relaunch.
-                    return nil
-                }
-            }
-            return SessionTabState(
-                panes: panes,
-                activePaneIndex: min(tab.activePaneIndex, max(panes.count - 1, 0)),
-                customTitle: tab.customTitle
-            )
-        }
-
-        let state = SessionState(tabs: tabStates, activeTabIndex: activeTabIndex)
-        guard state != lastSavedSession else { return }
-        lastSavedSession = state
-        SessionStore.save(state)
-    }
-
-    private func restoreSession(_ session: SessionState) {
-        let restorable = session.tabs.filter { !$0.panes.isEmpty }
-        guard !restorable.isEmpty else {
-            createNewTab()
-            return
-        }
-
-        Log.debug("📦 Restoring session with \(restorable.count) tab(s)", category: "app")
-        for tabState in restorable.prefix(Limits.maxTabs) {
-            restoreTab(from: tabState)
-        }
-
-        let targetIndex = min(max(0, session.activeTabIndex), tabs.count - 1)
-        if targetIndex != activeTabIndex {
-            switchToTab(index: targetIndex)
-        }
-        // Point the sidebar at the restored tab's directory right away.
-        syncSidebarToActiveTab()
-    }
-
-    private func restoreTab(from state: SessionTabState) {
-        let tab = TabModel()
-        tab.panes.removeAll()
-        tab.customTitle = state.customTitle
-
-        for paneState in state.panes.prefix(Limits.maxPanesPerTab) {
-            let pane = PaneModel()
-            if paneState.type == "browser" {
-                pane.createBrowserViewController(initialURL: paneState.url.flatMap { URL(string: $0) })
-            } else {
-                pane.createTerminalViewController(config: config, initialDirectory: paneState.cwd)
-            }
-            tab.panes.append(pane)
-        }
-        tab.activePaneIndex = min(max(0, state.activePaneIndex), tab.panes.count - 1)
-        tab.updateTitleFromActivePane()
-
-        installTab(tab)
+        tabController.saveSession()
     }
 
     private func setupTitlebarBackground() {
@@ -749,84 +677,22 @@ class MainWindowController: NSWindowController {
 
     /// Updates the activity-bar badge with the number of tabs whose agent is
     /// waiting for input.
-    private func refreshAgentsBadge() {
+    func refreshAgentsBadge() {
         let waiting = tabs.filter { $0.agentState == .ready }.count
         activityBarView.updateAgentsBadge(count: waiting)
     }
 
+    /// Forwards to the tab controller. Public entry point used by the menu,
+    /// command palette, keyboard router, and AppDelegate.
     func createNewTab(workingDirectory: String? = nil, command: [String]? = nil) {
-        let startDirectory = workingDirectory ?? currentWorkingDirectoryForNewTerminal()
-
-        let tab = TabModel()
-        if let firstPane = tab.panes.first {
-            firstPane.createTerminalViewController(config: config, initialDirectory: startDirectory, command: command)
-        }
-
-        installTab(tab)
-    }
-
-    /// Adds a tab's split controller view into the content area, pinned to all
-    /// edges. Only the active tab's controller lives in the hierarchy at once,
-    /// so hidden tabs can't receive clicks, hit-tests, or relayout work.
-    private func attachController(_ controller: PaneSplitController) {
-        guard controller.view.superview !== mainContentView else { return }
-        controller.view.translatesAutoresizingMaskIntoConstraints = false
-        mainContentView.addSubview(controller.view)
-        NSLayoutConstraint.activate([
-            controller.view.topAnchor.constraint(equalTo: mainContentView.topAnchor),
-            controller.view.leadingAnchor.constraint(equalTo: mainContentView.leadingAnchor),
-            controller.view.trailingAnchor.constraint(equalTo: mainContentView.trailingAnchor),
-            controller.view.bottomAnchor.constraint(equalTo: mainContentView.bottomAnchor)
-        ])
-    }
-
-    /// Removes an inactive tab's view from the hierarchy (its constraints to
-    /// mainContentView go with it). The controller and its panes stay alive in
-    /// `tabSplitControllers` for re-attachment on the next switch.
-    private func detachController(_ controller: PaneSplitController) {
-        controller.view.removeFromSuperview()
-    }
-
-    /// Restores first responder to the shown tab's active pane after a switch,
-    /// since detaching the previous tab's view drops the window's responder.
-    private func restoreFocus(for tab: TabModel) {
-        DispatchQueue.main.async {
-            tab.activePane?.focus()
-        }
-    }
-
-    /// Shared plumbing for adding a fully-built tab: detaches the current tab,
-    /// appends and activates the new one, and installs its split controller
-    /// into the main content view. Used by new-tab, session restore, and
-    /// single-pane (diff/changes) tabs so they can't drift apart.
-    private func installTab(_ tab: TabModel) {
-        if let currentController = currentPaneSplitController {
-            detachController(currentController)
-        }
-        if let activeTab = tabs[safe: activeTabIndex] {
-            activeTab.isActive = false
-        }
-
-        tab.isActive = true
-        tabs.append(tab)
-        activeTabIndex = tabs.count - 1
-
-        let paneSplitController = PaneSplitController(config: config)
-        paneSplitController.delegate = self
-        currentPaneSplitController = paneSplitController
-        tabSplitControllers[tab.id] = paneSplitController
-
-        attachController(paneSplitController)
-        paneSplitController.rebuildSplitView(for: tab)
-
-        updateTabBar()
+        tabController.createNewTab(workingDirectory: workingDirectory, command: command)
     }
 
     private func updateTabBar() {
         tabBarView.updateTabs(tabs, activeIndex: activeTabIndex)
     }
 
-    private func syncSidebarToActiveTab() {
+    func syncSidebarToActiveTab() {
         guard let directory = currentSidebarDirectoryForActiveTab() else { return }
         sidebarContainerView.updateFileTree(path: directory)
 
@@ -867,90 +733,12 @@ class MainWindowController: NSWindowController {
         return nil
     }
 
-    private func currentWorkingDirectoryForNewTerminal() -> String? {
-        guard let activeTab = tabs[safe: activeTabIndex] else { return nil }
-
-        if let activePaneDirectory = activeTab.activePane?.resolvedWorkingDirectory() {
-            return activePaneDirectory
-        }
-
-        return activeTab.panes.compactMap { $0.resolvedWorkingDirectory() }.first
-    }
-
-    /// After a tab's view is re-attached, its editors need to regenerate their
-    /// glyph layout — NSTextView leaves them blank otherwise. Deferred to the
-    /// next runloop so the view has its restored frame before we lay out.
-    private func refreshEditorsOnShow(for tab: TabModel) {
-        DispatchQueue.main.async {
-            for pane in tab.panes {
-                pane.editorViewController?.refreshLayout()
-            }
-        }
-    }
-
     private func switchToTab(index: Int) {
-        guard index >= 0 && index < tabs.count else { return }
-        guard index != activeTabIndex else { return } // Already on this tab
-
-        Log.debug("🔄 Switching from tab \(activeTabIndex) to tab \(index)", category: "app")
-
-        // Detach current tab's split controller
-        if let currentController = currentPaneSplitController {
-            detachController(currentController)
-        }
-
-        // Update active state
-        tabs[activeTabIndex].isActive = false
-        activeTabIndex = index
-        tabs[activeTabIndex].isActive = true
-
-        // Attach the split controller for the new tab
-        let newTab = tabs[index]
-        if let newController = tabSplitControllers[newTab.id] {
-            currentPaneSplitController = newController
-            attachController(newController)
-            refreshEditorsOnShow(for: newTab)
-            restoreFocus(for: newTab)
-        } else {
-            print("  ⚠️ No split controller found for tab \(index)")
-        }
-
-        updateTabBar()
-        syncSidebarToActiveTab()
+        tabController.switchToTab(index: index)
     }
 
     private func closeTab(index: Int) {
-        guard index >= 0 && index < tabs.count && tabs.count > 1 else { return }
-
-        let tabToClose = tabs[index]
-
-        // Remove and cleanup the split controller for this tab
-        if let controller = tabSplitControllers[tabToClose.id] {
-            controller.view.removeFromSuperview()
-            tabSplitControllers.removeValue(forKey: tabToClose.id)
-        }
-
-        tabs.remove(at: index)
-
-        // Adjust active index
-        if activeTabIndex >= tabs.count {
-            activeTabIndex = tabs.count - 1
-        } else if activeTabIndex > index {
-            activeTabIndex -= 1
-        }
-
-        // Switch to the new active tab
-        let newTab = tabs[activeTabIndex]
-        if let newController = tabSplitControllers[newTab.id] {
-            currentPaneSplitController = newController
-            attachController(newController)
-            refreshEditorsOnShow(for: newTab)
-            restoreFocus(for: newTab)
-        }
-
-        updateTabBar()
-        syncSidebarToActiveTab()
-        refreshAgentsBadge()
+        tabController.closeTab(index: index)
     }
 }
 
@@ -968,70 +756,12 @@ extension MainWindowController: TabBarDelegate {
     }
 
     func tabBar(_ tabBar: TabBarView, didMoveTab fromIndex: Int, to toIndex: Int) {
-        guard fromIndex != toIndex,
-              fromIndex >= 0, fromIndex < tabs.count,
-              toIndex >= 0, toIndex < tabs.count else {
-            updateTabBar()
-            return
-        }
-
-        let activeTab = tabs[safe: activeTabIndex]
-        let tab = tabs.remove(at: fromIndex)
-        tabs.insert(tab, at: toIndex)
-
-        if let activeTab = activeTab, let newActiveIndex = tabs.firstIndex(where: { $0.id == activeTab.id }) {
-            activeTabIndex = newActiveIndex
-        }
-        updateTabBar()
+        tabController.moveTab(from: fromIndex, to: toIndex)
     }
 
     func tabBar(_ tabBar: TabBarView, didRenameTab index: Int, to title: String?) {
         guard let tab = tabs[safe: index] else { return }
         tab.customTitle = title
-        updateTabBar()
-    }
-}
-
-extension MainWindowController: PaneSplitControllerDelegate {
-    func paneSplitController(_ controller: PaneSplitController, didAddPane pane: PaneModel, at index: Int) {
-        guard let tab = tabs.first(where: { tabSplitControllers[$0.id] === controller }) else { return }
-
-        if !tab.panes.contains(where: { $0.id == pane.id }) {
-            tab.panes.append(pane)
-        }
-        updateTabBar()
-    }
-
-    func paneSplitController(_ controller: PaneSplitController, didActivatePane pane: PaneModel, at index: Int) {
-        guard let tabIndex = tabs.firstIndex(where: { tabSplitControllers[$0.id] === controller }) else { return }
-        let tab = tabs[tabIndex]
-
-        tab.activePaneIndex = index
-        if tabIndex != activeTabIndex {
-            switchToTab(index: tabIndex)
-        }
-        if let directory = pane.resolvedWorkingDirectory() {
-            sidebarContainerView.updateFileTree(path: directory)
-        }
-    }
-
-    func paneSplitController(_ controller: PaneSplitController, didClosePane pane: PaneModel, at index: Int) {
-        guard let tab = tabs.first(where: { tabSplitControllers[$0.id] === controller }) else { return }
-
-        if index < tab.panes.count, tab.panes[index].id == pane.id {
-            tab.panes.remove(at: index)
-        } else if let paneIndex = tab.panes.firstIndex(of: pane) {
-            tab.panes.remove(at: paneIndex)
-        }
-
-        if tab.activePaneIndex >= tab.panes.count {
-            tab.activePaneIndex = max(tab.panes.count - 1, 0)
-        } else if tab.activePaneIndex > index {
-            tab.activePaneIndex -= 1
-        }
-
-        tab.updateTitleFromActivePane()
-        tab.updateAgentStateFromPanes()
         updateTabBar()
     }
 }
@@ -1067,7 +797,7 @@ extension MainWindowController: SidebarContainerDelegate {
     // MARK: Worktrees panel
 
     func sidebarContainerActiveRepoRoot(_ container: SidebarContainerView) -> String? {
-        guard let cwd = currentWorkingDirectoryForNewTerminal() else { return nil }
+        guard let cwd = tabController.currentWorkingDirectoryForNewTerminal() else { return nil }
         return GitService().repositoryRoot(from: cwd)
     }
 
@@ -1256,7 +986,7 @@ extension MainWindowController: SidebarContainerDelegate {
         tab.activePaneIndex = 0
         tab.updateTitleFromActivePane()
 
-        installTab(tab)
+        tabController.installTab(tab)
         syncSidebarToActiveTab()
     }
 
@@ -1385,7 +1115,7 @@ extension MainWindowController: SidebarContainerDelegate {
     }
 
     func closeCurrentTab() {
-        closeTab(index: activeTabIndex)
+        tabController.closeCurrentTab()
     }
 
     func saveCurrentFile() {
@@ -1694,6 +1424,22 @@ extension MainWindowController: NSWindowDelegate {
     }
 }
 
+// MARK: - TabHost
+extension MainWindowController: TabHost {
+    var tabContentView: NSView { mainContentView }
+    var tabConfig: Config { config }
+
+    func reloadTabBar() {
+        updateTabBar()
+    }
+
+    func updateSidebarDirectory(_ path: String) {
+        sidebarContainerView.updateFileTree(path: path)
+    }
+    // syncSidebarToActiveTab() and refreshAgentsBadge() are defined on the
+    // class above and satisfy the rest of TabHost.
+}
+
 // MARK: - AutomationHost
 extension MainWindowController: AutomationHost {
     var automationTabs: [TabModel] { tabs }
@@ -1723,7 +1469,7 @@ extension MainWindowController: AutomationHost {
     }
 
     func automationSplitController(forTab tabID: UUID) -> PaneSplitController? {
-        tabSplitControllers[tabID]
+        tabController.splitController(forTab: tabID)
     }
 
     func automationCreateNewTab(workingDirectory: String?) {
