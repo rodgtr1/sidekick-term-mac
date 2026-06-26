@@ -6,20 +6,11 @@ import SidekickTelemetryCore
 /// truth for tabs/panes/window; the coordinator only reads through this seam,
 /// so the IPC translation, wait logic, and diff-approval queue can live outside
 /// the 1,900-line controller.
-protocol AutomationHost: AnyObject {
+protocol AutomationHost: DiffApprovalHost {
     /// All tabs, in order. The active one is identified by `activeAutomationTabID`.
     var automationTabs: [TabModel] { get }
     /// ID of the tab the user is currently looking at (drives `focused`).
     var activeAutomationTabID: UUID? { get }
-    /// The window a diff-approval sheet attaches to, or nil when there's none
-    /// to review in (app closing / backgrounded).
-    var automationWindow: NSWindow? { get }
-    /// When true, hook edits are approved without a review popup — driven by the
-    /// `[approval]` config mode and the per-session toggle.
-    var shouldAutoApproveEdits: Bool { get }
-    /// The active `[approval]` config, supplying the auto_allow / always_ask
-    /// glob rules layered on top of `shouldAutoApproveEdits`.
-    var approvalConfig: ApprovalConfig { get }
     /// Effective telemetry rate card ([telemetry] overrides merged over the
     /// built-in defaults), used to price per-pane token usage.
     var telemetryRates: [String: TelemetryRate] { get }
@@ -31,21 +22,19 @@ protocol AutomationHost: AnyObject {
 }
 
 /// Translates IPC commands (from `sidekick-ctl`, `sidekick-mcp`, and the
-/// edit-approval hook) into operations on the live pane tree, and owns the
-/// hook diff-approval queue. Extracted from MainWindowController — see
+/// edit-approval hook) into operations on the live pane tree, and is the lone
+/// event-stream emit site. Hook edit approvals are delegated to
+/// `DiffApprovalCoordinator`. Extracted from MainWindowController — see
 /// AutomationHost for the seam back to it.
 final class AutomationCoordinator: NSObject, IPCServerDelegate {
     private weak var host: AutomationHost?
 
-    /// Pending hook diff approvals, shown one sheet at a time.
-    private var diffApprovalQueue: [(paneID: UUID?, path: String, old: String, new: String, completion: (Bool) -> Void)] = []
-    private var activeDiffApproval: DiffApprovalPanel?
-
-    /// "Approve & remember" grants from the review sheet, scoped per pane (the
-    /// pane the edit hook ran in; nil for a hook that didn't report one). Per-pane
-    /// scoping keeps a grant in one agent's pane from auto-approving another's.
-    /// Reset on relaunch, like the auto-approve menu toggle.
-    private var sessionApprovals: [UUID?: SessionApprovals] = [:]
+    /// Owns the hook diff-approval queue, review presentation, and per-pane
+    /// "approve & remember" grants. Reports the diff lifecycle back through
+    /// `emitDiffEvent` so this coordinator stays the lone event-emit site.
+    private lazy var diffApproval = DiffApprovalCoordinator(host: host) { [weak self] path, decision in
+        self?.emitDiffEvent(path: path, decision: decision)
+    }
 
     /// Latest telemetry (model, tokens, est. cost) per pane, reported by the
     /// `sidekick-telemetry` hook helper. Written on the main thread (the IPC
@@ -98,9 +87,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     /// Called from the host's windowWillClose. Don't strand hook processes
     /// blocked on approval: cancel the visible sheet and resolve the queue.
     func prepareForWindowClose() {
-        activeDiffApproval?.cancel()
-        activeDiffApproval = nil
-        drainDiffApprovalQueue()
+        diffApproval.prepareForWindowClose()
     }
 
     // MARK: - Pane resolution
@@ -308,15 +295,8 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
                 // `sidekick-ctl open-diff <file>`: just view the file.
                 host?.automationOpenFile(URL(fileURLWithPath: path))
                 completion(IPCResponse(ok: true))
-            } else if approvalDecision(for: path, pane: paneID) == .allow {
-                // Allowed silently by glob rule, "remember" grant, or auto mode.
-                emitDiffEvent(path: path, decision: "accepted")
-                completion(IPCResponse(ok: true, accepted: true))
             } else {
-                // Hook approval: hold the response until the user decides.
-                emitDiffEvent(path: path, decision: "pending")
-                enqueueDiffApproval(paneID: paneID, path: path, old: old, new: new) { [weak self] accepted in
-                    self?.emitDiffEvent(path: path, decision: accepted ? "accepted" : "rejected")
+                diffApproval.requestApproval(paneID: paneID, path: path, old: old, new: new) { accepted in
                     completion(IPCResponse(ok: true, accepted: accepted))
                 }
             }
@@ -562,72 +542,6 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             return "git worktree failed: \(message)"
         default:
             return "Worktree operation failed: \(error.localizedDescription)"
-        }
-    }
-
-    // MARK: - Hook diff approval
-
-    /// Resolves the approval policy for `path` against the config glob rules,
-    /// the pane's own "remember" grants, and the global auto toggle.
-    private func approvalDecision(for path: String, pane: UUID?) -> ApprovalPolicy.Decision {
-        let config = host?.approvalConfig ?? ApprovalConfig()
-        return ApprovalPolicy.decide(
-            path: path,
-            globalAuto: host?.shouldAutoApproveEdits ?? false,
-            autoAllow: config.autoAllow,
-            alwaysAsk: config.alwaysAsk,
-            session: sessionApprovals[pane] ?? SessionApprovals()
-        )
-    }
-
-    private func enqueueDiffApproval(
-        paneID: UUID?,
-        path: String,
-        old: String,
-        new: String,
-        completion: @escaping (Bool) -> Void
-    ) {
-        diffApprovalQueue.append((paneID: paneID, path: path, old: old, new: new, completion: completion))
-        presentNextDiffApprovalIfIdle()
-    }
-
-    private func presentNextDiffApprovalIfIdle() {
-        guard activeDiffApproval == nil, !diffApprovalQueue.isEmpty else { return }
-
-        // No window to attach a sheet to: fail open rather than leave the hook
-        // blocked and the queue wedged.
-        guard let window = host?.automationWindow, window.isVisible else {
-            drainDiffApprovalQueue()
-            return
-        }
-
-        let request = diffApprovalQueue.removeFirst()
-        let panel = DiffApprovalPanel()
-        activeDiffApproval = panel
-        panel.show(relativeTo: window, path: request.path, old: request.old, new: request.new) { [weak self] outcome in
-            // Record an "approve & remember" grant into the originating pane's
-            // bucket before resolving, so later edits from that pane already see
-            // it. always_ask still wins.
-            if outcome.accepted {
-                self?.sessionApprovals[request.paneID, default: SessionApprovals()]
-                    .record(outcome.remember, path: request.path)
-            }
-            request.completion(outcome.accepted)
-            self?.activeDiffApproval = nil
-            self?.presentNextDiffApprovalIfIdle()
-        }
-    }
-
-    /// Resolves every queued approval when there is no window to review in
-    /// (app closing, or a diff arrived while the window was hidden). These
-    /// fail OPEN — allowing the edit — to match the hook's own contract that
-    /// an unavailable Sidekick lets edits through, rather than silently
-    /// blocking an agent's work because the reviewer wasn't on screen.
-    private func drainDiffApprovalQueue() {
-        let pending = diffApprovalQueue
-        diffApprovalQueue.removeAll()
-        for request in pending {
-            request.completion(true)
         }
     }
 }
