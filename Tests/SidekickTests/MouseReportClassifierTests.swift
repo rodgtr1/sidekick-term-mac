@@ -58,4 +58,37 @@ final class MouseReportClassifierTests: XCTestCase {
         XCTAssertFalse(MouseReportClassifier.isTerminalGeneratedReport(slice("\u{1B}[A")))  // arrow key
         XCTAssertFalse(MouseReportClassifier.isTerminalGeneratedReport(slice("hello")))     // typing
     }
+
+    // The button-state tracking that separates a hover (drop) from a drag
+    // (forward, so TUI selection still works). A misclassification here either
+    // re-leaks hover flicker or wedges a button "down" so later hovers forward.
+    func testSGRPressAndReleaseAreClassified() {
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(sgr(0, 12, 11)), .press)               // left press
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(sgr(0, 12, 11, press: false)), .release) // left release
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(sgr(2, 3, 4)), .press)                 // right press
+    }
+
+    func testMotionAndWheelAreNotButtonTransitions() {
+        // Hover (button 0 + motion) and any-event hover (button 3 + motion):
+        // motion never changes button state, regardless of the button bits.
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(sgr(32, 12, 11)), .none) // left-coded hover/drag motion
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(sgr(35, 12, 11)), .none) // no-button hover motion
+        // Wheel up/down are not button holds.
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(sgr(64, 3, 4)), .none)   // wheel up
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(sgr(65, 3, 4)), .none)   // wheel down
+    }
+
+    func testNonMouseSequencesAreNotButtonTransitions() {
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(slice("\u{1B}[I")), .none) // focus in
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(slice("\u{1B}[A")), .none) // arrow key
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(slice("a")), .none)        // keystroke
+    }
+
+    func testX10PressAndReleaseAreClassified() {
+        // ESC [ M Cb Cx Cy, offset 32. Button 0 press vs. button 3 (release).
+        let press: [UInt8] = [0x1B, 0x5B, 0x4D, 32, 33, 33]
+        let release: [UInt8] = [0x1B, 0x5B, 0x4D, 32 + 3, 33, 33]
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(press[...]), .press)
+        XCTAssertEqual(MouseReportClassifier.buttonTransition(release[...]), .release)
+    }
 }

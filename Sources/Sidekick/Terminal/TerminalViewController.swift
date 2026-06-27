@@ -63,6 +63,46 @@ enum MouseReportClassifier {
         }
     }
 
+    /// A mouse report that presses or releases a button, used to track button
+    /// state. A hover (motion with no button) and a drag (motion with a button
+    /// held) encode identically in the button field, so the bytes of a motion
+    /// report alone can't tell them apart — only the running press/release
+    /// state can.
+    nonisolated enum ButtonTransition: Equatable { case press, release, none }
+
+    /// Classifies whether `data` presses or releases a mouse button (as opposed
+    /// to motion, wheel, or a non-mouse sequence). Wheel events (bit 6) are not
+    /// treated as button holds.
+    nonisolated static func buttonTransition(_ data: ArraySlice<UInt8>) -> ButtonTransition {
+        guard data.count >= 4 else { return .none }
+        let bytes = Array(data)
+        guard bytes[0] == 0x1B, bytes[1] == 0x5B else { return .none } // ESC [
+        switch bytes[2] {
+        case 0x3C: // SGR: ESC [ < Cb ; Cx ; Cy (M|m)
+            if isMouseMotionReport(data) { return .none }
+            var value = 0
+            var sawDigit = false
+            for b in bytes[3...] {
+                guard b >= 0x30, b <= 0x39 else { break }
+                value = value * 10 + Int(b - 0x30)
+                sawDigit = true
+            }
+            guard sawDigit, (value & 0x40) == 0 else { return .none } // skip wheel
+            switch bytes[bytes.count - 1] {
+            case 0x4D: return .press   // 'M'
+            case 0x6D: return .release // 'm'
+            default:   return .none
+            }
+        case 0x4D: // X10: ESC [ M Cb Cx Cy — no per-button release; button 3 = release
+            if isMouseMotionReport(data) { return .none }
+            let cb = Int(bytes[3]) - 32
+            guard cb >= 0, (cb & 0x40) == 0 else { return .none } // skip wheel
+            return (cb & 0x03) == 3 ? .release : .press
+        default:
+            return .none
+        }
+    }
+
     /// True when `data` is a mouse *motion* report (the pointer moved) rather
     /// than a button press or release. Motion is flagged by bit 5 (value 0x20)
     /// of the button field, in both SGR (`CSI < Cb ; Cx ; Cy`) and X10
@@ -95,6 +135,11 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
     var onOutput: ((String) -> Void)?
     var onInput: (() -> Void)?
 
+    /// Whether a mouse button is currently held, tracked from the press/release
+    /// reports we forward. Lets `send` tell a hover (motion, no button) from a
+    /// drag (motion with a button held) — the two are byte-identical otherwise.
+    private var mouseButtonDown = false
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
         if let output = String(bytes: slice, encoding: .utf8) {
             onOutput?(output)
@@ -103,19 +148,30 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
     }
 
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        // On the normal screen the mouse belongs to Sidekick — selection,
-        // scrollback scrolling, and link hover — not to inline apps. Claude
-        // Code keeps motion reporting (DECSET 1003) on for its hover-to-expand
-        // effect, but forwarding that motion makes it re-render on every pixel
-        // of movement, which flickers and can wedge SwiftTerm's
-        // synchronized-output (CSI 2026) snapshot so the screen freezes on a
-        // stale frame while the agent waits for unseen input. Drop motion on
-        // the normal screen only; alternate-screen TUIs (vim, htop, lazygit)
-        // still get the full mouse, and clicks/releases still reach the app.
-        // Mirrors the scroll-wheel gate in 925c08b.
-        if MouseReportClassifier.isMouseMotionReport(data),
-           !getTerminal().isCurrentBufferAlternate {
-            return
+        // Track button state from the press/release reports we forward, so we
+        // can tell a hover from a drag below.
+        switch MouseReportClassifier.buttonTransition(data) {
+        case .press:   mouseButtonDown = true
+        case .release: mouseButtonDown = false
+        case .none:    break
+        }
+
+        // Pointer motion belongs to Sidekick — selection, scrollback, link
+        // hover — not to inline apps, EXCEPT a real drag-select inside an
+        // alternate-screen TUI (vim, lazygit). Claude Code runs on the
+        // alternate screen yet keeps motion reporting (DECSET 1003) on for its
+        // hover-to-expand effect; forwarding that hover motion makes it
+        // re-render on every pixel of movement, which flickers the inline tool
+        // rows and — via SwiftTerm's synchronized-output (CSI 2026) snapshot —
+        // could wedge the display on a stale frame while the agent waits for
+        // unseen input. A hover and a drag encode identically, so we split them
+        // by tracked button state: drop motion unless a button is held on the
+        // alternate screen. Clicks/releases always reach the app, so selection,
+        // scrollback, prompt clicks, and link hover are untouched. Companion to
+        // the scroll-wheel gate in 925c08b.
+        if MouseReportClassifier.isMouseMotionReport(data) {
+            let dragInAltScreen = mouseButtonDown && getTerminal().isCurrentBufferAlternate
+            if !dragInAltScreen { return }
         }
         // Focus and mouse reports are emitted by the emulator itself when the
         // view is focused, clicked, or hovered — the user didn't type them, so
