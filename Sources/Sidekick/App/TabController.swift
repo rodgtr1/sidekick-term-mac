@@ -267,12 +267,6 @@ final class TabController: NSObject {
                         cwd: pane.resolvedWorkingDirectory(),
                         url: nil
                     )
-                case .browser:
-                    return SessionPaneState(
-                        type: "browser",
-                        cwd: nil,
-                        url: pane.browserViewController?.pageURL?.absoluteString
-                    )
                 case .editor, .diff, .uncommittedChanges:
                     // Transient views; don't recreate them on relaunch.
                     return nil
@@ -318,17 +312,27 @@ final class TabController: NSObject {
 
         for paneState in state.panes.prefix(Limits.maxPanesPerTab) {
             let pane = PaneModel()
-            if paneState.type == "browser" {
-                pane.createBrowserViewController(initialURL: paneState.url.flatMap { URL(string: $0) })
-            } else {
-                pane.createTerminalViewController(config: config, initialDirectory: paneState.cwd)
-            }
+            // Only trust a restored cwd that still exists and is a directory;
+            // otherwise fall back to the default start directory.
+            pane.createTerminalViewController(config: config, initialDirectory: Self.validatedRestoredDirectory(paneState.cwd))
             tab.panes.append(pane)
         }
         tab.activePaneIndex = min(max(0, state.activePaneIndex), tab.panes.count - 1)
         tab.updateTitleFromActivePane()
 
         installTab(tab)
+    }
+
+    /// A restored cwd is only trusted when it still exists and is a directory;
+    /// otherwise we return nil so the terminal falls back to the default start
+    /// directory. Guards against a tampered/stale session.json launching a pane
+    /// at an arbitrary path.
+    private static func validatedRestoredDirectory(_ path: String?) -> String? {
+        guard let path, path.hasPrefix("/") else { return nil }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return nil }
+        return path
     }
 }
 

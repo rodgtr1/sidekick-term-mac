@@ -21,6 +21,9 @@ class PreferencesWindowController: NSWindowController {
     private var fontFamilyPopup: NSPopUpButton!
     private var fontSizeSlider: NSSlider!
     private var fontSizeLabel: NSTextField!
+    private var boldIsBrightCheckbox: NSButton!
+    private var paddingSlider: NSSlider!
+    private var paddingLabel: NSTextField!
     private var shellIntegrationStatusLabel: NSTextField!
     private var shellIntegrationButton: NSButton!
 
@@ -36,6 +39,11 @@ class PreferencesWindowController: NSWindowController {
     private var showHiddenFilesCheckbox: NSButton!
     private var agentStatusLabels: [AgentIntegrationInstaller.AgentID: NSTextField] = [:]
     private var agentInstallButtons: [AgentIntegrationInstaller.AgentID: NSButton] = [:]
+
+    // Approvals Tab
+    private var approvalModePopup: NSPopUpButton!
+    private var autoAllowField: NSTextField!
+    private var alwaysAskField: NSTextField!
 
     init(config: Config, mainWindowController: MainWindowController? = nil) {
         self.config = config
@@ -112,6 +120,7 @@ class PreferencesWindowController: NSWindowController {
         setupTerminalTab()
         setupEditorTab()
         setupAgentsTab()
+        setupApprovalsTab()
         setupAppearanceTab()
         layoutViews()
     }
@@ -260,6 +269,36 @@ class PreferencesWindowController: NSWindowController {
         fontSizeLabel.alignment = .right
         fontSizeLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // Bold-is-bright
+        boldIsBrightCheckbox = NSButton(
+            checkboxWithTitle: "Use bright colors for bold text",
+            target: self,
+            action: #selector(boldIsBrightChanged(_:))
+        )
+        boldIsBrightCheckbox.font = NSFont.systemFont(ofSize: 13)
+        boldIsBrightCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
+        // Window padding
+        let paddingTitleLabel = NSTextField(labelWithString: "Content Padding:")
+        paddingTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        paddingTitleLabel.textColor = AppTheme.primaryText
+        paddingTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        paddingSlider = NSSlider()
+        paddingSlider.minValue = 0
+        paddingSlider.maxValue = 24
+        paddingSlider.numberOfTickMarks = 13
+        paddingSlider.allowsTickMarkValuesOnly = true
+        paddingSlider.target = self
+        paddingSlider.action = #selector(paddingSliderChanged(_:))
+        paddingSlider.translatesAutoresizingMaskIntoConstraints = false
+
+        paddingLabel = NSTextField(labelWithString: "8px")
+        paddingLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        paddingLabel.textColor = AppTheme.secondaryText
+        paddingLabel.alignment = .right
+        paddingLabel.translatesAutoresizingMaskIntoConstraints = false
+
         // Shell integration
         let shellIntegrationTitleLabel = NSTextField(labelWithString: "Shell Integration:")
         shellIntegrationTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
@@ -286,12 +325,30 @@ class PreferencesWindowController: NSWindowController {
         terminalView.addSubview(fontSizeTitleLabel)
         terminalView.addSubview(fontSizeSlider)
         terminalView.addSubview(fontSizeLabel)
+        terminalView.addSubview(boldIsBrightCheckbox)
+        terminalView.addSubview(paddingTitleLabel)
+        terminalView.addSubview(paddingSlider)
+        terminalView.addSubview(paddingLabel)
         terminalView.addSubview(shellIntegrationTitleLabel)
         terminalView.addSubview(shellIntegrationStatusLabel)
         terminalView.addSubview(shellIntegrationButton)
 
         NSLayoutConstraint.activate([
-            shellIntegrationTitleLabel.topAnchor.constraint(equalTo: fontSizeSlider.bottomAnchor, constant: 30),
+            boldIsBrightCheckbox.topAnchor.constraint(equalTo: fontSizeSlider.bottomAnchor, constant: 24),
+            boldIsBrightCheckbox.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
+
+            paddingTitleLabel.topAnchor.constraint(equalTo: boldIsBrightCheckbox.bottomAnchor, constant: 24),
+            paddingTitleLabel.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
+
+            paddingSlider.topAnchor.constraint(equalTo: paddingTitleLabel.bottomAnchor, constant: 10),
+            paddingSlider.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
+            paddingSlider.trailingAnchor.constraint(equalTo: paddingLabel.leadingAnchor, constant: -10),
+
+            paddingLabel.topAnchor.constraint(equalTo: paddingSlider.topAnchor),
+            paddingLabel.trailingAnchor.constraint(equalTo: terminalView.trailingAnchor, constant: -20),
+            paddingLabel.widthAnchor.constraint(equalToConstant: 50),
+
+            shellIntegrationTitleLabel.topAnchor.constraint(equalTo: paddingSlider.bottomAnchor, constant: 30),
             shellIntegrationTitleLabel.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
 
             shellIntegrationStatusLabel.topAnchor.constraint(equalTo: shellIntegrationTitleLabel.bottomAnchor, constant: 6),
@@ -400,6 +457,127 @@ class PreferencesWindowController: NSWindowController {
         agentsTabItem.label = "Agents"
         agentsTabItem.view = agentsView
         tabView.addTabViewItem(agentsTabItem)
+    }
+
+    private func setupApprovalsTab() {
+        let approvalsView = NSView()
+        approvalsView.wantsLayer = true
+        approvalsView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+
+        // Mode
+        let modeLabel = NSTextField(labelWithString: "Agent Edits:")
+        modeLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        modeLabel.textColor = AppTheme.primaryText
+        modeLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        approvalModePopup = NSPopUpButton()
+        approvalModePopup.addItems(withTitles: ["Ask before every edit", "Auto-approve all edits"])
+        approvalModePopup.target = self
+        approvalModePopup.action = #selector(approvalModeChanged(_:))
+        approvalModePopup.translatesAutoresizingMaskIntoConstraints = false
+
+        let modeHelp = NSTextField(
+            labelWithString: "Toggle per session from View ▸ Auto-approve Agent Edits (⇧⌘A); that resets on relaunch."
+        )
+        modeHelp.font = NSFont.systemFont(ofSize: 11)
+        modeHelp.textColor = AppTheme.secondaryText
+        modeHelp.lineBreakMode = .byWordWrapping
+        modeHelp.maximumNumberOfLines = 2
+        modeHelp.translatesAutoresizingMaskIntoConstraints = false
+
+        // Auto-allow globs
+        let autoAllowLabel = NSTextField(labelWithString: "Always Allow (comma-separated globs):")
+        autoAllowLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        autoAllowLabel.textColor = AppTheme.primaryText
+        autoAllowLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        autoAllowField = NSTextField()
+        autoAllowField.placeholderString = "Sources/**, docs/**"
+        autoAllowField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        autoAllowField.target = self
+        autoAllowField.action = #selector(autoAllowChanged(_:))
+        autoAllowField.translatesAutoresizingMaskIntoConstraints = false
+
+        let autoAllowHelp = NSTextField(
+            labelWithString: "Approved silently even when asking. No effect when auto-approving everything."
+        )
+        autoAllowHelp.font = NSFont.systemFont(ofSize: 11)
+        autoAllowHelp.textColor = AppTheme.secondaryText
+        autoAllowHelp.lineBreakMode = .byWordWrapping
+        autoAllowHelp.maximumNumberOfLines = 2
+        autoAllowHelp.translatesAutoresizingMaskIntoConstraints = false
+
+        // Always-ask globs
+        let alwaysAskLabel = NSTextField(labelWithString: "Always Ask (comma-separated globs):")
+        alwaysAskLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        alwaysAskLabel.textColor = AppTheme.primaryText
+        alwaysAskLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        alwaysAskField = NSTextField()
+        alwaysAskField.placeholderString = ".env, **/secrets/**, *.pem"
+        alwaysAskField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        alwaysAskField.target = self
+        alwaysAskField.action = #selector(alwaysAskChanged(_:))
+        alwaysAskField.translatesAutoresizingMaskIntoConstraints = false
+
+        let alwaysAskHelp = NSTextField(
+            labelWithString: "Always show the popup for these, even when auto-approving. Highest precedence — good for secrets."
+        )
+        alwaysAskHelp.font = NSFont.systemFont(ofSize: 11)
+        alwaysAskHelp.textColor = AppTheme.secondaryText
+        alwaysAskHelp.lineBreakMode = .byWordWrapping
+        alwaysAskHelp.maximumNumberOfLines = 2
+        alwaysAskHelp.translatesAutoresizingMaskIntoConstraints = false
+
+        approvalsView.addSubview(modeLabel)
+        approvalsView.addSubview(approvalModePopup)
+        approvalsView.addSubview(modeHelp)
+        approvalsView.addSubview(autoAllowLabel)
+        approvalsView.addSubview(autoAllowField)
+        approvalsView.addSubview(autoAllowHelp)
+        approvalsView.addSubview(alwaysAskLabel)
+        approvalsView.addSubview(alwaysAskField)
+        approvalsView.addSubview(alwaysAskHelp)
+
+        NSLayoutConstraint.activate([
+            modeLabel.topAnchor.constraint(equalTo: approvalsView.topAnchor, constant: 30),
+            modeLabel.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
+
+            approvalModePopup.topAnchor.constraint(equalTo: modeLabel.bottomAnchor, constant: 10),
+            approvalModePopup.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
+            approvalModePopup.widthAnchor.constraint(equalToConstant: 220),
+
+            modeHelp.topAnchor.constraint(equalTo: approvalModePopup.bottomAnchor, constant: 6),
+            modeHelp.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
+            modeHelp.trailingAnchor.constraint(equalTo: approvalsView.trailingAnchor, constant: -20),
+
+            autoAllowLabel.topAnchor.constraint(equalTo: modeHelp.bottomAnchor, constant: 22),
+            autoAllowLabel.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
+
+            autoAllowField.topAnchor.constraint(equalTo: autoAllowLabel.bottomAnchor, constant: 8),
+            autoAllowField.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
+            autoAllowField.trailingAnchor.constraint(equalTo: approvalsView.trailingAnchor, constant: -20),
+
+            autoAllowHelp.topAnchor.constraint(equalTo: autoAllowField.bottomAnchor, constant: 6),
+            autoAllowHelp.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
+            autoAllowHelp.trailingAnchor.constraint(equalTo: approvalsView.trailingAnchor, constant: -20),
+
+            alwaysAskLabel.topAnchor.constraint(equalTo: autoAllowHelp.bottomAnchor, constant: 22),
+            alwaysAskLabel.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
+
+            alwaysAskField.topAnchor.constraint(equalTo: alwaysAskLabel.bottomAnchor, constant: 8),
+            alwaysAskField.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
+            alwaysAskField.trailingAnchor.constraint(equalTo: approvalsView.trailingAnchor, constant: -20),
+
+            alwaysAskHelp.topAnchor.constraint(equalTo: alwaysAskField.bottomAnchor, constant: 6),
+            alwaysAskHelp.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
+            alwaysAskHelp.trailingAnchor.constraint(equalTo: approvalsView.trailingAnchor, constant: -20)
+        ])
+
+        let approvalsTabItem = NSTabViewItem(identifier: "approvals")
+        approvalsTabItem.label = "Approvals"
+        approvalsTabItem.view = approvalsView
+        tabView.addTabViewItem(approvalsTabItem)
     }
 
     // Theme picker model: every available theme, then an "Auto" entry that
@@ -593,6 +771,11 @@ class PreferencesWindowController: NSWindowController {
         fontSizeSlider.doubleValue = Double(config.font.size)
         updateFontSizeLabel()
 
+        // Load bold-is-bright and padding
+        boldIsBrightCheckbox.state = config.font.boldIsBright ? .on : .off
+        paddingSlider.doubleValue = Double(config.window.padding)
+        updatePaddingLabel()
+
         let editorConfig = config.editor ?? EditorConfig()
         fileOpenModePopup.selectItem(at: editorConfig.fileOpenMode == "builtin" ? 1 : 0)
 
@@ -619,6 +802,12 @@ class PreferencesWindowController: NSWindowController {
         } else {
             themePopup.selectItem(at: 0)
         }
+
+        // Load approval settings (defaults when the section is absent).
+        let approval = config.approval ?? ApprovalConfig()
+        approvalModePopup.selectItem(at: approval.autoApprove ? 1 : 0)
+        autoAllowField.stringValue = approval.autoAllow.joined(separator: ", ")
+        alwaysAskField.stringValue = approval.alwaysAsk.joined(separator: ", ")
 
         updateShellIntegrationStatus()
     }
@@ -721,6 +910,19 @@ class PreferencesWindowController: NSWindowController {
         config.save()
     }
 
+    @objc private func boldIsBrightChanged(_ sender: NSButton) {
+        config.font.boldIsBright = sender.state == .on
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
+    }
+
+    @objc private func paddingSliderChanged(_ sender: NSSlider) {
+        config.window.padding = Int(sender.doubleValue)
+        updatePaddingLabel()
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
+    }
+
     @objc private func fileOpenModeChanged(_ sender: NSPopUpButton) {
         ensureEditorConfig()
         config.editor?.fileOpenMode = sender.indexOfSelectedItem == 1 ? "builtin" : "terminal"
@@ -756,6 +958,34 @@ class PreferencesWindowController: NSWindowController {
         config.editor?.showHiddenFiles = sender.state == .on
         mainWindowController?.applyRuntimeConfig(config)
         config.save()
+    }
+
+    @objc private func approvalModeChanged(_ sender: NSPopUpButton) {
+        ensureApprovalConfig()
+        config.approval?.mode = sender.indexOfSelectedItem == 1 ? "auto" : "ask"
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
+    }
+
+    @objc private func autoAllowChanged(_ sender: NSTextField) {
+        ensureApprovalConfig()
+        config.approval?.autoAllow = Self.parseGlobs(sender.stringValue)
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
+    }
+
+    @objc private func alwaysAskChanged(_ sender: NSTextField) {
+        ensureApprovalConfig()
+        config.approval?.alwaysAsk = Self.parseGlobs(sender.stringValue)
+        mainWindowController?.applyRuntimeConfig(config)
+        config.save()
+    }
+
+    /// Split a comma-separated glob list into trimmed, non-empty patterns.
+    private static func parseGlobs(_ text: String) -> [String] {
+        text.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     @objc private func installShellIntegrationClicked(_ sender: NSButton) {
@@ -831,6 +1061,12 @@ class PreferencesWindowController: NSWindowController {
         }
     }
 
+    private func ensureApprovalConfig() {
+        if config.approval == nil {
+            config.approval = ApprovalConfig()
+        }
+    }
+
     private func updateOpacityLabel() {
         let percentage = Int(opacitySlider.doubleValue * 100)
         opacityLabel.stringValue = "\(percentage)%"
@@ -839,6 +1075,10 @@ class PreferencesWindowController: NSWindowController {
     private func updateFontSizeLabel() {
         let size = Int(fontSizeSlider.doubleValue)
         fontSizeLabel.stringValue = "\(size)pt"
+    }
+
+    private func updatePaddingLabel() {
+        paddingLabel.stringValue = "\(Int(paddingSlider.doubleValue))px"
     }
 
     private func updateEditorFontSizeLabel() {

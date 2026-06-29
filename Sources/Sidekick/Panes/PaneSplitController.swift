@@ -119,7 +119,7 @@ class PaneSplitController: NSViewController {
 
         // A terminal pane only needs a close button when it's one of several
         // terminals. When the split exists solely because the user opened an
-        // editor/browser/diff alongside the terminal, leave the terminal alone
+        // editor/diff alongside the terminal, leave the terminal alone
         // and show the X on that opened pane instead.
         let terminalCount = panes.filter { $0.paneType == .terminal }.count
         for (pane, button) in paneCloseButtons {
@@ -298,89 +298,6 @@ class PaneSplitController: NSViewController {
         }
         updatePaneCloseButtons()
         return newPane
-    }
-
-    func splitWithBrowser(direction: SplitDirection, initialURL: URL? = nil) {
-        Log.debug("🌐 splitWithBrowser called, current panes: \(panes.count), max: \(Limits.maxPanesPerTab)", category: "panes")
-        guard panes.count < Limits.maxPanesPerTab else {
-            Log.error("⚠️ Max panes reached, not adding browser", category: "panes")
-            return
-        }
-        guard activePaneIndex >= 0 && activePaneIndex < panes.count else { return }
-
-        Log.debug("🌐 Creating browser pane...", category: "panes")
-        let activePane = panes[activePaneIndex]
-        guard let activePaneContainer = paneContainers[activePane],
-              let parentSplit = findParentSplitView(for: activePane) else {
-            Log.error("⚠️ Cannot find active pane container or parent split", category: "panes")
-            return
-        }
-
-        let newPane = PaneModel()
-        newPane.createBrowserViewController(initialURL: initialURL)
-        panes.append(newPane)
-        delegate?.paneSplitController(self, didAddPane: newPane, at: panes.count - 1)
-        Log.debug("🌐 Browser pane created and added, total panes now: \(panes.count)", category: "panes")
-
-        guard let newPaneView = newPane.view else {
-            Log.error("⚠️ New browser pane has no view!", category: "panes")
-            return
-        }
-
-        let newContainer = wrapPaneInContainer(newPane, paneView: newPaneView)
-        addPaneBorder(to: newPaneView, isActive: false)
-
-        let needsVerticalSplit = (direction == .vertical)
-        let parentIsVertical = parentSplit.isVertical
-
-        if (needsVerticalSplit && parentIsVertical) || (!needsVerticalSplit && !parentIsVertical) {
-            // Need nested split
-            Log.debug("🌐 Creating nested split view for browser", category: "panes")
-
-            let nestedSplit = createSplitView(isVertical: !needsVerticalSplit)
-            nestedSplit.translatesAutoresizingMaskIntoConstraints = false
-
-            guard let containerIndex = parentSplit.arrangedSubviews.firstIndex(of: activePaneContainer) else {
-                Log.error("⚠️ Cannot find container index", category: "panes")
-                return
-            }
-
-            parentSplit.removeArrangedSubview(activePaneContainer)
-            activePaneContainer.removeFromSuperview()
-            parentSplit.insertArrangedSubview(nestedSplit, at: containerIndex)
-
-            nestedSplit.addArrangedSubview(activePaneContainer)
-            nestedSplit.addArrangedSubview(newContainer)
-
-            DispatchQueue.main.async { [weak nestedSplit, weak parentSplit] in
-                guard let split = nestedSplit else { return }
-                SplitLayoutManager.setEvenSplit(in: split)
-
-                // Also redistribute the parent split to ensure it maintains proper spacing
-                if let parent = parentSplit {
-                    Log.debug("🌐 Redistributing parent split after nested browser split creation", category: "panes")
-                    SplitLayoutManager.distributeEvenly(in: parent)
-                }
-            }
-        } else {
-            // Add to existing split
-            Log.debug("🌐 Adding browser to existing split view", category: "panes")
-
-            guard let containerIndex = parentSplit.arrangedSubviews.firstIndex(of: activePaneContainer) else {
-                Log.error("⚠️ Cannot find container index", category: "panes")
-                return
-            }
-
-            parentSplit.insertArrangedSubview(newContainer, at: containerIndex + 1)
-
-            DispatchQueue.main.async { [weak parentSplit] in
-                guard let split = parentSplit else { return }
-                SplitLayoutManager.distributeEvenly(in: split)
-            }
-        }
-
-        setActivePane(index: panes.count - 1)
-        updatePaneCloseButtons()
     }
 
     func closePane(index: Int) {

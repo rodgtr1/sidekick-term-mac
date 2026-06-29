@@ -362,10 +362,32 @@ nonisolated final class GitService: Sendable {
     /// prints "* Unmerged path" and `git diff` emits combined-diff format),
     /// so show the working-tree contents, which carry the <<<<<<< / =======
     /// / >>>>>>> conflict markers the user needs to resolve.
+    /// Working-tree files this size or larger aren't slurped into memory to
+    /// render a diff — they get a stub instead. Untracked/conflicted files are
+    /// arbitrary user content (could be a multi-GB log or a binary blob).
+    private static let maxDiffFileBytes = 1_000_000
+
+    /// Reads a working-tree file for diffing, or nil when it's missing, too
+    /// large, or looks binary (a NUL byte in the first 8KB) — the caller then
+    /// emits a stub rather than reading gigabytes or dumping binary garbage.
+    private static func readableTextForDiff(atPath path: String) -> String? {
+        let url = URL(fileURLWithPath: path)
+        if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int,
+           size > maxDiffFileBytes {
+            return nil
+        }
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        if data.prefix(8000).contains(0) { return nil }   // NUL → treat as binary
+        return String(data: data, encoding: .utf8)
+    }
+
     private func conflictedFileDiff(relativePath: String, repositoryRoot: String) -> String {
         let filePath = URL(fileURLWithPath: repositoryRoot).appendingPathComponent(relativePath).path
-        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else {
+        guard FileManager.default.fileExists(atPath: filePath) else {
             return "Conflicted: file not present in working tree"
+        }
+        guard let content = Self.readableTextForDiff(atPath: filePath) else {
+            return "Conflicted: file too large or binary to preview"
         }
         return Self.conflictMarkerDiff(relativePath: relativePath, content: content)
     }
@@ -439,7 +461,15 @@ nonisolated final class GitService: Sendable {
             return diffOutput
         }
 
-        let content = try String(contentsOfFile: filePath, encoding: .utf8)
+        guard let content = Self.readableTextForDiff(atPath: filePath) else {
+            var stub = "diff --git a/\(trimmedPath) b/\(trimmedPath)\n"
+            stub += "new file\n"
+            stub += "--- /dev/null\n"
+            stub += "+++ b/\(trimmedPath)\n"
+            stub += "@@ -0,0 +1,1 @@\n"
+            stub += "+(file too large or binary to preview)\n"
+            return stub
+        }
         let lines = content.components(separatedBy: .newlines)
 
         var diffOutput = "diff --git a/\(trimmedPath) b/\(trimmedPath)\n"

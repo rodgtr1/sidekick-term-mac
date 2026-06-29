@@ -73,6 +73,19 @@ class SyntaxHighlighter {
         textStorage.removeAttribute(.foregroundColor, range: range)
         textStorage.addAttribute(.foregroundColor, value: colorScheme.text, range: range)
 
+        // Prefer grammar-accurate tree-sitter highlighting where a grammar is
+        // wired (Swift today); fall through to the regex passes otherwise.
+        if TreeSitterHighlighter.canHighlight(ext: fileExtension),
+           TreeSitterHighlighter.highlight(
+               textStorage: textStorage,
+               fullText: nsText,
+               range: range,
+               ext: fileExtension,
+               scheme: colorScheme
+           ) {
+            return
+        }
+
         if let rules = Self.rules(for: fileExtension) {
             highlightKeywordLanguage(rules, text: nsText, textStorage: textStorage, range: range)
         } else {
@@ -94,11 +107,16 @@ class SyntaxHighlighter {
     /// Shared path for all keyword-based languages (Swift, JS/TS, Python,
     /// Rust, Go, C, Java). The per-language data lives in `rulesByExt`.
     private func highlightKeywordLanguage(_ rules: LanguageRules, text: NSString, textStorage: NSTextStorage, range: NSRange) {
+        // Apply order is lowest-to-highest priority (later passes override
+        // earlier ones). Numbers are weakest, so a `42` inside a string or a
+        // trailing `// 42` is reclaimed by the string/comment pass that follows.
+        // Strings stay last so a URL inside a string (`"http://x"`) wins over
+        // the `//` comment pattern.
+        highlightNumbers(in: text, textStorage: textStorage, range: range)
         highlightKeywords(rules.keywords, in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
         highlightKeywords(rules.types, in: text, textStorage: textStorage, range: range, color: colorScheme.type)
         highlightComments(in: text, textStorage: textStorage, range: range, commentStyle: rules.comment)
         highlightStrings(in: text, textStorage: textStorage, range: range)
-        highlightNumbers(in: text, textStorage: textStorage, range: range)
     }
 
     private func highlightHTML(text: NSString, textStorage: NSTextStorage, range: NSRange) {
@@ -242,6 +260,10 @@ class SyntaxHighlighter {
         let typeColor = scheme.type
         let commentPattern: String
 
+        // Numbers first (weakest): a `42` inside a string or a trailing `// 42`
+        // is reclaimed by the string/comment pass below.
+        add("\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b", scheme.number)
+
         if let rules = rulesByExt[ext] {
             add(keywordAlternation(rules.keywords), keywordColor)
             add(keywordAlternation(rules.types), typeColor)
@@ -260,12 +282,11 @@ class SyntaxHighlighter {
             commentPattern = Self.commentPattern(for: .slashSlash)
         }
 
-        // Comments before strings/numbers so a trailing `// 3` stays a comment,
-        // while a number inside a string is overridden by the string color.
+        // Strings last so a URL inside a string (`"http://x"`) wins over the
+        // `//` comment pattern; comments win over keywords/numbers.
         add(commentPattern, scheme.comment)
         add("\"([^\"\\\\]|\\\\.)*\"", scheme.string)
         add("'([^'\\\\]|\\\\.)*'", scheme.string)
-        add("\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b", scheme.number)
 
         return out
     }

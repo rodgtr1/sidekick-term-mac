@@ -7,7 +7,7 @@ import Foundation
 /// Pure value type with no AppKit dependency, so it is shared by the
 /// `sidekick-telemetry` helper (which parses the transcript off the agent
 /// process) and the app (which prices and renders it).
-public struct TranscriptUsage: Equatable, Codable {
+public struct TranscriptUsage: Equatable, Codable, Sendable {
     /// Most recent assistant model id (e.g. `claude-opus-4-8`), or nil if the
     /// transcript had no billed assistant response.
     public var model: String?
@@ -67,8 +67,7 @@ public enum TranscriptParser {
     public static func aggregate<S: StringProtocol>(jsonl: S) -> TranscriptUsage {
         var usage = TranscriptUsage()
         for rawLine in jsonl.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let data = String(rawLine).data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard let object = try? JSONSerialization.jsonObject(with: Data(rawLine.utf8)) as? [String: Any]
             else { continue }
 
             let type = object["type"] as? String
@@ -108,8 +107,10 @@ public enum TranscriptParser {
         return aggregate(jsonl: text)
     }
 
-    /// JSON numbers decode as `NSNumber`; coerce to `Int`, defaulting to 0.
+    /// JSON numbers decode as `NSNumber`; coerce to `Int` via doubleValue so a
+    /// float-encoded integer doesn't truncate. Token counts stay under 2^53.
     private static func int(_ value: Any?) -> Int {
-        (value as? NSNumber)?.intValue ?? 0
+        guard let number = value as? NSNumber else { return 0 }
+        return Int(number.doubleValue.rounded())
     }
 }

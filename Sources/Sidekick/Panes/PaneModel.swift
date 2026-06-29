@@ -22,7 +22,6 @@ class PaneModel: Identifiable, Hashable {
     var editorViewController: EditorViewController?
     var diffViewController: DiffViewController?
     var uncommittedChangesViewController: UncommittedChangesViewController?
-    var browserViewController: BrowserPanelViewController?
     var view: NSView?
     var paneType: PaneType = .terminal
     // Set on the main actor; read once in the nonisolated deinit at end-of-life.
@@ -33,7 +32,6 @@ class PaneModel: Identifiable, Hashable {
         case editor
         case diff
         case uncommittedChanges
-        case browser
     }
 
     init() {
@@ -145,24 +143,6 @@ class PaneModel: Identifiable, Hashable {
         self.title = "Uncommitted Changes"
     }
 
-    func createBrowserViewController(initialURL: URL? = nil) {
-        let browserVC = BrowserPanelViewController()
-        self.browserViewController = browserVC
-
-        // Ensure view is loaded by accessing it
-        _ = browserVC.view
-
-        self.view = browserVC.view
-        self.paneType = .browser
-
-        if let initialURL = initialURL {
-            browserVC.navigate(to: initialURL)
-        }
-
-        // Update title
-        title = "Browser"
-    }
-
     func updateTitleForEditor(fileName: String) {
         title = fileName
     }
@@ -224,9 +204,6 @@ class PaneModel: Identifiable, Hashable {
             }
         case .uncommittedChanges:
             uncommittedChangesViewController?.view.window?.makeFirstResponder(uncommittedChangesViewController?.view)
-        case .browser:
-            // Focus on the browser view
-            browserViewController?.view.window?.makeFirstResponder(browserViewController?.view)
         }
     }
 
@@ -242,7 +219,6 @@ class PaneModel: Identifiable, Hashable {
         editorViewController = nil
         diffViewController = nil
         uncommittedChangesViewController = nil
-        browserViewController = nil
         view = nil
     }
 }

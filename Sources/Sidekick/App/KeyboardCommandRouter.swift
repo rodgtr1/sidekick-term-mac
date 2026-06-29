@@ -12,7 +12,6 @@ enum KeyboardCommand: Equatable {
     case toggleSidebar
     case quickOpen
     case preferences
-    case splitWithBrowser
     case focusPane(forward: Bool)
     case selectTab(Int)
     case jumpToPrompt(previous: Bool)
@@ -49,7 +48,6 @@ struct KeyboardCommandRouter {
             case 13: return .closeCurrentPane
             case 2: return .splitPane(.vertical)
             case 17: return .newTab
-            case 31: return .splitWithBrowser
             case 47: return .toggleHiddenFiles
             case 35: return .commandPalette
             case 24: return .zoomIn // Cmd+Shift+= is Cmd+"+"

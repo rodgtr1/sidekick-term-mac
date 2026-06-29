@@ -214,11 +214,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         searchItem.target = self
         viewMenu.addItem(searchItem)
 
-        // Split with Browser (no key equivalent - handled by event monitor)
-        let splitBrowserItem = NSMenuItem(title: "Split with Browser", action: #selector(splitWithBrowser), keyEquivalent: "")
-        splitBrowserItem.target = self
-        viewMenu.addItem(splitBrowserItem)
-
         viewMenu.addItem(NSMenuItem.separator())
 
         // Auto-approve agent edits this session (checkmark reflects effective
@@ -313,11 +308,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showSearchPanel() {
         mainWindowController?.showPanel(.search)
-    }
-
-    @objc private func splitWithBrowser() {
-        Log.debug("🌐 AppDelegate: Split with Browser action called", category: "app")
-        mainWindowController?.splitWithBrowser()
     }
 
     @objc private func showKeyboardShortcuts() {

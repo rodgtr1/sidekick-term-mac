@@ -36,6 +36,9 @@ nonisolated struct WorktreeService: Sendable {
     /// already has a worktree returns that worktree rather than failing, so a
     /// supervisor can re-issue the same split safely.
     func ensureWorktree(forBranch branch: String, directory: String) throws -> String {
+        guard Self.isValidBranchName(branch) else {
+            throw WorktreeError.gitFailed("invalid branch name: \(branch)")
+        }
         guard let repoRoot = git.repositoryRoot(from: directory) else {
             throw WorktreeError.notAGitRepository
         }
@@ -131,6 +134,9 @@ nonisolated struct WorktreeService: Sendable {
     /// agent's uncommitted work. A branch with no worktree throws
     /// `noWorktreeForBranch` rather than failing opaquely.
     func removeWorktree(forBranch branch: String, directory: String, force: Bool = false) throws -> String {
+        guard Self.isValidBranchName(branch) else {
+            throw WorktreeError.gitFailed("invalid branch name: \(branch)")
+        }
         guard let repoRoot = git.repositoryRoot(from: directory) else {
             throw WorktreeError.notAGitRepository
         }
@@ -243,5 +249,21 @@ nonisolated struct WorktreeService: Sendable {
 
     private static func sanitize(_ branch: String) -> String {
         branch.map { $0 == "/" ? "-" : $0 }.reduce(into: "") { $0.append($1) }
+    }
+
+    /// Rejects branch names unsafe to pass positionally to git or that would let
+    /// `worktreePath` escape its container. The IPC layer validates branches it
+    /// receives, but the Worktrees UI path doesn't go through it — so the
+    /// service guards itself. Additionally bars `..` (the path-traversal vector)
+    /// and the characters git itself forbids in a ref.
+    static func isValidBranchName(_ branch: String) -> Bool {
+        guard !branch.isEmpty, branch.count <= 255, !branch.hasPrefix("-") else { return false }
+        if branch.hasPrefix("/") || branch.hasSuffix("/") || branch.contains("//") { return false }
+        if branch.contains("..") { return false }
+        let forbidden = branch.unicodeScalars.contains { scalar in
+            scalar.value < 0x20 || scalar == " " || scalar == "\u{7F}" ||
+            "~^:?*[\\".unicodeScalars.contains(scalar)
+        }
+        return !forbidden
     }
 }

@@ -130,15 +130,26 @@ final class DiffApprovalCoordinator {
     }
 
     /// Resolves every queued approval when there is no window to review in
-    /// (app closing, or a diff arrived while the window was hidden). These
-    /// fail OPEN — allowing the edit — to match the hook's own contract that
-    /// an unavailable Sidekick lets edits through, rather than silently
-    /// blocking an agent's work because the reviewer wasn't on screen.
+    /// (app closing, or a diff arrived while the window was hidden). Most fail
+    /// OPEN — allowing the edit — to match the hook's contract that an
+    /// unavailable Sidekick lets edits through. The exception is `always_ask`
+    /// paths: that list exists to force a human decision, so without a window to
+    /// prompt in they fail CLOSED (reject) rather than slip through unreviewed.
     private func drainQueue() {
         let pending = queue
         queue.removeAll()
         for request in pending {
-            request.completion(true)
+            request.completion(!isAlwaysAsk(request.path, pane: request.paneID))
+        }
+    }
+
+    /// Whether `path` matches an `always_ask` glob. Mirrors `decide`'s
+    /// fail-closed semantics: an unparseable pattern counts as a match.
+    private func isAlwaysAsk(_ path: String, pane: UUID?) -> Bool {
+        let config = host?.approvalConfig ?? ApprovalConfig()
+        let canonicalPath = ApprovalPolicy.canonical(path)
+        return config.alwaysAsk.contains { pattern in
+            ApprovalPolicy.globMatch(pattern, canonicalPath: canonicalPath) != .noMatch
         }
     }
 }

@@ -13,15 +13,18 @@ public enum TelemetryFormat {
         return s
     }
 
-    /// `1_234` → `1k`, `1_500_000` → `1.5M`.
+    /// `1_234` → `1k`, `1_500_000` → `1.5M`. Whole-number `k` keeps the token
+    /// dashboard clean; the `M` range carries one decimal where it matters.
     public static func compactTokens(_ n: Int) -> String {
         if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
         if n >= 1_000 { return "\(n / 1_000)k" }
         return "\(n)"
     }
 
-    /// USD with a `<$0.01` floor so tiny spends don't render as `$0.00`.
+    /// USD with a `<$0.01` floor so tiny (but nonzero) spends don't render as
+    /// `$0.00`. A genuinely zero/free session still shows `$0.00`.
     public static func cost(_ usd: Double) -> String {
-        usd < 0.01 ? "<$0.01" : String(format: "$%.2f", usd)
+        if usd <= 0 { return "$0.00" }
+        return usd < 0.01 ? "<$0.01" : String(format: "$%.2f", usd)
     }
 }

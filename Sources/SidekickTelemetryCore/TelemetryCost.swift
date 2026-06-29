@@ -3,7 +3,7 @@ import Foundation
 /// Per-1M-token price for a model. Cache pricing is derived from the input rate
 /// (reads ≈0.1×, 5-min writes 1.25×, 1-hour writes 2×), so only the two base
 /// rates are stored.
-public struct TelemetryRate: Equatable {
+public struct TelemetryRate: Equatable, Sendable {
     public let inputPerMTok: Double
     public let outputPerMTok: Double
 
@@ -37,7 +37,10 @@ public enum TelemetryRates {
         if let exact = rates[model] { return exact }
         return rates
             .filter { model.hasPrefix($0.key) }
-            .max(by: { $0.key.count < $1.key.count })?
+            // Longest matching prefix wins; tie-break on the key so the result
+            // is deterministic if two equal-length keys ever both match (e.g.
+            // once rates load from config.toml).
+            .max(by: { ($0.key.count, $0.key) < ($1.key.count, $1.key) })?
             .value
     }
 }

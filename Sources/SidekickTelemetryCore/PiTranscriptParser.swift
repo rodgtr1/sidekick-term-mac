@@ -15,8 +15,7 @@ public enum PiTranscriptParser {
         var sawCost = false
 
         for rawLine in jsonl.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let data = String(rawLine).data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            guard let object = try? JSONSerialization.jsonObject(with: Data(rawLine.utf8)) as? [String: Any],
                   object["type"] as? String == "message",
                   let message = object["message"] as? [String: Any],
                   let role = message["role"] as? String
@@ -56,6 +55,12 @@ public enum PiTranscriptParser {
         return aggregate(jsonl: text)
     }
 
-    private static func int(_ value: Any?) -> Int { (value as? NSNumber)?.intValue ?? 0 }
+    // Round via doubleValue so float-encoded integers (e.g. `1.5e6`, `12345.0`,
+    // which some emitters produce) don't truncate. Token counts stay well under
+    // 2^53, so this is exact.
+    private static func int(_ value: Any?) -> Int {
+        guard let number = value as? NSNumber else { return 0 }
+        return Int(number.doubleValue.rounded())
+    }
     private static func double(_ value: Any?) -> Double? { (value as? NSNumber)?.doubleValue }
 }

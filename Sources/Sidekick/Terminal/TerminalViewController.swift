@@ -140,11 +140,43 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
     /// drag (motion with a button held) — the two are byte-identical otherwise.
     private var mouseButtonDown = false
 
+    /// Bytes of a multibyte UTF-8 rune that arrived split across PTY reads,
+    /// held until the rest shows up. SwiftTerm always gets the raw slice for
+    /// display; this only affects the decoded `onOutput` detection stream.
+    private var utf8Carry: [UInt8] = []
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
-        if let output = String(bytes: slice, encoding: .utf8) {
-            onOutput?(output)
-        }
+        // The terminal display always receives the raw bytes, untouched.
         super.dataReceived(slice: slice)
+
+        guard onOutput != nil else { return }
+        utf8Carry.append(contentsOf: slice)
+        let prefix = Self.completeUTF8PrefixCount(utf8Carry)
+        // The whole buffer is a single still-incomplete rune — wait for more.
+        guard prefix > 0 else { return }
+        let chunk = String(decoding: utf8Carry[0..<prefix], as: UTF8.self)
+        utf8Carry.removeFirst(prefix)
+        onOutput?(chunk)
+    }
+
+    /// Number of leading bytes that form complete UTF-8 sequences, holding back
+    /// only a trailing multibyte sequence whose continuation bytes haven't all
+    /// arrived yet. Genuinely malformed bytes (no lead found) are not held back
+    /// — they're emitted and decode to U+FFFD, matching prior behavior.
+    private static func completeUTF8PrefixCount(_ bytes: [UInt8]) -> Int {
+        guard !bytes.isEmpty else { return 0 }
+        var i = bytes.count - 1
+        let lowerBound = max(0, bytes.count - 3)
+        while i >= lowerBound {
+            let b = bytes[i]
+            if b & 0x80 == 0 { return bytes.count }          // ASCII: complete to end
+            if b & 0xC0 == 0xC0 {                            // multibyte lead byte
+                let expected = b >= 0xF0 ? 4 : (b >= 0xE0 ? 3 : 2)
+                return (bytes.count - i) >= expected ? bytes.count : i
+            }
+            i -= 1                                           // continuation byte: walk to its lead
+        }
+        return bytes.count
     }
 
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
@@ -245,9 +277,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private struct InFlightCommand {
         let command: String
         let startDate: Date
-        var output: String = ""
     }
     private var inFlightCommand: InFlightCommand?
+    /// Output captured for the in-flight command. Kept as a standalone property
+    /// rather than inside `InFlightCommand` so appending doesn't copy the whole
+    /// (up to `maxCommandOutputChars`) struct in and out of the Optional on
+    /// every output chunk.
+    private var inFlightOutput = ""
     private var commandRecords: [TerminalCommandRecord] = []
     private static let maxCommandRecords = 100
     /// Raw output captured per command is bounded so a runaway log tail can't
@@ -352,7 +388,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var sawLeftMouseDrag = false
 
     /// Owns link/file activation over the terminal. ⌘+click opens file paths
-    /// in the built-in editor and URLs in the browser pane. When the release
+    /// in the built-in editor and URLs in the external browser. When the release
     /// lands on a link/file the event is swallowed so SwiftTerm's own handler
     /// can't ALSO open it — that handler opens links in the *external* browser
     /// (NSWorkspace.open) and fired even on stray clicks that SwiftTerm
@@ -612,9 +648,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             buffer.deallocate()
         }
         var pwd = passwd()
-        var result: UnsafeMutablePointer<passwd>? = UnsafeMutablePointer<passwd>.allocate(capacity: 1)
+        // getpwuid_r writes the address of `pwd` (or NULL when there's no entry)
+        // into `result`; it must not be a heap allocation we own — the old
+        // `.allocate(capacity: 1)` here was never freed.
+        var result: UnsafeMutablePointer<passwd>?
 
-        if getpwuid_r(getuid(), &pwd, buffer, bufsize, &result) != 0 {
+        if getpwuid_r(getuid(), &pwd, buffer, bufsize, &result) != 0 || result == nil {
             return "/bin/bash"
         }
         return String(cString: pwd.pw_shell)
@@ -676,58 +715,32 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     nonisolated private func getGitBranch(at path: String) -> String? {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        task.arguments = ["-C", path, "symbolic-ref", "--short", "HEAD"]
-        task.currentDirectoryURL = URL(fileURLWithPath: path)
+        // Via the shared runner so this inherits its timeout backstop and
+        // non-interactive git env, and doesn't re-hand-roll the (stderr-drain)
+        // Process plumbing.
+        guard let result = try? ProcessRunner.shared.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+            arguments: ["-C", path, "symbolic-ref", "--short", "HEAD"],
+            currentDirectoryURL: URL(fileURLWithPath: path)
+        ) else { return nil }
 
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe()
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-
-            if task.terminationStatus == 0 {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                return output?.isEmpty == false ? output : nil
-            } else {
-                // Try alternative method for detached HEAD
-                return getGitBranchDetached(at: path)
-            }
-        } catch {
-            return nil
+        guard result.succeeded else {
+            // Non-zero usually means a detached HEAD — fall back to the sha.
+            return getGitBranchDetached(at: path)
         }
+        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return output.isEmpty ? nil : output
     }
 
     nonisolated private func getGitBranchDetached(at path: String) -> String? {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        task.arguments = ["-C", path, "rev-parse", "--short", "HEAD"]
-        task.currentDirectoryURL = URL(fileURLWithPath: path)
+        guard let result = try? ProcessRunner.shared.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+            arguments: ["-C", path, "rev-parse", "--short", "HEAD"],
+            currentDirectoryURL: URL(fileURLWithPath: path)
+        ), result.succeeded else { return nil }
 
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe()
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-
-            if task.terminationStatus == 0 {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !output.isEmpty {
-                    return "detached@\(output)"
-                }
-            }
-        } catch {
-            return nil
-        }
-
-        return nil
+        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return output.isEmpty ? nil : "detached@\(output)"
     }
 
     private func handleProcessTerminated() {
@@ -814,7 +827,11 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// one trim per slack-of-growth instead of one per chunk.
     private static func appendBounded(_ chunk: String, to buffer: inout String, cap: Int) {
         buffer += chunk
-        if buffer.count > cap + cap / 4 {
+        // utf8.count is O(1) on Swift's native UTF-8 storage; Character `count`
+        // is O(n) grapheme-breaking and ran on every chunk. The bound is
+        // approximate ("roughly the last cap chars"), so bytes-vs-graphemes here
+        // is fine — the occasional suffix() trim still keeps memory bounded.
+        if buffer.utf8.count > cap + cap / 4 {
             buffer = String(buffer.suffix(cap))
         }
     }
@@ -846,7 +863,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // While a command is running (between OSC 133 C and D), accumulate its
         // output for the command-record history. ANSI is stripped at finalize.
         if inFlightCommand != nil {
-            Self.appendBounded(output, to: &inFlightCommand!.output, cap: Self.maxCommandOutputChars)
+            Self.appendBounded(output, to: &inFlightOutput, cap: Self.maxCommandOutputChars)
         }
     }
 
@@ -1061,17 +1078,34 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     // MARK: - Shell integration (OSC 133 command marks)
 
+    /// Caps an in-progress mark buffer that hasn't yielded a complete sequence
+    /// yet. Sized well above the longest plausible OSC 133/666 sequence (a
+    /// base64 command line) so we never slice a sequence mid-flight — the bug
+    /// the old pre-match `suffix(2_000)` caused. utf8.count is O(1).
+    private static let maxMarkBufferChars = 64_000
+    private static func boundMarkBuffer(_ buffer: inout String) {
+        if buffer.utf8.count > Self.maxMarkBufferChars {
+            buffer = String(buffer.suffix(Self.maxMarkBufferChars))
+        }
+    }
+
     private func consumeCommandMarkSequences(from output: String) {
         commandMarkBuffer += output
-        if commandMarkBuffer.count > 2_000 {
-            commandMarkBuffer = String(commandMarkBuffer.suffix(2_000))
-        }
 
-        guard let regex = Self.commandMarkRegex else { return }
+        guard let regex = Self.commandMarkRegex else {
+            Self.boundMarkBuffer(&commandMarkBuffer)
+            return
+        }
 
         let searchRange = NSRange(commandMarkBuffer.startIndex..<commandMarkBuffer.endIndex, in: commandMarkBuffer)
         let matches = regex.matches(in: commandMarkBuffer, range: searchRange)
-        guard !matches.isEmpty else { return }
+        guard !matches.isEmpty else {
+            // No complete sequence yet — keep accumulating (a sequence may be
+            // split across chunks), but bound the tail so a mark-less stream
+            // can't grow without limit.
+            Self.boundMarkBuffer(&commandMarkBuffer)
+            return
+        }
 
         var consumedUpperBound = commandMarkBuffer.startIndex
         for match in matches {
@@ -1088,6 +1122,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             handleCommandMark(kind: kind, parameter: parameter)
         }
         commandMarkBuffer = String(commandMarkBuffer[consumedUpperBound...])
+        Self.boundMarkBuffer(&commandMarkBuffer)
     }
 
     private func handleCommandMark(kind: String, parameter: String?) {
@@ -1109,6 +1144,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             let started = Date()
             commandStartDate = started
             inFlightCommand = InFlightCommand(command: Self.decodeCommandParameter(parameter), startDate: started)
+            inFlightOutput = ""
             delegate?.terminalDidUpdateCommandStatus(self, status: nil)
         case "D":
             let exitCode = parameter.flatMap { Int($0) } ?? 0
@@ -1141,8 +1177,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private func finalizeCommandRecord(exitCode: Int, duration: TimeInterval?) {
         guard let inFlight = inFlightCommand else { return }
         inFlightCommand = nil
+        let rawOutput = inFlightOutput
+        inFlightOutput = ""
 
-        let cleanOutput = stripANSIEscapes(stripOSCSequences(inFlight.output))
+        let cleanOutput = stripANSIEscapes(stripOSCSequences(rawOutput))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         commandRecords.append(TerminalCommandRecord(
             command: inFlight.command,
@@ -1202,17 +1240,16 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     private func consumeAgentStatusSequences(from output: String) -> Bool {
         agentStatusSequenceBuffer += output
-        if agentStatusSequenceBuffer.count > 2_000 {
-            agentStatusSequenceBuffer = String(agentStatusSequenceBuffer.suffix(2_000))
-        }
 
         guard let regex = Self.agentStatusRegex else {
+            Self.boundMarkBuffer(&agentStatusSequenceBuffer)
             return false
         }
 
         let searchRange = NSRange(agentStatusSequenceBuffer.startIndex..<agentStatusSequenceBuffer.endIndex, in: agentStatusSequenceBuffer)
         let matches = regex.matches(in: agentStatusSequenceBuffer, range: searchRange)
         guard !matches.isEmpty else {
+            Self.boundMarkBuffer(&agentStatusSequenceBuffer)
             return false
         }
 
@@ -1229,6 +1266,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
 
         agentStatusSequenceBuffer = String(agentStatusSequenceBuffer[consumedUpperBound...])
+        Self.boundMarkBuffer(&agentStatusSequenceBuffer)
         return true
     }
 
@@ -1301,7 +1339,16 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             "enter to submit answer",
             "enter to submit all"
         ]
-        return Set(markers.filter { output.contains($0) })
+        var matched = Set(markers.filter { output.contains($0) })
+        // Modern Claude Code inline permission prompt: "Do you want to <verb>…?"
+        // above a numbered menu ("1. Yes  2. …  3. No"). Require BOTH halves so
+        // the broad "do you want to" stem can't trip on ordinary prose. (Hooked
+        // sessions get this authoritatively via PermissionRequest; this is the
+        // fallback for un-integrated ones.)
+        if output.contains("do you want to") && output.contains("1. yes") {
+            matched.insert("interactive permission prompt")
+        }
+        return matched
     }
 
     /// Heuristic "agent is working" signal for sessions WITHOUT the status hook
@@ -1580,6 +1627,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         // Update font (respecting the current app-wide zoom)
         terminalView.font = terminalFont(for: newConfig)
+        terminalView.useBrightColors = newConfig.font.boldIsBright
 
         applyThemeColors()
         applyTerminalAppearance(newConfig)

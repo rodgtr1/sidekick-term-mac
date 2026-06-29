@@ -77,6 +77,9 @@ enum AgentIntegrationInstaller {
                 encoding: .utf8
             )) ?? ""
             guard settings.contains("sidekick-agent-status") else { return .available }
+            // A pre-PermissionRequest install lacks the needs-input hook; prompt
+            // a reinstall so addClaudeHook idempotently adds it.
+            guard settings.contains("PermissionRequest") else { return .available }
             return telemetryFullyInstalled(in: settings) ? .installed : .available
         case .codex:
             guard directoryExists(home.appendingPathComponent(".codex")) else { return .notDetected }
@@ -136,12 +139,15 @@ enum AgentIntegrationInstaller {
 
     /// Claude-only refinements (Codex doesn't expose these events).
     private static let claudeOnlyStatusHooks: [(event: String, state: String)] = [
-        // Claude Code fires "Notification" when it needs permission to run a
-        // tool (or has been waiting on the user) — there is no
-        // "PermissionRequest" event, so the old mapping never reported "ready"
-        // and the agent stayed stuck on "Working" through every prompt.
+        // PermissionRequest fires the instant an interactive permission prompt
+        // is waiting on the user — the correct "needs input" signal. (An earlier
+        // version wrongly believed Claude Code had no such event and removed it;
+        // it does, and is the only hook that fires for an inline prompt.)
+        ("PermissionRequest", "ready"),
+        // Notification is kept as a secondary trigger for the idle/gated case;
+        // the helper suppresses its "waiting for your input" idle reminder.
         ("Notification", "ready"),
-        ("PreToolUse", "busy"),     // approved tool starts running
+        ("PreToolUse", "busy"),     // tool about to run (overridden by ready if it prompts)
         ("SessionEnd", "idle")      // clears the tab from the agents panel
     ]
 
@@ -179,10 +185,6 @@ enum AgentIntegrationInstaller {
         // harness still asked), so it's no longer installed. Strip any copy a
         // previous version left behind.
         removeClaudeHook(from: &hooks, event: "PreToolUse", signature: "sidekick-hook")
-        // Earlier versions registered a "PermissionRequest" ready hook, but
-        // Claude Code has no such event so it never fired. Remove the dead hook
-        // now that "Notification" carries the ready signal.
-        removeClaudeHook(from: &hooks, event: "PermissionRequest", signature: "sidekick-agent-status")
         settings["hooks"] = hooks
 
         let data = try JSONSerialization.data(

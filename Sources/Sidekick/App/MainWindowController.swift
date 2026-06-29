@@ -591,7 +591,7 @@ class MainWindowController: NSWindowController {
 
     @objc private func paneOpenURLRequested(_ notification: Notification) {
         guard let url = notification.userInfo?["url"] as? URL else { return }
-        openURLInBrowserPane(url)
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func paneCommandStatusChanged(_ notification: Notification) {
@@ -915,15 +915,6 @@ extension MainWindowController: SidebarContainerDelegate {
         openFileInEditor(url, atLine: line, highlighting: searchTerm)
     }
 
-    private func openURLInBrowserPane(_ url: URL) {
-        if let browserPane = tabs[safe: activeTabIndex]?.panes.first(where: { $0.paneType == .browser }),
-           let browserVC = browserPane.browserViewController {
-            browserVC.navigate(to: url)
-            return
-        }
-        currentPaneSplitController?.splitWithBrowser(direction: .horizontal, initialURL: url)
-    }
-
     private func openFileInEditor(_ url: URL) {
         openEditorPane(for: url)
     }
@@ -1043,9 +1034,6 @@ extension MainWindowController: SidebarContainerDelegate {
             },
             PaletteAction(title: "Split Pane Vertically", subtitle: "⇧⌘D", symbolName: "rectangle.split.1x2") { [weak self] in
                 self?.currentPaneSplitController?.splitPane(direction: .vertical)
-            },
-            PaletteAction(title: "Open Browser Pane", subtitle: "⇧⌘O", symbolName: "globe") { [weak self] in
-                self?.splitWithBrowser()
             },
             PaletteAction(title: "Find in Terminal", subtitle: "⌘F", symbolName: "magnifyingglass") { [weak self] in
                 guard let self = self else { return }
@@ -1289,8 +1277,6 @@ extension MainWindowController {
             showQuickOpen()
         case .preferences:
             showPreferences()
-        case .splitWithBrowser:
-            splitWithBrowser()
         case .focusPane(let forward):
             forward ? currentPaneSplitController?.focusNextPane() : currentPaneSplitController?.focusPreviousPane()
         case .selectTab(let index):
@@ -1369,11 +1355,6 @@ extension MainWindowController {
         // Re-push the active pane's directory so a freshly opened panel
         // reflects the current terminal, not whatever it last saw.
         syncSidebarToActiveTab()
-    }
-
-    func splitWithBrowser() {
-        Log.debug("🌐 MainWindowController: splitWithBrowser called", category: "app")
-        currentPaneSplitController?.splitWithBrowser(direction: .horizontal)
     }
 
     func showKeyboardShortcuts() {

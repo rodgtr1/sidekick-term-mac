@@ -15,8 +15,7 @@ public enum CodexTranscriptParser {
         var latestTotal: [String: Any]?
 
         for rawLine in jsonl.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let data = String(rawLine).data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard let object = try? JSONSerialization.jsonObject(with: Data(rawLine.utf8)) as? [String: Any]
             else { continue }
 
             let type = object["type"] as? String
@@ -58,7 +57,10 @@ public enum CodexTranscriptParser {
         return aggregate(jsonl: text)
     }
 
+    // Round via doubleValue so float-encoded integers don't truncate; token
+    // counts stay well under 2^53, so this is exact.
     private static func int(_ value: Any?) -> Int {
-        (value as? NSNumber)?.intValue ?? 0
+        guard let number = value as? NSNumber else { return 0 }
+        return Int(number.doubleValue.rounded())
     }
 }

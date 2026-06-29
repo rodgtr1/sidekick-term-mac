@@ -2,7 +2,7 @@ import Foundation
 
 /// Snapshot of the open tabs/panes, persisted across launches.
 nonisolated struct SessionPaneState: Codable, Equatable, Sendable {
-    let type: String // "terminal" | "browser"
+    let type: String // "terminal"
     let cwd: String?
     let url: String?
 }
@@ -35,7 +35,7 @@ enum SessionStore {
             )
             try data.write(to: fileURL, options: .atomic)
         } catch {
-            print("SessionStore: failed to save session: \(error)")
+            Log.error("failed to save session: \(error)", category: "session")
         }
     }
 

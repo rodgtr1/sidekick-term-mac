@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// A lock-guarded `Data` holder so a background pipe-drain closure can publish
 /// its result without mutating a captured `var` (rejected by strict concurrency).
@@ -61,6 +62,12 @@ nonisolated extension ProcessRunning {
 nonisolated final class ProcessRunner: ProcessRunning {
     static let shared = ProcessRunner()
 
+    /// Backstop so a wedged child (e.g. one waiting on an interactive prompt we
+    /// couldn't suppress, or a stalled network filesystem) can't hang a worker
+    /// thread forever. Generous because it's a safety net, not a deadline — the
+    /// git operations here are normally sub-second.
+    private static let timeout: TimeInterval = 120
+
     func run(
         executableURL: URL,
         arguments: [String],
@@ -71,7 +78,16 @@ nonisolated final class ProcessRunner: ProcessRunning {
         task.executableURL = executableURL
         task.arguments = arguments
         task.currentDirectoryURL = currentDirectoryURL
-        task.environment = environment
+
+        // Inherit the parent environment (setting `task.environment` replaces it
+        // wholesale, which would strip PATH etc.), overlay any caller values,
+        // then force git to never block on an interactive credential/askpass
+        // prompt — it fails fast instead, which the timeout below backstops.
+        var env = ProcessInfo.processInfo.environment
+        if let environment { env.merge(environment) { _, new in new } }
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GIT_ASKPASS"] = "/usr/bin/true"
+        task.environment = env
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -85,6 +101,9 @@ nonisolated final class ProcessRunner: ProcessRunning {
         let outputBox = DataBox()
         let errorBox = DataBox()
         let readGroup = DispatchGroup()
+
+        let exited = DispatchSemaphore(value: 0)
+        task.terminationHandler = { _ in exited.signal() }
 
         try task.run()
 
@@ -100,7 +119,16 @@ nonisolated final class ProcessRunner: ProcessRunning {
             readGroup.leave()
         }
 
-        task.waitUntilExit()
+        // SIGTERM the child if it overruns the timeout, then SIGKILL if it
+        // ignores that. Either way its pipes close, so the drains finish and
+        // readGroup.wait() can't hang.
+        if exited.wait(timeout: .now() + Self.timeout) == .timedOut {
+            task.terminate()
+            if exited.wait(timeout: .now() + 2) == .timedOut {
+                kill(task.processIdentifier, SIGKILL)
+                exited.wait()
+            }
+        }
         readGroup.wait()
 
         return ProcessResult(

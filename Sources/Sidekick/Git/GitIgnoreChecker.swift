@@ -63,29 +63,17 @@ class GitIgnoreChecker {
     /// Runs `git ls-files` for ignored entries off the main actor. Returns the
     /// relative paths, or nil when git is unavailable / the dir isn't a repo.
     private nonisolated static func loadIgnoredFiles(rootPath: String) -> Set<String>? {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        task.arguments = ["-C", rootPath, "ls-files", "--ignored", "--exclude-standard", "--others"]
-        task.currentDirectoryURL = URL(fileURLWithPath: rootPath)
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe() // Silence errors
-
-        do {
-            try task.run()
-            // Drain stdout before waiting: large repos exceed the 64KB pipe
-            // buffer, and git blocks on write until someone reads — waiting
-            // first deadlocks both processes forever.
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-
-            guard task.terminationStatus == 0,
-                  let output = String(data: data, encoding: .utf8) else { return nil }
-            return Set(output.split(separator: "\n").map { String($0) })
-        } catch {
-            // Git not available or not a git repo, ignore silently
+        // Via the shared runner: it drains both stdout and stderr on separate
+        // queues (so a repo whose git writes >64KB to stderr can't deadlock the
+        // child, which the old hand-rolled version risked), and adds a timeout.
+        guard let result = try? ProcessRunner.shared.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+            arguments: ["-C", rootPath, "ls-files", "--ignored", "--exclude-standard", "--others"],
+            currentDirectoryURL: URL(fileURLWithPath: rootPath)
+        ), result.succeeded else {
+            // Git not available or not a git repo: ignore silently.
             return nil
         }
+        return Set(result.stdout.split(separator: "\n").map(String.init))
     }
 }

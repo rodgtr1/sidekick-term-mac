@@ -118,7 +118,6 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         case .editor: type = "editor"
         case .diff: type = "diff"
         case .uncommittedChanges: type = "uncommitted_changes"
-        case .browser: type = "browser"
         }
         let pid = pane.terminalViewController?.shellProcessID ?? 0
         return IPCPaneInfo(
@@ -130,6 +129,17 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             agentStatus: pane.agentState.rawValue,
             processID: pid > 0 ? Int32(pid) : nil
         )
+    }
+
+    /// Drops telemetry for panes no longer present in any tab so the map can't
+    /// grow without bound across a long session of transient panes/worktrees.
+    /// `keepID` (the pane that just reported) is always retained, since a pane
+    /// can report telemetry mid-churn before it's attached to a tab.
+    private func pruneStaleTelemetry(keeping keepID: UUID) {
+        guard let host else { return }
+        var live = Set(host.automationTabs.flatMap { $0.panes.map(\.id) })
+        live.insert(keepID)
+        paneTelemetry = paneTelemetry.filter { live.contains($0.key) }
     }
 
     private func allAutomationPaneInfo() -> [IPCPaneInfo] {
@@ -153,9 +163,13 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         completion: @escaping (Bool) -> Void
     ) {
         let id = UUID()
-        let timer = Timer.scheduledTimer(withTimeInterval: Double(timeoutMS) / 1000, repeats: false) { [weak self] _ in
+        // Added to .common modes (not the default scheduledTimer, which only
+        // runs in .default mode) so the deadline still fires while the main run
+        // loop is in a modal/event-tracking mode.
+        let timer = Timer(timeInterval: Double(timeoutMS) / 1000, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.resolveOutputWait(id, matched: false) }
         }
+        RunLoop.main.add(timer, forMode: .common)
         guard let matcherID = terminal.registerOutputMatcher(match, onMatch: { [weak self] in
             self?.resolveOutputWait(id, matched: true)
         }) else {
@@ -191,9 +205,12 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             return
         }
         let id = UUID()
-        let timer = Timer.scheduledTimer(withTimeInterval: Double(timeoutMS) / 1000, repeats: false) { [weak self] _ in
+        // .common modes so the deadline fires even during modal/tracking runloop
+        // modes (scheduledTimer would only run in .default).
+        let timer = Timer(timeInterval: Double(timeoutMS) / 1000, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.resolveStatusWait(id, matched: false) }
         }
+        RunLoop.main.add(timer, forMode: .common)
         statusWaits[id] = StatusWait(paneID: paneID, target: target, completion: completion, deadlineTimer: timer)
     }
 
@@ -444,6 +461,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             // Store the latest per-pane usage. Keep it even for a pane we can't
             // currently resolve — it may be mid-churn.
             paneTelemetry[paneID] = usage
+            pruneStaleTelemetry(keeping: paneID)
             let cost = usage.estimatedCostUSD(rates: telemetryRates).map { String(format: "$%.4f", $0) } ?? "n/a"
             Log.debug("telemetry pane=\(paneID.uuidString.prefix(8)) model=\(usage.model ?? "?") in=\(usage.totalInputTokens) out=\(usage.outputTokens) est=\(cost)", category: "telemetry")
             // Surface it on the owning tab so the agents-panel dashboard can read
