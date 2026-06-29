@@ -696,6 +696,9 @@ class MainWindowController: NSWindowController {
     }
 
     func syncSidebarToActiveTab() {
+        // Keep the agents panel's highlighted row on the active tab's agent.
+        sidebarContainerView.refreshAgents()
+
         guard let directory = currentSidebarDirectoryForActiveTab() else { return }
         sidebarContainerView.updateFileTree(path: directory)
 

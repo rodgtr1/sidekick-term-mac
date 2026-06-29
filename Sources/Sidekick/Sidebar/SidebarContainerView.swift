@@ -179,6 +179,12 @@ class SidebarContainerView: NSView {
         }
     }
 
+    /// Refreshes the agents panel (if instantiated) so its highlighted row
+    /// tracks the active tab. Called when the active tab changes.
+    func refreshAgents() {
+        (panelControllers[.agents] as? AgentDashboardViewController)?.reload()
+    }
+
     func toggleVisibility() {
         setVisible(!isVisible)
     }

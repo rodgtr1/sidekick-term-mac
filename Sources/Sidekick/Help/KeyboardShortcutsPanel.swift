@@ -55,6 +55,10 @@ class KeyboardShortcutsPanel: NSPanel {
             KeyboardShortcut(keys: "⌘⇧F", description: "Show search-in-files panel", category: "Sidebar"),
             KeyboardShortcut(keys: "⌘⇧O", description: "Toggle embedded browser panel", category: "Sidebar"),
 
+            // Agents
+            KeyboardShortcut(keys: "⌘⇧A", description: "Show agents panel", category: "Agents"),
+            KeyboardShortcut(keys: "⌘⇧J", description: "Jump to next agent needing attention", category: "Agents"),
+
             // File Operations
             KeyboardShortcut(keys: "⌘F", description: "Quick open: search file names", category: "Files"),
             KeyboardShortcut(keys: "⌘S", description: "Save the current editor tab", category: "Files"),

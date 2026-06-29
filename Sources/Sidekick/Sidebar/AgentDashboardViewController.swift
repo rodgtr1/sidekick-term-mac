@@ -174,6 +174,21 @@ final class AgentDashboardViewController: NSViewController {
         rows = newRows
         emptyLabel.isHidden = !rows.isEmpty
         tableView.reloadData()
+        selectActiveRow()
+    }
+
+    /// Keeps the highlighted row in sync with the active tab, so cycling tabs
+    /// (Ctrl+Tab) moves the selection here too — not just the standard arrow
+    /// keys when the table itself is focused.
+    private func selectActiveRow() {
+        guard let activeRow = rows.firstIndex(where: { $0.isActive }) else {
+            tableView.deselectAll(nil)
+            return
+        }
+        if tableView.selectedRow != activeRow {
+            tableView.selectRowIndexes(IndexSet(integer: activeRow), byExtendingSelection: false)
+            tableView.scrollRowToVisible(activeRow)
+        }
     }
 
     /// Updates each visible row's "state · elapsed" label from its current data,
