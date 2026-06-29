@@ -59,6 +59,12 @@ fi
 # Set executable permissions
 chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
 
+# Sign with a stable identity so macOS keeps TCC (folder/app access) grants
+# across rebuilds. Without this the app is ad-hoc signed and its cdhash
+# changes every build, so macOS re-prompts for every permission.
+# Run ./scripts/create-signing-cert.sh once to create the identity.
+SIGN_IDENTITY="${SIGN_IDENTITY:-Sidekick Dev}"
+
 # Create sidekick-ctl CLI tool in bundle
 echo "📋 Adding sidekick-ctl CLI..."
 cp ".build/release/sidekick-ctl" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-ctl"
@@ -83,6 +89,27 @@ chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-mcp"
 echo "📋 Adding sidekick-telemetry helper..."
 cp ".build/release/sidekick-telemetry" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-telemetry"
 chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-telemetry"
+
+# Code-sign the bundle (helpers first, main app last) with a stable identity.
+if security find-identity -p codesigning -v 2>/dev/null | grep -q "${SIGN_IDENTITY}"; then
+    echo "🔏 Signing with '${SIGN_IDENTITY}'..."
+    for HELPER in sidekick-ctl sidekick-agent-status sidekick-hook sidekick-mcp sidekick-telemetry; do
+        codesign --force --options runtime \
+            --entitlements Sidekick.entitlements \
+            --sign "${SIGN_IDENTITY}" \
+            "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/${HELPER}"
+    done
+    codesign --force --options runtime \
+        --entitlements Sidekick.entitlements \
+        --sign "${SIGN_IDENTITY}" \
+        "${BUILD_DIR}/${BUNDLE_NAME}"
+    codesign --verify --deep --strict --verbose=2 "${BUILD_DIR}/${BUNDLE_NAME}"
+    echo "✅ Signed. TCC grants will persist across rebuilds."
+else
+    echo "⚠️  No '${SIGN_IDENTITY}' identity found — app is ad-hoc signed and macOS"
+    echo "    will re-prompt for folder/app access on every rebuild."
+    echo "    Fix once with: ./scripts/create-signing-cert.sh"
+fi
 
 # Zip for handing to another Mac. scp/USB transfers skip the quarantine
 # flag entirely; browser/AirDrop transfers need right-click -> Open (or
