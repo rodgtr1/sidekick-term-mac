@@ -249,7 +249,10 @@ class SearchPanelViewController: NSViewController {
                 task?.terminate()
             }
             searchTimeoutWorkItem = timeoutWorkItem
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8, execute: timeoutWorkItem)
+            // This closure is MainActor-isolated (the class is an NSViewController),
+            // so it must run on the main queue. Scheduling it on a background queue
+            // trips a Swift 6 runtime isolation assertion (EXC_BREAKPOINT) when it fires.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeoutWorkItem)
 
             DispatchQueue.global(qos: .userInitiated).async { [weak self, task] in
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
