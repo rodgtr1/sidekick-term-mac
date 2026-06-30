@@ -1085,7 +1085,7 @@ class PreferencesWindowController: NSWindowController {
     private func applyFontChanges() {
         // This would need to be implemented to update existing terminals
         // For now, changes will apply to new terminals
-        print("Font changed to \(config.font.family) \(config.font.size)pt")
+        Log.debug("Font changed to \(config.font.family) \(config.font.size)pt", category: "app")
     }
 
     private func showRestartAlert() {

@@ -24,6 +24,37 @@ enum KeyboardCommand: Equatable {
     case focusAgentAttention
 }
 
+extension KeyboardCommand {
+    /// Human-readable shortcut for the command palette. Single source of truth so
+    /// the palette's labels can't drift from the bindings in `command(for:…)`
+    /// below. nil for commands the palette doesn't list (or that have no shortcut).
+    var displayShortcut: String? {
+        switch self {
+        case .newTab: return "⌘T"
+        case .closeTab: return "⌘W"
+        case .closeCurrentPane: return "⇧⌘W"
+        case .splitPane(.horizontal): return "⌘D"
+        case .splitPane(.vertical): return "⇧⌘D"
+        case .findInTerminal: return "⌘F"
+        case .jumpToPrompt(let previous): return previous ? "⌘↑" : "⌘↓"
+        case .quickOpen: return "⌘P"
+        case .commandPalette: return "⇧⌘P"
+        case .showPanel(.files): return "⇧⌘E"
+        case .showPanel(.git): return "⇧⌘G"
+        case .showPanel(.search): return "⇧⌘F"
+        case .showPanel(.agents): return "⇧⌘A"
+        case .showPanel(.hosts): return "⇧⌘H"
+        case .toggleSidebar: return "⌘B"
+        case .toggleHiddenFiles: return "⇧⌘."
+        case .zoomIn: return "⌘="
+        case .zoomOut: return "⌘-"
+        case .zoomReset: return "⌘0"
+        case .preferences: return "⌘,"
+        default: return nil
+        }
+    }
+}
+
 struct KeyboardCommandRouter {
     /// kVK_ANSI_1…9 → tab index 0…8.
     private static let digitKeyCodeToTabIndex: [UInt16: Int] = [

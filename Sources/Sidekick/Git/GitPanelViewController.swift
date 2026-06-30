@@ -479,12 +479,21 @@ class GitPanelViewController: NSViewController {
         guard row >= 0 && row < gitStatusModel.files.count else { return }
         let file = gitStatusModel.files[row]
 
-        // Show confirmation dialog
+        // Show confirmation dialog. An untracked directory discards its entire
+        // subtree, so spell that out rather than implying a single file.
         let alert = NSAlert()
-        alert.messageText = "Discard Changes?"
-        alert.informativeText = "Are you sure you want to discard all changes to '\(file.filename)'? This cannot be undone."
+        if file.isDirectory {
+            alert.messageText = "Delete untracked directory?"
+            alert.informativeText = "This permanently deletes the directory '\(file.filename)' and all of its contents. This cannot be undone."
+        } else if file.unstagedStatus == .untracked {
+            alert.messageText = "Delete untracked file?"
+            alert.informativeText = "This permanently deletes the untracked file '\(file.filename)'. This cannot be undone."
+        } else {
+            alert.messageText = "Discard Changes?"
+            alert.informativeText = "Are you sure you want to discard all changes to '\(file.filename)'? This cannot be undone."
+        }
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: file.unstagedStatus == .untracked ? "Delete" : "Discard")
         alert.addButton(withTitle: "Cancel")
 
         if alert.runModal() == .alertFirstButtonReturn {

@@ -406,7 +406,7 @@ nonisolated final class IPCServer: @unchecked Sendable {
                 ofItemAtPath: configDirectory.path
             )
         } catch {
-            print("IPCServer: Failed to prepare config directory: \(error)")
+            Log.debug("IPCServer: Failed to prepare config directory: \(error)")
         }
     }
 
@@ -415,7 +415,7 @@ nonisolated final class IPCServer: @unchecked Sendable {
             do {
                 try FileManager.default.removeItem(at: socketURL)
             } catch {
-                print("IPCServer: Failed to remove existing socket: \(error)")
+                Log.debug("IPCServer: Failed to remove existing socket: \(error)")
             }
         }
     }
@@ -425,7 +425,7 @@ nonisolated final class IPCServer: @unchecked Sendable {
 
         let socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard socketFD != -1 else {
-            print("IPCServer: Failed to create socket")
+            Log.debug("IPCServer: Failed to create socket")
             return nil
         }
 
@@ -435,7 +435,7 @@ nonisolated final class IPCServer: @unchecked Sendable {
         let pathBytes = socketPath.utf8CString
         let maxPathLength = MemoryLayout.size(ofValue: address.sun_path)
         guard pathBytes.count <= maxPathLength else {
-            print("IPCServer: Socket path too long")
+            Log.debug("IPCServer: Socket path too long")
             close(socketFD)
             return nil
         }
@@ -453,7 +453,7 @@ nonisolated final class IPCServer: @unchecked Sendable {
             }
         }
         guard bindResult != -1 else {
-            print("IPCServer: Failed to bind socket: \(String(cString: strerror(errno)))")
+            Log.debug("IPCServer: Failed to bind socket: \(String(cString: strerror(errno)))")
             close(socketFD)
             return nil
         }
@@ -462,12 +462,12 @@ nonisolated final class IPCServer: @unchecked Sendable {
         chmod(socketPath, 0o600)
 
         guard listen(socketFD, 5) != -1 else {
-            print("IPCServer: Failed to listen on socket: \(String(cString: strerror(errno)))")
+            Log.debug("IPCServer: Failed to listen on socket: \(String(cString: strerror(errno)))")
             close(socketFD)
             return nil
         }
 
-        print("IPCServer: Listening on \(socketPath)")
+        Log.debug("IPCServer: Listening on \(socketPath)")
         return socketFD
     }
 
@@ -476,14 +476,14 @@ nonisolated final class IPCServer: @unchecked Sendable {
             let clientFD = accept(serverFD, nil, nil)
             guard clientFD != -1 else {
                 if shouldKeepRunning {
-                    print("IPCServer: Failed to accept connection: \(String(cString: strerror(errno)))")
+                    Log.debug("IPCServer: Failed to accept connection: \(String(cString: strerror(errno)))")
                     continue
                 }
                 break
             }
 
             guard peerIsCurrentUser(clientFD) else {
-                print("IPCServer: Rejecting connection from other user")
+                Log.debug("IPCServer: Rejecting connection from other user")
                 close(clientFD)
                 continue
             }
@@ -516,7 +516,7 @@ nonisolated final class IPCServer: @unchecked Sendable {
         // write side open while waiting for the response, so reading to EOF
         // would deadlock.
         guard let requestData = readLine(from: clientFD) else {
-            print("IPCServer: Failed to read command")
+            Log.debug("IPCServer: Failed to read command")
             close(clientFD)
             return
         }
@@ -534,7 +534,7 @@ nonisolated final class IPCServer: @unchecked Sendable {
         do {
             command = try JSONDecoder().decode(IPCCommand.self, from: commandData)
         } catch {
-            print("IPCServer: Failed to parse command: \(error)")
+            Log.debug("IPCServer: Failed to parse command: \(error)")
             sendResponse(IPCResponse(ok: false, error: "Invalid JSON command"), to: clientFD)
             close(clientFD)
             return
@@ -553,7 +553,7 @@ nonisolated final class IPCServer: @unchecked Sendable {
         }
 
         guard let commandType = IPCCommandType.from(command) else {
-            print("IPCServer: Unknown or invalid command: \(command.action)")
+            Log.debug("IPCServer: Unknown or invalid command: \(command.action)")
             sendResponse(IPCResponse(ok: false, error: "Unknown or invalid command: \(command.action)"), to: clientFD)
             close(clientFD)
             return

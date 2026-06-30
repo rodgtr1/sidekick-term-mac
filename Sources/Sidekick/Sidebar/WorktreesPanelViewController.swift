@@ -189,6 +189,13 @@ final class WorktreesPanelViewController: NSViewController {
     /// Debounced refresh for notification storms (editor-save bursts, rapid
     /// agent-state flips). Panel-show and explicit actions call `reload()`.
     @objc private func scheduleReload() {
+        // Skip notification-driven refreshes while the panel isn't on screen —
+        // otherwise an agent-state/editor-save storm forks `git status` per
+        // worktree for a panel nobody is looking at. The container calls reload()
+        // when this panel is (re)selected (and viewWillAppear does too), so it
+        // never shows stale on return. Non-selected panels are removed from the
+        // view hierarchy, so window == nil; a collapsed sidebar is a hidden ancestor.
+        guard view.window != nil, !view.isHiddenOrHasHiddenAncestor else { return }
         pendingReload?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.reload() }
         pendingReload = work

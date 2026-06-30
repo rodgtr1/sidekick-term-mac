@@ -75,11 +75,6 @@ echo "📋 Adding sidekick-agent-status CLI..."
 cp ".build/release/sidekick-agent-status" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status"
 chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status"
 
-# Create sidekick-hook CLI tool in bundle (PreToolUse edit review)
-echo "📋 Adding sidekick-hook CLI..."
-cp ".build/release/sidekick-hook" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-hook"
-chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-hook"
-
 # Create sidekick-mcp MCP server in bundle (Model Context Protocol)
 echo "📋 Adding sidekick-mcp MCP server..."
 cp ".build/release/sidekick-mcp" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-mcp"
@@ -93,7 +88,7 @@ chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-telemetry"
 # Code-sign the bundle (helpers first, main app last) with a stable identity.
 if security find-identity -p codesigning -v 2>/dev/null | grep -q "${SIGN_IDENTITY}"; then
     echo "🔏 Signing with '${SIGN_IDENTITY}'..."
-    for HELPER in sidekick-ctl sidekick-agent-status sidekick-hook sidekick-mcp sidekick-telemetry; do
+    for HELPER in sidekick-ctl sidekick-agent-status sidekick-mcp sidekick-telemetry; do
         codesign --force --options runtime \
             --entitlements Sidekick.entitlements \
             --sign "${SIGN_IDENTITY}" \

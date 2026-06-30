@@ -57,4 +57,33 @@ nonisolated enum WorkspaceResolver {
             repositoryRoot: gitRoot(from: path, runner: runner)
         )
     }
+
+    // MARK: - Cached lookups
+
+    // Short-TTL memoization for the repeated, main-thread repo-root lookups (the
+    // worktrees panel re-asks for the active repo root on every refresh). Guarded
+    // by `cacheLock`; `gitRoot(from:runner:)` itself stays pure so the
+    // injected-runner unit tests are unaffected. A repo created/removed under a
+    // path is picked up after the TTL — fine for a UI hint.
+    nonisolated(unsafe) private static var rootCache: [String: (root: String?, at: Date)] = [:]
+    private static let cacheLock = NSLock()
+    private static let cacheTTL: TimeInterval = 3
+
+    /// `gitRoot(from:)` against the shared runner, memoized for `cacheTTL` so a
+    /// burst of identical lookups on the main thread spawns at most one `git`.
+    static func cachedGitRoot(from path: String) -> String? {
+        let now = Date()
+        cacheLock.lock()
+        if let entry = rootCache[path], now.timeIntervalSince(entry.at) < cacheTTL {
+            cacheLock.unlock()
+            return entry.root
+        }
+        cacheLock.unlock()
+
+        let root = gitRoot(from: path)
+        cacheLock.lock()
+        rootCache[path] = (root, now)
+        cacheLock.unlock()
+        return root
+    }
 }

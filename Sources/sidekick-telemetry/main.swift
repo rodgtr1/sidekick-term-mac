@@ -1,6 +1,6 @@
 import Foundation
-import Darwin
 import SidekickTelemetryCore
+import SidekickIPCCore
 
 // Invoked by an agent's Stop hook. Reads the hook payload on stdin (which carries
 // `transcript_path`), aggregates token usage from that transcript via
@@ -33,12 +33,8 @@ struct SidekickTelemetry {
               let usageData = try? JSONEncoder().encode(usage),
               let usageString = String(data: usageData, encoding: .utf8) else { return }
 
-        let socketPath = ProcessInfo.processInfo.environment["SIDEKICK_SOCKET_PATH"]
-            ?? NSString("~/.config/sidekick/sidekick.sock").expandingTildeInPath
-
-        sendReport(
-            ["action": "report_telemetry", "pane_id": paneID, "telemetry": usageString],
-            socketPath: socketPath
+        SidekickIPCClient().sendFireAndForget(
+            ["action": "report_telemetry", "pane_id": paneID, "telemetry": usageString]
         )
     }
 
@@ -54,43 +50,5 @@ struct SidekickTelemetry {
         let path = (json["transcript_path"] as? String) ?? (json["agent_transcript_path"] as? String)
         guard let path, !path.isEmpty else { return nil }
         return (path as NSString).expandingTildeInPath
-    }
-
-    /// Fire-and-forget: connect, write one newline-terminated JSON line, close.
-    /// Mirrors sidekick-ctl's IPC connect; we don't need a response.
-    private static func sendReport(_ request: [String: Any], socketPath: String) {
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return }
-        defer { close(fd) }
-
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let maxPathLength = MemoryLayout.size(ofValue: address.sun_path)
-        guard socketPath.utf8CString.count <= maxPathLength else { return }
-        socketPath.withCString { path in
-            withUnsafeMutablePointer(to: &address.sun_path.0) { destination in
-                strncpy(destination, path, maxPathLength - 1)
-                destination[maxPathLength - 1] = 0
-            }
-        }
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard connected == 0,
-              var payload = try? JSONSerialization.data(withJSONObject: request) else { return }
-        payload.append(UInt8(ascii: "\n"))
-        payload.withUnsafeBytes { bytes in
-            guard let base = bytes.baseAddress else { return }
-            var remaining = bytes.count
-            var cursor = base
-            while remaining > 0 {
-                let count = write(fd, cursor, remaining)
-                guard count > 0 else { return }
-                cursor = cursor.advanced(by: count)
-                remaining -= count
-            }
-        }
     }
 }

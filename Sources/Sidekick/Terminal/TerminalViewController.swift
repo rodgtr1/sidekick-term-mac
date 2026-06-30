@@ -265,6 +265,11 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         pattern: "(?i)listening on (?:port )?(?:[a-z.*]*:)?(\\d{2,5})\\b"
     )
 
+    // True once the shell has produced any output (prompt drawn). Gates
+    // `sendOnShellReady` so a startup command waits for the prompt, not a timer.
+    private var hasProducedOutput = false
+    private var pendingStartupCommand: String?
+
     // Shell integration (OSC 7 + OSC 133) state
     private var hasShellIntegration = false
     private var commandMarkBuffer = ""
@@ -520,8 +525,24 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     override func viewDidAppear() {
         super.viewDidAppear()
+        // Resume CWD polling for a tab that was hidden (no-op once shell
+        // integration is detected — OSC 7 then pushes the cwd and the timer
+        // stays off for good).
+        if !hasShellIntegration, cwdTimer == nil, shellPID > 0 {
+            startCWDTracking()
+        }
         // Focus terminal after view appears
         focusTerminal()
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        // A hidden tab's title/branch doesn't need live updates, so stop the 1Hz
+        // CWD poll while it's offscreen. (Blocked-state polling is intentionally
+        // left running: it's what surfaces a background un-hooked agent's
+        // permission prompt as a dock bounce while you're looking elsewhere.)
+        cwdTimer?.invalidate()
+        cwdTimer = nil
     }
 
     private func setupTerminal() {
@@ -570,6 +591,20 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         ])
     }
 
+    /// Injects `--permission-mode <mode>` into a Sidekick-launched `claude` worker
+    /// when an auto/bypass approval level is active. Workers run via `exec`, which
+    /// bypasses the shell-integration `claude` wrapper, so the flag must go on the
+    /// argv directly. Leaves a caller-supplied `--permission-mode` untouched and
+    /// only touches commands whose program is `claude`.
+    private static func applyingClaudePermissionMode(_ command: [String]) -> [String] {
+        guard let mode = AgentApprovalState.claudePermissionMode,
+              let program = command.first,
+              URL(fileURLWithPath: program).lastPathComponent == "claude",
+              !command.contains(where: { $0 == "--permission-mode" || $0.hasPrefix("--permission-mode=") })
+        else { return command }
+        return [program, "--permission-mode", mode] + command.dropFirst()
+    }
+
     private func startConfiguredProcess() {
         let shell = getShell()
         let shellIdiom = "-" + NSString(string: shell).lastPathComponent
@@ -599,7 +634,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
             environment.append("TERM_PROGRAM_VERSION=\(version)")
         }
-        if let command = initialCommand {
+        // Scope Claude's permission mode to this Sidekick pane: the shell-integration
+        // wrapper reads this when the user types `claude` interactively. (Workers
+        // launched via `exec` below bypass the shell function, so the flag is also
+        // injected into their argv.)
+        if let claudeMode = AgentApprovalState.claudePermissionMode {
+            environment.append("SIDEKICK_CLAUDE_PERMISSION_MODE=\(claudeMode)")
+        }
+        if let command = initialCommand.map(Self.applyingClaudePermissionMode) {
             // Launch the worker through the user's login+interactive shell so
             // it inherits the same PATH and version-manager setup a normal pane
             // gets (e.g. ~/.local/bin, nvm). The command string is the fixed
@@ -806,9 +848,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         handleProcessTerminated()
         if let exitCode = exitCode {
-            print("Shell process terminated with exit code: \(exitCode)")
+            Log.debug("Shell process terminated with exit code: \(exitCode)", category: "terminal")
         } else {
-            print("Shell process vanished unexpectedly")
+            Log.debug("Shell process vanished unexpectedly", category: "terminal")
         }
     }
 
@@ -846,8 +888,27 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
     }
 
+    /// Queues `text` to be sent once the shell has produced its first output
+    /// (i.e. the prompt is drawn). Replaces fixed-delay guesses for commands that
+    /// must wait for shell startup. If output already arrived, sends immediately.
+    func sendOnShellReady(_ text: String) {
+        if hasProducedOutput {
+            send(text: text + "\n")
+        } else {
+            pendingStartupCommand = text
+        }
+    }
+
     private func appendAutomationOutput(_ output: String) {
         Self.appendBounded(output, to: &automationOutput, cap: 64_000)
+
+        // First output means the shell is up and has drawn its prompt — flush any
+        // command queued via sendOnShellReady().
+        hasProducedOutput = true
+        if let pending = pendingStartupCommand {
+            pendingStartupCommand = nil
+            send(text: pending + "\n")
+        }
 
         if !outputMatchers.isEmpty {
             feedOutputMatchers(strippedChunk: stripANSIEscapes(output))
@@ -954,6 +1015,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     // MARK: - Dev-server detection
 
     private func detectDevServer(in output: String) {
+        // Cheap pre-check before the ANSI strip + two regex passes, which otherwise
+        // ran on every ~10Hz flush for the life of the pane. Both matchers require
+        // one of these literals (serverURLRegex needs "http", listeningPortRegex
+        // needs "listening on"), so a chunk without either can't match.
+        guard output.range(of: "http", options: .caseInsensitive) != nil
+            || output.range(of: "listening on", options: .caseInsensitive) != nil else { return }
+
         // Strip ANSI codes but keep case (URLs paths are case-sensitive).
         var text = output
         if let ansiRegex = Self.ansiEscapeRegex {
@@ -1083,6 +1151,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func consumeCommandMarkSequences(from output: String) {
+        // OSC 133 marks begin with ESC. If this chunk has none and no partial
+        // sequence is buffered, there's nothing to match — skip the regex pass
+        // (the common case for ordinary command output).
+        if commandMarkBuffer.isEmpty, !output.utf8.contains(0x1B) { return }
         commandMarkBuffer += output
 
         guard let regex = Self.commandMarkRegex else {
@@ -1232,6 +1304,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func consumeAgentStatusSequences(from output: String) -> Bool {
+        // OSC 666 marks begin with ESC; skip the regex when this chunk has none
+        // and nothing partial is buffered. Returning false means "no status
+        // sequence consumed", which is correct here.
+        if agentStatusSequenceBuffer.isEmpty, !output.utf8.contains(0x1B) { return false }
         agentStatusSequenceBuffer += output
 
         guard let regex = Self.agentStatusRegex else {

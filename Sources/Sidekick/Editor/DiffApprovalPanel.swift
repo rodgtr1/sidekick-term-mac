@@ -209,7 +209,7 @@ final class DiffApprovalPanel {
                 return output
             }
         } catch {
-            print("DiffApprovalPanel: diff failed: \(error)")
+            Log.error("DiffApprovalPanel: diff failed: \(error)", category: "editor")
         }
 
         // Fallback: whole-file replacement view.

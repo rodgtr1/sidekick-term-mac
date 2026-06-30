@@ -203,4 +203,14 @@ final class GitServiceTests: XCTestCase {
 
         XCTAssertEqual(path, "my file.txt")
     }
+
+    func testParsePathFromQuotedDiffHeaderUnescapesUnicode() {
+        // The diff-header key must come back unquoted so it matches the
+        // unquoted GitStatusEntry.path used to look it up in diffsByPath.
+        let path = GitService.parsePathFromDiffHeader(
+            "diff --git \"a/caf\\303\\251.txt\" \"b/caf\\303\\251.txt\""
+        )
+
+        XCTAssertEqual(path, "café.txt")
+    }
 }

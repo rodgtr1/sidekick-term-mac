@@ -140,6 +140,16 @@ final class AgentIntegrationInstallerTests: XCTestCase {
         XCTAssertEqual(permissions?["defaultMode"] as? String, "bypassPermissions")
     }
 
+    func testClaudePermissionModeMapsApprovalLevels() {
+        XCTAssertNil(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "ask"))
+        XCTAssertNil(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "unknown"))
+        XCTAssertEqual(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "auto"), "acceptEdits")
+        // Without a managed disable policy, bypass maps straight through. (The
+        // managed-disable fallback to acceptEdits depends on a system file and
+        // isn't exercised here.)
+        XCTAssertEqual(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "bypass"), "bypassPermissions")
+    }
+
     func testDisableRemovesManagedAcceptEditsMode() {
         var settings: [String: Any] = ["permissions": ["defaultMode": "acceptEdits"]]
         let changed = AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: nil)

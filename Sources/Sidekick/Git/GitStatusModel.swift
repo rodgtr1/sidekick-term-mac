@@ -62,7 +62,10 @@ nonisolated struct GitFileItem: Sendable {
         // A conflicted file isn't "staged" in any useful sense; the action
         // that makes sense for it is Stage, which marks it resolved.
         self.isStaged = !isConflicted && stagedChar != " " && stagedChar != "?"
-        self.isDirectory = false // We'll enhance this later if needed
+        // git porcelain reports an untracked *directory* with a trailing slash
+        // (e.g. "build/"). Discarding such an entry removes the whole subtree, so
+        // the UI must warn accordingly rather than treating it as a single file.
+        self.isDirectory = path.hasSuffix("/")
     }
 
     var displayStatus: GitFileStatus {
@@ -100,6 +103,12 @@ class GitStatusModel: ObservableObject {
     nonisolated(unsafe) private var pendingRefresh: DispatchWorkItem?
     private let gitService: GitService
     private var refreshGeneration: Int = 0
+    // Coalesce overlapping refreshes: while a background git query is running, a
+    // new request just sets `refreshAgainWhenDone` instead of spawning another
+    // set of `git status`/`rev-list` processes whose results the generation guard
+    // would only throw away. The trailing request runs once the current finishes.
+    private var refreshInFlight = false
+    private var refreshAgainWhenDone = false
     // Number of in-flight git mutations the app itself started. While > 0 (and
     // for a short settle window after), watcher-driven refreshes are suppressed:
     // those operations refresh explicitly when they finish, so reacting to their
@@ -154,6 +163,14 @@ class GitStatusModel: ObservableObject {
         guard !_repositoryPath.isEmpty else { return }
         guard force || !isLoading else { return }
 
+        // A query is already running — fold this request into a single trailing
+        // refresh instead of launching a second, redundant set of git processes.
+        if refreshInFlight {
+            refreshAgainWhenDone = true
+            return
+        }
+
+        refreshInFlight = true
         isLoading = true
         error = nil
         refreshGeneration += 1
@@ -169,14 +186,27 @@ class GitStatusModel: ObservableObject {
 
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
+                    self.refreshInFlight = false
+                    defer {
+                        // Service a request that arrived while this one was running.
+                        if self.refreshAgainWhenDone {
+                            self.refreshAgainWhenDone = false
+                            self.refreshStatus(force: true)
+                        }
+                    }
+
                     guard self.refreshGeneration == generation,
                           self._repositoryPath == repositoryPath else { return }
 
                     self.currentBranch = branch
                     self.aheadCount = counts.ahead
                     self.behindCount = counts.behind
-                    self.files = statusItems
-                    self.isClean = statusItems.isEmpty
+                    // nil means the status query failed — keep the prior file
+                    // list rather than clearing to a false "clean" state.
+                    if let statusItems {
+                        self.files = statusItems
+                        self.isClean = statusItems.isEmpty
+                    }
                     self.isLoading = false
                 }
             }
@@ -273,7 +303,10 @@ class GitStatusModel: ObservableObject {
         ((try? gitService.aheadBehindCounts(repositoryRoot: repositoryRoot)) ?? nil) ?? (ahead: 0, behind: 0)
     }
 
-    private nonisolated func getGitStatus(repositoryRoot: String) -> [GitFileItem] {
+    /// Returns nil on a git failure (distinct from an empty array, which means a
+    /// genuinely clean tree) so the caller can keep the last-known file list
+    /// instead of flashing the panel to "Working tree clean" on a transient error.
+    private nonisolated func getGitStatus(repositoryRoot: String) -> [GitFileItem]? {
         do {
             return try gitService.status(repositoryRoot: repositoryRoot)
                 .map { GitFileItem(path: $0.path, stagedChar: $0.stagedStatus, unstagedChar: $0.unstagedStatus) }
@@ -285,13 +318,14 @@ class GitStatusModel: ObservableObject {
             }
         }
 
-        return []
+        return nil
     }
 
     // MARK: - Git Operations
 
     func stageFile(_ file: GitFileItem) {
-        executeGitCommand(["add", file.path]) { [weak self] success in
+        // `--` so a path beginning with "-" can't be parsed as a flag.
+        executeGitCommand(["add", "--", file.path]) { [weak self] success in
             if success {
                 self?.refreshStatus(force: true)
             }
@@ -299,7 +333,7 @@ class GitStatusModel: ObservableObject {
     }
 
     func unstageFile(_ file: GitFileItem) {
-        executeGitCommand(["reset", "HEAD", file.path]) { [weak self] success in
+        executeGitCommand(["reset", "HEAD", "--", file.path]) { [weak self] success in
             if success {
                 self?.refreshStatus(force: true)
             }
@@ -344,19 +378,14 @@ class GitStatusModel: ObservableObject {
 
         // Handle different file states
         if file.unstagedStatus == .untracked {
-            // For untracked files, just remove them
-            let fullPath = _repositoryPath + "/" + file.path
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                do {
-                    try FileManager.default.removeItem(atPath: fullPath)
-                    DispatchQueue.main.async {
-                        MainActor.assumeIsolated { self?.refreshStatus(force: true) }
-                    }
-                } catch {
-                    let message = error.localizedDescription
-                    DispatchQueue.main.async {
-                        MainActor.assumeIsolated { self?.error = "Failed to remove file: \(message)" }
-                    }
+            // For untracked entries let git remove them. `git clean -fd` deletes
+            // untracked files and directories but deliberately leaves nested git
+            // repositories intact (removing those needs -ff) — unlike a blind
+            // FileManager.removeItem, which would wipe a nested repo's contents
+            // too. The trailing-slash path from porcelain works as a clean arg.
+            executeGitCommand(["clean", "-fd", "--", file.path]) { [weak self] success in
+                if success {
+                    self?.refreshStatus(force: true)
                 }
             }
             return

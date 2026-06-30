@@ -92,6 +92,14 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
     private let lock = NSLock()
     private var subscribers: [Int32: EventFilter] = [:]
 
+    /// Serializes the actual `write()`s. `emit` (main thread) and `addSubscriber`
+    /// (the connection's IPC thread) both write to the same fd; without this a
+    /// hello/backlog write and a live-event write can interleave mid-line and
+    /// corrupt the subscriber's JSONL stream. Separate from `lock` so the
+    /// `drop(_:)` call inside a failing write — which takes `lock` — can't
+    /// self-deadlock (writeLock is always the outer lock, `lock` the inner).
+    private let writeLock = NSLock()
+
     /// Last `agent_state` event seen per pane. Replayed (filtered) to a new
     /// subscriber so a late-joining supervisor knows the current state of every
     /// pane without waiting for the next transition.
@@ -179,6 +187,8 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
     /// (slow/wedged consumer) or the write fails, drops the subscriber from the
     /// active set and `shutdown`s it so the owning reader closes it.
     private func send(line: Data, to fd: Int32) {
+        writeLock.lock()
+        defer { writeLock.unlock() }
         guard isWritable(fd) else {
             drop(fd)
             return

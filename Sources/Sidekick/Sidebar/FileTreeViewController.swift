@@ -470,7 +470,7 @@ class FileTreeViewController: NSViewController {
         let row = outlineView.clickedRow
         guard row >= 0, let node = outlineView.item(atRow: row) as? FileTreeNode else { return }
 
-        print("DoubleClick: \(node.name) - isDirectory: \(node.isDirectory) - path: \(node.url.path)")
+        Log.debug("DoubleClick: \(node.name) - isDirectory: \(node.isDirectory) - path: \(node.url.path)", category: "sidebar")
 
         if node.isDirectory {
             // For directories, toggle expand/collapse
@@ -625,7 +625,7 @@ extension FileTreeViewController: NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
         guard let node = item as? FileTreeNode else { return false }
 
-        print("Selection: \(node.name) - isDirectory: \(node.isDirectory)")
+        Log.debug("Selection: \(node.name) - isDirectory: \(node.isDirectory)", category: "sidebar")
 
         // Only notify delegate about file selection, not directory selection
         if !node.isDirectory {

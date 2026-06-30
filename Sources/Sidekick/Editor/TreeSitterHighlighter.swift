@@ -13,10 +13,12 @@ import TreeSitterPython
 /// other extension falls back to the regex `SyntaxHighlighter` (so this is a
 /// strict upgrade — nothing regresses for unsupported files).
 ///
-/// Scoped to the document editor path. The parser+query are built once and
-/// reused. Parsing is whole-document on each highlight pass (incremental tree
-/// editing is a later optimization); the `maxHighlightLength` guard in the
-/// caller bounds that cost.
+/// Scoped to the document editor path. The compiled query is cached per language.
+/// Parsing is whole-document on each pass (cheap in tree-sitter; bounded by the
+/// caller's `maxHighlightLength`), but the query is restricted to the edited
+/// range's byte span so a per-keystroke edit no longer walks every capture in a
+/// large file. (Full incremental tree *reuse* would need the edit delta threaded
+/// from the editor and remains a later optimization.)
 enum TreeSitterHighlighter {
     /// Extensions handled by tree-sitter. Anything else → regex fallback.
     static func canHighlight(ext: String) -> Bool {
@@ -38,13 +40,25 @@ enum TreeSitterHighlighter {
 
         let parser = Parser()
         do { try parser.setLanguage(language) } catch { return false }
-        guard let tree = parser.parse(fullText as String), let root = tree.rootNode else { return false }
+        let source = fullText as String
+        guard let tree = parser.parse(source), let root = tree.rootNode else { return false }
+
+        let cursor = query.execute(node: root, in: tree)
+        // Restrict the query to the dirty range's *byte* span (tree-sitter works in
+        // UTF-8 bytes, NSRange in UTF-16). Captures are only ever applied within
+        // `range` below, so this yields identical output to scanning the whole
+        // tree — but on a per-keystroke edit it walks the touched region instead of
+        // every capture in the file. A wider construct (e.g. a multi-line string)
+        // still matches because set_byte_range returns patterns intersecting it.
+        if let byteRange = Self.utf8ByteRange(of: range, in: source) {
+            cursor.setByteRange(range: byteRange)
+        }
 
         // First-capture-wins per character, matching tree-sitter's convention
         // that earlier (more specific) query patterns take precedence — so a
         // keyword inside a string keeps the string color, etc.
         var colored = IndexSet()
-        for match in query.execute(node: root, in: tree) {
+        for match in cursor {
             for capture in match.captures {
                 guard let color = color(forCapture: capture.nameComponents, scheme: scheme) else { continue }
                 let nodeRange = NSIntersectionRange(capture.node.range, range)
@@ -59,6 +73,19 @@ enum TreeSitterHighlighter {
             }
         }
         return true
+    }
+
+    /// Converts a UTF-16 `NSRange` into the UTF-8 byte `Range<UInt32>` tree-sitter
+    /// expects. Returns nil if the range can't be mapped (then the caller skips
+    /// the restriction and queries the whole tree, as before).
+    private static func utf8ByteRange(of range: NSRange, in source: String) -> Range<UInt32>? {
+        guard let swiftRange = Range(range, in: source),
+              let lower = swiftRange.lowerBound.samePosition(in: source.utf8),
+              let upper = swiftRange.upperBound.samePosition(in: source.utf8) else { return nil }
+        let start = source.utf8.distance(from: source.utf8.startIndex, to: lower)
+        let end = source.utf8.distance(from: source.utf8.startIndex, to: upper)
+        guard start <= end else { return nil }
+        return UInt32(start)..<UInt32(end)
     }
 
     // MARK: - Capture → color mapping

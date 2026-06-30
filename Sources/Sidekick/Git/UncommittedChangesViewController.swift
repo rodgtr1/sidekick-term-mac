@@ -322,7 +322,16 @@ final class UncommittedChangesViewController: NSViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
 
-        let content = (try? String(contentsOfFile: absolutePath, encoding: .utf8)) ?? ""
+        // A nil read (missing / too large / not UTF-8) is NOT the same as an
+        // empty string: the old `?? ""` made an unreadable file parse to zero
+        // conflicts and show a false "All conflicts resolved" prompt. Surface it.
+        guard let content = readConflictFileForDisplay(absolutePath) else {
+            stack.addArrangedSubview(makeInfoRow(
+                "Can’t display conflicts — file is too large or not UTF-8 text. Resolve it in your editor."
+            ))
+            layoutSection(container: container, header: header, stack: stack)
+            return container
+        }
         let conflicts = MergeConflictParser.conflicts(in: content)
 
         if conflicts.isEmpty {
@@ -340,6 +349,11 @@ final class UncommittedChangesViewController: NSViewController {
             }
         }
 
+        layoutSection(container: container, header: header, stack: stack)
+        return container
+    }
+
+    private func layoutSection(container: NSView, header: NSView, stack: NSView) {
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: container.topAnchor),
             header.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -351,8 +365,26 @@ final class UncommittedChangesViewController: NSViewController {
             stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
             stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12)
         ])
+    }
 
-        return container
+    /// Reads a conflicted file for display, bounded so a huge or non-UTF-8 file
+    /// can neither stall the main thread nor be silently misread as an empty
+    /// (→ "no conflicts") string. Returns nil when missing, oversized, or not
+    /// valid UTF-8 — the caller shows an explanatory row instead.
+    private func readConflictFileForDisplay(_ path: String) -> String? {
+        if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int,
+           size > Limits.maxFileSize {
+            return nil
+        }
+        return try? String(contentsOfFile: path, encoding: .utf8)
+    }
+
+    private func makeInfoRow(_ text: String) -> NSView {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = NSFont.systemFont(ofSize: 12)
+        label.textColor = AppTheme.warning
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
     }
 
     private func makeConflictBlock(
@@ -481,7 +513,10 @@ final class UncommittedChangesViewController: NSViewController {
     @objc private func resolveClicked(_ sender: ConflictResolveButton) {
         guard let resolution = sender.resolution else { return }
         let filePath = sender.filePath
-        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else { return }
+        guard let content = readConflictFileForDisplay(filePath) else {
+            showMessage("Couldn’t read \(filePath) — file is too large or not UTF-8 text.")
+            return
+        }
 
         // Re-parse at click time so the right block is hit even if the file
         // changed since the view was built.

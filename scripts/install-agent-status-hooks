@@ -4,16 +4,13 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bin_dir="${HOME}/.local/bin"
 status_bin="${bin_dir}/sidekick-agent-status"
-hook_bin="${bin_dir}/sidekick-hook"
 mcp_bin="${bin_dir}/sidekick-mcp"
 skill_source="${repo}/.claude/skills/sidekick-panes"
 
 mkdir -p "$bin_dir"
 swift build --package-path "$repo" -c release --product sidekick-agent-status
-swift build --package-path "$repo" -c release --product sidekick-hook
 swift build --package-path "$repo" -c release --product sidekick-mcp
 install -m 0755 "$repo/.build/release/sidekick-agent-status" "$status_bin"
-install -m 0755 "$repo/.build/release/sidekick-hook" "$hook_bin"
 install -m 0755 "$repo/.build/release/sidekick-mcp" "$mcp_bin"
 
 # Install the same pane-orchestration skill for Claude Code, Codex, and Pi.
@@ -24,14 +21,13 @@ for skill_root in "${HOME}/.claude/skills" "${HOME}/.codex/skills" "${HOME}/.pi/
     install -m 0644 "${skill_source}/agents/openai.yaml" "${skill_root}/sidekick-panes/agents/openai.yaml"
 done
 
-python3 - "$HOME/.claude/settings.json" "$status_bin" "$hook_bin" <<'PY'
+python3 - "$HOME/.claude/settings.json" "$status_bin" <<'PY'
 import json
 import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
 status_bin = sys.argv[2]
-hook_bin = sys.argv[3]
 path.parent.mkdir(parents=True, exist_ok=True)
 
 if path.exists() and path.read_text().strip():
@@ -75,6 +71,10 @@ def remove_hook(event, signature):
 # "Notification" now carries the ready signal; drop the dead hook.
 remove_hook("PermissionRequest", "sidekick-agent-status")
 
+# The PreToolUse diff-review hook (sidekick-hook) is no longer shipped — it
+# duplicated Claude Code's own approval prompt. Strip it from older installs.
+remove_hook("PreToolUse", "sidekick-hook")
+
 add_hook("UserPromptSubmit", f"{status_bin} busy")
 # Claude Code fires "Notification" when it needs permission or input. There is
 # no "PermissionRequest" event, so the old mapping never reported "ready".
@@ -84,8 +84,6 @@ add_hook("PreToolUse", f"{status_bin} busy")
 add_hook("Stop", f"{status_bin} done")
 # Clears the tab from the agents panel when the session ends.
 add_hook("SessionEnd", f"{status_bin} idle")
-# Show file edits in Sidekick for accept/reject before they're applied.
-add_hook("PreToolUse", hook_bin, matcher="Write|Edit|MultiEdit")
 
 path.write_text(json.dumps(data, indent=2) + "\n")
 PY
@@ -169,7 +167,6 @@ fi
 cat <<EOF
 Installed:
   $status_bin
-  $hook_bin (PreToolUse edit review)
   $mcp_bin (MCP server)
   $HOME/.claude/skills/sidekick-panes/SKILL.md
   $HOME/.codex/skills/sidekick-panes/SKILL.md

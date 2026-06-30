@@ -40,14 +40,12 @@ class TabBarView: NSView {
         super.init(frame: frameRect)
         setupView()
         observeThemeChanges()
-        startPulseTimer()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupView()
         observeThemeChanges()
-        startPulseTimer()
     }
 
     deinit {
@@ -94,23 +92,31 @@ class TabBarView: NSView {
         // This will be positioned dynamically based on tab count
     }
 
-    private func startPulseTimer() {
+    /// Runs the working-tab "breathing" animation only while a tab is actually
+    /// working. The old design ran a 2Hz timer for the whole app lifetime even
+    /// with nothing working; now it's started on demand and stops itself once no
+    /// working tab remains.
+    private func ensurePulseTimer() {
+        guard pulseTimer == nil else { return }
         pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
             guard let self = self else { return }
 
-            let hasWorkingTab = self.tabs.contains { $0.agentState == .working }
-            guard hasWorkingTab else {
+            let workingIndices = self.tabs.indices.filter { self.tabs[$0].agentState == .working }
+            guard !workingIndices.isEmpty else {
+                // Nothing left to pulse — render the final (non-bright) state and
+                // stop the timer until a tab starts working again.
                 self.workingPulseIsBright = false
+                self.pulseTimer?.invalidate()
+                self.pulseTimer = nil
                 return
             }
 
             self.workingPulseIsBright.toggle()
             // Refresh only the titles of working tabs; rebuilding every
             // button twice a second thrashes the view hierarchy.
-            for (index, tab) in self.tabs.enumerated() where tab.agentState == .working {
-                guard index < self.tabButtons.count else { continue }
-                self.tabButtons[index].attributedTitle = self.makeAttributedTitle(for: tab)
+            for index in workingIndices where index < self.tabButtons.count {
+                self.tabButtons[index].attributedTitle = self.makeAttributedTitle(for: self.tabs[index])
             }
             }
         }
@@ -120,6 +126,11 @@ class TabBarView: NSView {
         self.tabs = tabs
         self.activeTabIndex = activeIndex
         rebuildTabButtons()
+        // Start pulsing when something is working; the timer stops itself when
+        // nothing is.
+        if tabs.contains(where: { $0.agentState == .working }) {
+            ensurePulseTimer()
+        }
     }
 
     private func rebuildTabButtons() {

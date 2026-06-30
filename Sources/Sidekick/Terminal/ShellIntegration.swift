@@ -33,7 +33,7 @@ enum ShellIntegration {
             try zshScript.write(to: zshScriptURL, atomically: true, encoding: .utf8)
             try bashScript.write(to: bashScriptURL, atomically: true, encoding: .utf8)
         } catch {
-            print("ShellIntegration: failed to write scripts: \(error)")
+            Log.error("ShellIntegration: failed to write scripts: \(error)", category: "terminal")
         }
     }
 
@@ -97,6 +97,21 @@ autoload -Uz add-zsh-hook
 add-zsh-hook precmd __sidekick_precmd
 add-zsh-hook preexec __sidekick_preexec
 add-zsh-hook chpwd __sidekick_report_cwd
+
+# Apply Sidekick's auto-approve preference only to claude sessions started in a
+# Sidekick pane (scoped via this env var; never touches claude run elsewhere).
+# A caller's own --permission-mode wins.
+if [[ -n "$SIDEKICK_CLAUDE_PERMISSION_MODE" ]]; then
+    claude() {
+        local arg
+        for arg in "$@"; do
+            case "$arg" in
+                --permission-mode|--permission-mode=*) command claude "$@"; return ;;
+            esac
+        done
+        command claude --permission-mode "$SIDEKICK_CLAUDE_PERMISSION_MODE" "$@"
+    }
+fi
 """#
 
     private static let bashScript = #"""
@@ -135,5 +150,20 @@ __sidekick_precmd() {
 
 trap '__sidekick_preexec' DEBUG
 PROMPT_COMMAND="__sidekick_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+
+# Apply Sidekick's auto-approve preference only to claude sessions started in a
+# Sidekick pane (scoped via this env var; never touches claude run elsewhere).
+# A caller's own --permission-mode wins.
+if [[ -n "$SIDEKICK_CLAUDE_PERMISSION_MODE" ]]; then
+    claude() {
+        local arg
+        for arg in "$@"; do
+            case "$arg" in
+                --permission-mode|--permission-mode=*) command claude "$@"; return ;;
+            esac
+        done
+        command claude --permission-mode "$SIDEKICK_CLAUDE_PERMISSION_MODE" "$@"
+    }
+fi
 """#
 }

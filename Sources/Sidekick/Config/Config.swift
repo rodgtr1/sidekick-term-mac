@@ -145,14 +145,16 @@ show_hidden_files = false
 
 [approval]
 # mode: whether agents launched in panes prompt before applying file edits.
-# Sidekick writes Claude Code's permissions.defaultMode in ~/.claude/settings.json;
-# Claude reads it at launch, so a change applies to the next agent started in a
+# Sidekick passes Claude Code's --permission-mode only to claude sessions started
+# inside Sidekick (interactive panes via the shell-integration wrapper, launched
+# workers via the argv) — it no longer touches global ~/.claude/settings.json, so
+# claude run outside Sidekick is unaffected. Applies to the next agent started in a
 # pane, not running ones.
 #   "ask"    — leave Claude Code's normal per-edit prompting in place (default)
-#   "auto"   — defaultMode = "acceptEdits": file edits apply without a prompt
+#   "auto"   — --permission-mode acceptEdits: file edits apply without a prompt
 #              (risky Bash like `git push` still prompts). Works even on
 #              corporate machines that disable bypass mode.
-#   "bypass" — defaultMode = "bypassPermissions": no prompts at all. Falls back
+#   "bypass" — --permission-mode bypassPermissions: no prompts at all. Falls back
 #              to "acceptEdits" when a managed policy disables bypass mode.
 #   A managed/enterprise policy that pins defaultMode wins regardless, so on a
 #   fully locked-down machine prompts may remain. Unrecognized values fall back

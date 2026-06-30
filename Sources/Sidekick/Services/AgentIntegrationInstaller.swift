@@ -170,28 +170,31 @@ enum AgentIntegrationInstaller {
     /// only these, leaving a user's own pick (e.g. "plan") intact.
     static let managedModes: Set<String> = [autoApproveMode, bypassMode]
 
-    /// Reflects Sidekick's approval preference into Claude Code's own permission
-    /// system by writing `permissions.defaultMode` in `~/.claude/settings.json`.
-    /// Claude reads this at launch, so it takes effect for the next `claude`
-    /// session started in a pane — Sidekick never sees the agent's edits itself,
-    /// so this is the only lever that actually suppresses the in-terminal prompts.
+    /// The `--permission-mode` value to apply to `claude` sessions launched from
+    /// within Sidekick, or `nil` for normal prompting. This is the *scoped*
+    /// replacement for writing `permissions.defaultMode` globally: Sidekick passes
+    /// it per-session (env var + shell wrapper for interactive panes, argv flag for
+    /// Sidekick-launched workers) so it never affects `claude` run outside Sidekick.
     ///
-    /// `desired` is the mode to write, or `nil` to restore Claude's normal
-    /// prompting. When `bypassPermissions` is requested but a managed policy
-    /// disables it, we fall back to `acceptEdits` so a locked-down machine still
-    /// gets the strongest available silencing instead of a rejected launch.
-    ///
-    /// No-ops when Claude Code isn't present. A managed/enterprise policy that
-    /// pins `defaultMode` wins regardless (managed settings outrank user
-    /// settings), so on a fully locked-down machine this writes the user file
-    /// but prompts remain — by design, not an error.
-    static func syncClaudeAutoApprove(desiredMode desired: String?) throws {
-        guard directoryExists(home.appendingPathComponent(".claude")) else { return }
-
-        var target = desired
+    /// When `bypassPermissions` is requested but a managed/enterprise policy
+    /// disables it, falls back to `acceptEdits` so a locked-down machine still gets
+    /// the strongest available silencing instead of a rejected launch.
+    static func claudePermissionMode(forApprovalMode mode: String) -> String? {
+        guard let target = claudeMode(forApprovalMode: mode) else { return nil }
         if target == bypassMode, managedBypassDisabled() {
-            target = autoApproveMode
+            return autoApproveMode
         }
+        return target
+    }
+
+    /// Removes any Sidekick-managed `permissions.defaultMode` (acceptEdits /
+    /// bypassPermissions) left in the global `~/.claude/settings.json` by older
+    /// versions, which disabled prompts for *every* `claude` session machine-wide.
+    /// Permission mode is now scoped to Sidekick sessions via `claudePermissionMode`,
+    /// so this just migrates old global state back to clean. A user's own,
+    /// unmanaged pick (e.g. "plan") is left intact. No-ops when Claude isn't present.
+    static func clearManagedClaudeDefaultMode() throws {
+        guard directoryExists(home.appendingPathComponent(".claude")) else { return }
 
         let settingsURL = home.appendingPathComponent(".claude/settings.json")
         var settings: [String: Any] = [:]
@@ -202,8 +205,8 @@ enum AgentIntegrationInstaller {
             settings = parsed
         }
 
-        // Nothing to persist when the desired mode is already in place.
-        guard applyAutoApproveMode(to: &settings, desiredMode: target) else { return }
+        // Nothing managed to clear.
+        guard applyAutoApproveMode(to: &settings, desiredMode: nil) else { return }
 
         let data = try JSONSerialization.data(
             withJSONObject: settings,
@@ -213,7 +216,7 @@ enum AgentIntegrationInstaller {
             at: settingsURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try data.write(to: settingsURL)
+        try data.write(to: settingsURL, options: .atomic)
     }
 
     /// Pure core of `syncClaudeAutoApprove`: mutates a parsed settings dict to
@@ -425,7 +428,7 @@ enum AgentIntegrationInstaller {
             at: settingsURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try data.write(to: settingsURL)
+        try data.write(to: settingsURL, options: .atomic)
     }
 
     /// Appends a command hook group for `event` unless an equivalent hook is

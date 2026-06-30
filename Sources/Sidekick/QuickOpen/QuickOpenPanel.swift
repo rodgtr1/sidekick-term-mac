@@ -233,14 +233,21 @@ class QuickOpenPanel: NSPanel {
             "/opt/local/bin/fd"
         ]) {
             task.executableURL = fdURL
+            // Pass the query to fd as a subsequence regex matched against the full
+            // path, so the file the user typed is actually in the result set. The
+            // old match-all "." + low cap returned 50 arbitrary files and filtered
+            // client-side, so the target usually never appeared. A larger cap still
+            // bounds pathological matches; client-side scoring ranks what's left.
             task.arguments = [
                 "--type", "f",
-                "--max-results", String(maxResults),
+                "--full-path",
+                "--ignore-case",
+                "--max-results", String(fdCandidateCap),
                 "--exclude", ".git",
                 "--exclude", "node_modules",
                 "--exclude", ".build",
                 "--exclude", "target",
-                ".",
+                Self.fuzzyRegex(for: searchText),
                 currentWorkingDirectory
             ]
         } else {
@@ -265,12 +272,16 @@ class QuickOpenPanel: NSPanel {
 
         do {
             try task.run()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-
-            DispatchQueue.main.async { [weak self] in
-                self?.parseFileResults(data, searchText: searchText)
+            // Drain off the main thread: reading to EOF on the main queue froze the
+            // UI for the whole walk on large trees. Discard stale results if a newer
+            // query started (findTask !== task), mirroring SearchPanelViewController.
+            DispatchQueue.global(qos: .userInitiated).async { [weak self, task] in
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                task.waitUntilExit()
+                DispatchQueue.main.async {
+                    guard let self = self, self.findTask === task else { return }
+                    self.parseFileResults(data, searchText: searchText)
+                }
             }
         } catch {
             DispatchQueue.main.async { [weak self] in
@@ -278,6 +289,27 @@ class QuickOpenPanel: NSPanel {
                 self?.tableView.reloadData()
             }
         }
+    }
+
+    /// fd candidate ceiling. Higher than the display cap (`maxResults`) because
+    /// the query now pre-filters server-side; client-side scoring ranks these.
+    private var fdCandidateCap: Int { 500 }
+
+    /// Builds a case-insensitive subsequence regex from `query` so fd returns any
+    /// path whose characters appear in order (fuzzy match), e.g. "edsyn" matches
+    /// "Editor/SyntaxHighlighter.swift". Regex metacharacters are escaped.
+    static func fuzzyRegex(for query: String) -> String {
+        query.map { ch -> String in
+            let s = String(ch)
+            return NSRegularExpression.escapedPattern(for: s)
+        }.joined(separator: ".*")
+    }
+
+    /// Path relative to `root`, tolerant of a trailing slash on `root`. Returns
+    /// the original path when it isn't under `root`.
+    static func relativePath(of fullPath: String, under root: String) -> String {
+        guard fullPath.hasPrefix(root) else { return fullPath }
+        return String(fullPath.dropFirst(root.count).drop(while: { $0 == "/" }))
     }
 
     private func parseFileResults(_ data: Data, searchText: String) {
@@ -297,13 +329,16 @@ class QuickOpenPanel: NSPanel {
             let url = URL(fileURLWithPath: trimmedLine)
             let fileName = url.lastPathComponent
             let directory = url.deletingLastPathComponent().lastPathComponent
+            let relativePath = Self.relativePath(of: trimmedLine, under: currentWorkingDirectory)
 
-            // Calculate fuzzy match score
-            let score = calculateFuzzyScore(fileName: fileName, searchText: searchText)
+            // Score the filename and the relative path; take the better, with a
+            // directory-only match discounted so filename hits still rank on top.
+            // (fd now matches on the full path, so some results match only via a
+            // directory component — keep those, just below true filename matches.)
+            let nameScore = calculateFuzzyScore(fileName: fileName, searchText: searchText)
+            let pathScore = calculateFuzzyScore(fileName: relativePath, searchText: searchText)
+            let score = max(nameScore, pathScore / 2)
             guard score > 0 else { continue }
-
-            let relativePath = trimmedLine.hasPrefix(currentWorkingDirectory) ?
-                String(trimmedLine.dropFirst(currentWorkingDirectory.count + 1)) : trimmedLine
 
             let result = FileResult(
                 path: trimmedLine,

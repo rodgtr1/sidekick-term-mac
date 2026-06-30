@@ -50,7 +50,6 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     fi
     sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-ctl" /usr/local/bin/sidekick-ctl
     sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-agent-status" /usr/local/bin/sidekick-agent-status
-    sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-hook" /usr/local/bin/sidekick-hook
     echo "✅ CLI tools installed"
 fi
 

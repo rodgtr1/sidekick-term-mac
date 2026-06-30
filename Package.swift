@@ -10,7 +10,6 @@ let package = Package(
         .executable(name: "Sidekick", targets: ["Sidekick"]),
         .executable(name: "sidekick-ctl", targets: ["SidekickCtl"]),
         .executable(name: "sidekick-agent-status", targets: ["SidekickAgentStatus"]),
-        .executable(name: "sidekick-hook", targets: ["SidekickHook"]),
         .executable(name: "sidekick-mcp", targets: ["SidekickMCP"]),
         .executable(name: "sidekick-telemetry", targets: ["SidekickTelemetry"]),
     ],
@@ -84,8 +83,18 @@ let package = Package(
                 .unsafeFlags(["-swift-version", "6"])
             ]
         ),
+        // Shared Unix-socket client for the CLI helpers (one correct copy of the
+        // connect/write/read plumbing instead of four drifting ones).
+        .target(
+            name: "SidekickIPCCore",
+            path: "Sources/SidekickIPCCore",
+            swiftSettings: [
+                .unsafeFlags(["-swift-version", "6"])
+            ]
+        ),
         .executableTarget(
             name: "SidekickCtl",
+            dependencies: ["SidekickIPCCore"],
             path: "Sources/sidekick-ctl",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])
@@ -99,14 +108,8 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "SidekickHook",
-            path: "Sources/sidekick-hook",
-            swiftSettings: [
-                .unsafeFlags(["-swift-version", "6"])
-            ]
-        ),
-        .executableTarget(
             name: "SidekickMCP",
+            dependencies: ["SidekickIPCCore"],
             path: "Sources/sidekick-mcp",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])
@@ -114,7 +117,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "SidekickTelemetry",
-            dependencies: ["SidekickTelemetryCore"],
+            dependencies: ["SidekickTelemetryCore", "SidekickIPCCore"],
             path: "Sources/sidekick-telemetry",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])

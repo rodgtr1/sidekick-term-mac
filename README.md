@@ -56,12 +56,6 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - Autosaves every minute and on window close; restores on launch
 - Disable with `restore_session = false` under `[behavior]` in config.toml
 
-✅ **Agent Edit Review (Claude Code hook)**
-- `sidekick-hook` is a PreToolUse hook for Write/Edit/MultiEdit: the proposed
-  change appears as a diff sheet in Sidekick with Accept/Reject buttons
-- Reject blocks the edit (exit 2); if Sidekick isn't running the edit is allowed
-- Install with `scripts/install-agent-status-hooks`
-
 ✅ **MCP Server (`sidekick-mcp`)**
 - A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes
   Sidekick's pane orchestration as native tools, so any MCP client (Claude
@@ -292,7 +286,8 @@ Sidekick.app/
 │   │   ├── Sidekick                # Main GUI application
 │   │   ├── sidekick-ctl            # CLI utility
 │   │   ├── sidekick-agent-status   # Agent state reporter (used by hooks)
-│   │   └── sidekick-hook           # Claude PreToolUse edit review
+│   │   ├── sidekick-mcp            # MCP server (pane orchestration)
+│   │   └── sidekick-telemetry      # Stop-hook token/cost reporter
 │   └── Resources/
 │       └── AppIcon.icns            # App icon
 ```

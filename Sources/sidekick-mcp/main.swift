@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+import SidekickIPCCore
 
 /// sidekick-mcp — a Model Context Protocol server that exposes Sidekick's
 /// pane-orchestration verbs as MCP tools.
@@ -22,64 +22,7 @@ func logLine(_ message: String) {
 
 // MARK: - IPC client (talks to the running Sidekick over its Unix socket)
 
-private final class IPCClient {
-    private let socketPath: String
-    init(socketPath: String) { self.socketPath = socketPath }
-
-    /// Sends one newline-terminated JSON request and reads the newline-terminated
-    /// JSON reply. Returns nil if Sidekick isn't reachable.
-    func send(_ command: [String: Any]) -> [String: Any]? {
-        let socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard socketFD >= 0 else { return nil }
-        defer { close(socketFD) }
-
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let maxPathLength = MemoryLayout.size(ofValue: address.sun_path)
-        guard socketPath.utf8CString.count <= maxPathLength else { return nil }
-        socketPath.withCString { path in
-            withUnsafeMutablePointer(to: &address.sun_path.0) { destination in
-                strncpy(destination, path, maxPathLength - 1)
-                destination[maxPathLength - 1] = 0
-            }
-        }
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(socketFD, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard connected == 0,
-              var payload = try? JSONSerialization.data(withJSONObject: command) else { return nil }
-        payload.append(UInt8(ascii: "\n"))
-        let wroteAll = payload.withUnsafeBytes { bytes -> Bool in
-            guard var cursor = bytes.baseAddress else { return false }
-            var remaining = bytes.count
-            while remaining > 0 {
-                let count = write(socketFD, cursor, remaining)
-                guard count > 0 else { return false }
-                cursor = cursor.advanced(by: count)
-                remaining -= count
-            }
-            return true
-        }
-        guard wroteAll else { return nil }
-        shutdown(socketFD, SHUT_WR)
-
-        var response = Data()
-        var buffer = [UInt8](repeating: 0, count: 4096)
-        while response.count < 16 * 1024 * 1024 {
-            let count = read(socketFD, &buffer, buffer.count)
-            if count <= 0 { break }
-            response.append(contentsOf: buffer[0..<count])
-            if buffer[0..<count].contains(UInt8(ascii: "\n")) { break }
-        }
-        return try? JSONSerialization.jsonObject(with: response) as? [String: Any]
-    }
-}
-
-private let socketPath = ProcessInfo.processInfo.environment["SIDEKICK_SOCKET_PATH"]
-    ?? NSString("~/.config/sidekick/sidekick.sock").expandingTildeInPath
-private let ipc = IPCClient(socketPath: socketPath)
+private let ipc = SidekickIPCClient()
 
 // MARK: - Tool catalog
 
@@ -375,7 +318,7 @@ private func handleToolsCall(id: Any, params: [String: Any]) {
 
 // MARK: - Main loop
 
-logLine("ready on \(socketPath)")
+logLine("ready on \(defaultSidekickSocketPath())")
 
 while let line = readLine(strippingNewline: true) {
     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)

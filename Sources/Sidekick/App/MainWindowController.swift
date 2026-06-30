@@ -209,12 +209,15 @@ class MainWindowController: NSWindowController {
     /// session's menu toggle) and whenever the state changes.
     private func syncAgentAutoApprove() {
         let mode = effectiveApprovalMode
+        // Scope Claude's permission mode to Sidekick-launched sessions instead of
+        // writing it into global settings: record the live value for new panes and
+        // migrate away any managed defaultMode an older build left machine-wide.
+        AgentApprovalState.claudePermissionMode =
+            AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: mode)
         do {
-            try AgentIntegrationInstaller.syncClaudeAutoApprove(
-                desiredMode: AgentIntegrationInstaller.claudeMode(forApprovalMode: mode)
-            )
+            try AgentIntegrationInstaller.clearManagedClaudeDefaultMode()
         } catch {
-            Log.debug("Failed to sync Claude auto-approve setting: \(error)", category: "app")
+            Log.debug("Failed to clear legacy Claude defaultMode: \(error)", category: "app")
         }
         do {
             try AgentIntegrationInstaller.syncCodexAutoApprove(forMode: mode)
@@ -294,6 +297,13 @@ class MainWindowController: NSWindowController {
         // Don't strand hook processes blocked on approval: let the coordinator
         // cancel the visible sheet and resolve the queue.
         automationCoordinator?.prepareForWindowClose()
+
+        // Tie Preferences to the main window's lifecycle. Otherwise it's a
+        // separate NSWindow that keeps the app alive (and visible) after the
+        // main window closes, so applicationShouldTerminateAfterLastWindowClosed
+        // never fires.
+        preferencesWindowController?.close()
+        preferencesWindowController = nil
     }
 
     private func setupUI() {
@@ -824,18 +834,20 @@ extension MainWindowController: SidebarContainerDelegate {
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestConnectCommand command: String) {
         createNewTab()
-        // Give the new shell a moment to start before typing the command.
+        // Send once the shell has actually drawn its prompt, rather than racing a
+        // fixed 0.8s delay (which dropped the command on a slow shell and dawdled
+        // on a fast one).
         let terminal = tabs[safe: activeTabIndex]?.activePane?.terminalViewController
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            terminal?.send(text: command + "\n")
-        }
+        terminal?.sendOnShellReady(command)
     }
 
     // MARK: Worktrees panel
 
     func sidebarContainerActiveRepoRoot(_ container: SidebarContainerView) -> String? {
         guard let cwd = tabController.currentWorkingDirectoryForNewTerminal() else { return nil }
-        return GitService().repositoryRoot(from: cwd)
+        // Cached: the worktrees panel asks for this on every refresh, and an
+        // uncached `git rev-parse` per call stalled the main thread.
+        return WorkspaceResolver.cachedGitRoot(from: cwd)
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenWorktree path: String) {
@@ -963,7 +975,7 @@ extension MainWindowController: SidebarContainerDelegate {
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
 
         guard exists && !isDirectory.boolValue else {
-            print("Attempted to open directory or non-existent file: \(url.path)")
+            Log.debug("Attempted to open directory or non-existent file: \(url.path)", category: "app")
             return
         }
 
@@ -1052,76 +1064,72 @@ extension MainWindowController: SidebarContainerDelegate {
             commandPalette = CommandPalettePanel()
         }
 
-        let actions: [PaletteAction] = [
-            PaletteAction(title: "New Tab", subtitle: "⌘T", symbolName: "plus.rectangle") { [weak self] in
-                self?.createNewTab()
-            },
-            PaletteAction(title: "Close Tab", subtitle: "⌘W", symbolName: "xmark.rectangle") { [weak self] in
-                guard let self = self else { return }
-                self.closeTab(index: self.activeTabIndex)
-            },
-            PaletteAction(title: "Split Pane Horizontally", subtitle: "⌘D", symbolName: "rectangle.split.2x1") { [weak self] in
-                self?.currentPaneSplitController?.splitPane(direction: .horizontal)
-            },
-            PaletteAction(title: "Split Pane Vertically", subtitle: "⇧⌘D", symbolName: "rectangle.split.1x2") { [weak self] in
-                self?.currentPaneSplitController?.splitPane(direction: .vertical)
-            },
-            PaletteAction(title: "Find in Terminal", subtitle: "⌘F", symbolName: "magnifyingglass") { [weak self] in
-                guard let self = self else { return }
-                self.tabs[safe: self.activeTabIndex]?.activePane?.terminalViewController?.showFindBar()
-            },
-            PaletteAction(title: "Jump to Previous Prompt", subtitle: "⌘↑", symbolName: "arrow.up.to.line") { [weak self] in
-                guard let self = self else { return }
-                self.tabs[safe: self.activeTabIndex]?.activePane?.terminalViewController?.scrollToPreviousPrompt()
-            },
-            PaletteAction(title: "Jump to Next Prompt", subtitle: "⌘↓", symbolName: "arrow.down.to.line") { [weak self] in
-                guard let self = self else { return }
-                self.tabs[safe: self.activeTabIndex]?.activePane?.terminalViewController?.scrollToNextPrompt()
-            },
-            PaletteAction(title: "Quick Open File", subtitle: "⌘P", symbolName: "doc.text.magnifyingglass") { [weak self] in
-                self?.showQuickOpen()
-            },
-            PaletteAction(title: "Show Files Panel", subtitle: "⇧⌘E", symbolName: "folder") { [weak self] in
-                self?.showPanel(.files)
-            },
-            PaletteAction(title: "Show Git Panel", subtitle: "⇧⌘G", symbolName: "arrow.branch") { [weak self] in
-                self?.showPanel(.git)
-            },
-            PaletteAction(title: "Show Search Panel", subtitle: "⇧⌘F", symbolName: "magnifyingglass.circle") { [weak self] in
-                self?.showPanel(.search)
-            },
-            PaletteAction(title: "Toggle Sidebar", subtitle: "⌘B", symbolName: "sidebar.left") { [weak self] in
-                self?.toggleSidebar()
-            },
-            PaletteAction(title: "Toggle Hidden Files", subtitle: "⇧⌘.", symbolName: "eye.slash") { [weak self] in
-                self?.sidebarContainerView.toggleHiddenFiles()
-            },
-            PaletteAction(title: "Zoom In", subtitle: "⌘=", symbolName: "plus.magnifyingglass") {
-                FontZoom.shared.zoomIn()
-            },
-            PaletteAction(title: "Zoom Out", subtitle: "⌘-", symbolName: "minus.magnifyingglass") {
-                FontZoom.shared.zoomOut()
-            },
-            PaletteAction(title: "Reset Zoom", subtitle: "⌘0", symbolName: "1.magnifyingglass") {
-                FontZoom.shared.reset()
-            },
-            PaletteAction(title: "Preferences", subtitle: "⌘,", symbolName: "gearshape") { [weak self] in
-                self?.showPreferences()
-            },
+        commandPalette?.show(relativeTo: window, actions: paletteActions())
+    }
+
+    /// The command-palette entries. Most route their action straight through
+    /// `performKeyboardCommand`, and all take their shortcut label from
+    /// `KeyboardCommand.displayShortcut`, so the palette can't drift from the
+    /// keyboard bindings the way the old hand-maintained ("⌘T") strings did.
+    /// Panel-show entries keep a bespoke action because the keyboard command
+    /// *toggles* the panel whereas the palette should always *show* it.
+    private func paletteActions() -> [PaletteAction] {
+        // (title, SF Symbol, command driving both the action and the shortcut label)
+        let routed: [(String, String, KeyboardCommand)] = [
+            ("New Tab", "plus.rectangle", .newTab),
+            ("Close Tab", "xmark.rectangle", .closeTab),
+            ("Split Pane Horizontally", "rectangle.split.2x1", .splitPane(.horizontal)),
+            ("Split Pane Vertically", "rectangle.split.1x2", .splitPane(.vertical)),
+            ("Find in Terminal", "magnifyingglass", .findInTerminal),
+            ("Jump to Previous Prompt", "arrow.up.to.line", .jumpToPrompt(previous: true)),
+            ("Jump to Next Prompt", "arrow.down.to.line", .jumpToPrompt(previous: false)),
+            ("Quick Open File", "doc.text.magnifyingglass", .quickOpen),
+            ("Toggle Sidebar", "sidebar.left", .toggleSidebar),
+            ("Toggle Hidden Files", "eye.slash", .toggleHiddenFiles),
+            ("Zoom In", "plus.magnifyingglass", .zoomIn),
+            ("Zoom Out", "minus.magnifyingglass", .zoomOut),
+            ("Reset Zoom", "1.magnifyingglass", .zoomReset),
+            ("Preferences", "gearshape", .preferences)
+        ]
+
+        var actions = routed.map { title, symbol, command in
+            PaletteAction(title: title, subtitle: command.displayShortcut, symbolName: symbol) { [weak self] in
+                self?.performKeyboardCommand(command)
+            }
+        }
+
+        // Panel-show entries: always show (not toggle), so keep explicit actions.
+        let panels: [(String, String, SidebarPanel)] = [
+            ("Show Files Panel", "folder", .files),
+            ("Show Git Panel", "arrow.branch", .git),
+            ("Show Search Panel", "magnifyingglass.circle", .search)
+        ]
+        actions.append(contentsOf: panels.map { title, symbol, panel in
+            PaletteAction(title: title, subtitle: KeyboardCommand.showPanel(panel).displayShortcut, symbolName: symbol) { [weak self] in
+                self?.showPanel(panel)
+            }
+        })
+
+        actions.append(
             PaletteAction(title: "Edit Config File", subtitle: "config.toml", symbolName: "doc.badge.gearshape") { [weak self] in
                 self?.openConfigFile()
             }
-        ]
-
-        commandPalette?.show(relativeTo: window, actions: actions)
+        )
+        return actions
     }
 
     func showPreferences() {
-        if preferencesWindowController == nil {
-            preferencesWindowController = PreferencesWindowController(config: config, mainWindowController: self)
+        // Reuse only a still-open window. The controller snapshots the config it
+        // was built with, so once it has closed (or config reloaded from disk),
+        // rebuild it from the current `config` rather than reopening a stale one.
+        if let existing = preferencesWindowController, existing.window?.isVisible == true {
+            existing.window?.makeKeyAndOrderFront(nil)
+            return
         }
 
-        preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
+        let controller = PreferencesWindowController(config: config, mainWindowController: self)
+        preferencesWindowController = controller
+        controller.window?.makeKeyAndOrderFront(nil)
     }
 
     func openConfigFile() {
@@ -1481,9 +1489,10 @@ extension MainWindowController: AutomationHost {
         config.telemetry?.resolvedRates() ?? TelemetryRates.defaults
     }
 
-    /// Flips the per-session auto-approve toggle. Menu-driven. Writes Claude
-    /// Code's permission mode so the change reaches agents launched afterward;
-    /// the next relaunch re-syncs from the persistent `[approval]` mode.
+    /// Flips the per-session auto-approve toggle. Menu-driven. Updates the scoped
+    /// Claude permission mode so the change reaches agents launched afterward in
+    /// Sidekick panes; the next relaunch re-syncs from the persistent `[approval]`
+    /// mode.
     func toggleAutoApproveEdits() {
         sessionAutoApproveEdits.toggle()
         syncAgentAutoApprove()

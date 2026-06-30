@@ -69,4 +69,30 @@ final class TreeSitterHighlighterTests: XCTestCase {
     func testUnsupportedLanguageReturnsNil() {
         XCTAssertNil(TreeSitterHighlighter._captureKinds(in: "x = 1", ext: "rb"))
     }
+
+    /// The query is restricted to the edited range's UTF-8 byte span. A multibyte
+    /// character on an earlier line makes UTF-8 byte offsets diverge from UTF-16,
+    /// so this proves the byte-range conversion is correct: the `func` keyword in
+    /// the dirty range must still be colored as a keyword.
+    func testSubRangeHighlightingWithMultibytePrefix() {
+        let source = "let café = \"☕\"\nfunc greet() {}\n"
+        let ns = source as NSString
+        let storage = NSTextStorage(string: source)
+        let scheme = SyntaxHighlighter.SyntaxColorScheme(
+            text: .black, background: .white, comment: .gray, keyword: .red,
+            string: .green, number: .blue, function: .purple, type: .orange
+        )
+        let dirty = ns.paragraphRange(for: ns.range(of: "func greet() {}"))
+
+        storage.beginEditing()
+        let ok = TreeSitterHighlighter.highlight(
+            textStorage: storage, fullText: ns, range: dirty, ext: "swift", scheme: scheme
+        )
+        storage.endEditing()
+
+        XCTAssertTrue(ok)
+        let funcLoc = ns.range(of: "func").location
+        let color = storage.attribute(.foregroundColor, at: funcLoc, effectiveRange: nil) as? NSColor
+        XCTAssertEqual(color, .red, "keyword in the dirty range should be highlighted")
+    }
 }

@@ -238,11 +238,15 @@ nonisolated final class GitService: Sendable {
     }
 
     static func parsePathFromDiffHeader(_ line: String) -> String? {
-        // Quoted form: diff --git "a/pa th" "b/pa th"
+        // Quoted form: diff --git "a/pa\tth" "b/pa\tth". git C-quotes the header
+        // path when it has special/non-ASCII bytes, so the extracted b-side must
+        // be run back through unquoteGitPath — otherwise the key here stays
+        // escaped while GitStatusEntry.path (already unquoted) does not, the
+        // lookup in diffsByPath misses, and the file shows a bogus "No changes".
         if let quotedRange = line.range(of: "\"b/", options: .backwards) {
             let tail = line[quotedRange.upperBound...]
             if let closingQuote = tail.lastIndex(of: "\"") {
-                return String(tail[..<closingQuote])
+                return unquoteGitPath("\"" + tail[..<closingQuote] + "\"")
             }
         }
         // Plain form: diff --git a/path b/path
@@ -253,11 +257,12 @@ nonisolated final class GitService: Sendable {
     }
 
     func stage(path: String, repositoryRoot: String) throws -> Bool {
-        try runGit(["add", path], repositoryRoot: repositoryRoot).succeeded
+        // `--` so a path like "-f" can't be parsed as a flag.
+        try runGit(["add", "--", path], repositoryRoot: repositoryRoot).succeeded
     }
 
     func unstage(path: String, repositoryRoot: String) throws -> Bool {
-        try runGit(["reset", "HEAD", path], repositoryRoot: repositoryRoot).succeeded
+        try runGit(["reset", "HEAD", "--", path], repositoryRoot: repositoryRoot).succeeded
     }
 
     func run(repositoryRoot: String, arguments: [String]) throws -> ProcessResult {
