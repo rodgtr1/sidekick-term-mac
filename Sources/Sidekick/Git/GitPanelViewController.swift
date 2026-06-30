@@ -270,8 +270,6 @@ class GitPanelViewController: NSViewController {
         commitButton.translatesAutoresizingMaskIntoConstraints = false
         commitContainer.addSubview(commitButton)
 
-        view.addSubview(commitContainer)
-
         NSLayoutConstraint.activate([
             commitLabel.topAnchor.constraint(equalTo: commitContainer.topAnchor, constant: 8),
             commitLabel.leadingAnchor.constraint(equalTo: commitContainer.leadingAnchor, constant: 12),

@@ -133,7 +133,6 @@ class MainWindowController: NSWindowController {
         let saved = UserDefaults.standard.double(forKey: MainWindowController.sidebarWidthDefaultsKey)
         return saved > 0 ? CGFloat(saved) : 240
     }()
-    private var editorViewController: EditorViewController?
     /// Owns the tab/pane tree, the per-tab split controllers, the tab lifecycle,
     /// and session save/restore. MWC reads it through the forwarders below and
     /// drives it for create/switch/close.

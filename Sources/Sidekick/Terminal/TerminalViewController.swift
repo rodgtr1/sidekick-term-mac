@@ -558,8 +558,6 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // Set delegate to receive process events
         terminalView.processDelegate = self
 
-        setupURLHandling()
-
         view.addSubview(terminalView)
 
         // Apply padding from config
@@ -812,11 +810,6 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         } else {
             print("Shell process vanished unexpectedly")
         }
-    }
-
-    private func setupURLHandling() {
-        // URL handling will be implemented later when SwiftTerm provides public APIs for text access
-        // For now, users can copy URLs manually and open them
     }
 
     /// Appends `chunk` to a rolling buffer, keeping roughly the last `cap`

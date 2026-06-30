@@ -26,13 +26,6 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - Pane navigation with Cmd+[ and Cmd+]
 - Up to 4 panes per tab
 
-✅ **Embedded Browser**
-- WKWebView-based browser in split pane (50/50 layout)
-- Navigation controls (back, forward, reload)
-- URL bar with search support
-- Opens alongside terminals and editors
-- Access with Cmd+Shift+O
-
 ✅ **Activity Bar + Sidebar**
 - VS Code-style activity bar with Files, Search, Git, Worktrees, Agents, and Hosts panels
 - File tree with git integration and hidden file toggle
@@ -133,9 +126,6 @@ A native macOS terminal application built with Swift and AppKit, featuring multi
 - `Cmd+Shift+G` - Git panel
 - `Cmd+Shift+F` - Search panel
 - `Cmd+Shift+R` - Run panel
-
-### Browser
-- `Cmd+Shift+O` - Split with browser (50/50 layout)
 
 ### File Operations
 - `Cmd+P` - Quick open file
@@ -370,7 +360,6 @@ ln -sf /Applications/Sidekick.app/Contents/MacOS/sidekick-ctl /usr/local/bin/sid
 - 📋 Phase 7: Search Panel
 - 📋 Phase 8: Quick Open (Cmd+P)
 - 📋 Phase 9: Task Runner Panel
-- 📋 Phase 10: Browser Panel (WKWebView)
 - 📋 Phase 11: IPC (Unix Socket)
 - 📋 Phase 12: Polish + Packaging
 
