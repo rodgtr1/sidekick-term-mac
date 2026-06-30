@@ -1,11 +1,19 @@
 import Cocoa
 import CoreServices
 
-private let fileTreeEventCallback: FSEventStreamCallback = { _, clientInfo, _, _, _, _ in
+private let fileTreeEventCallback: FSEventStreamCallback = { _, clientInfo, numEvents, eventPaths, eventFlags, _ in
     guard let clientInfo = clientInfo else { return }
     let controller = Unmanaged<FileTreeViewController>.fromOpaque(clientInfo).takeUnretainedValue()
-    DispatchQueue.main.async {
-        controller.scheduleRefreshFromFileEvent()
+
+    // Paths are CFStrings (we pass kFSEventStreamCreateFlagUseCFTypes). Copy the
+    // paths and flags out of the C buffers before hopping actors.
+    let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
+    let flags = Array(UnsafeBufferPointer(start: eventFlags, count: numEvents))
+
+    // The stream is dispatched to the main queue, so the callback already runs on
+    // the main actor — assert that to reach the controller's main-actor state.
+    MainActor.assumeIsolated {
+        controller.handleFileSystemEvents(paths: paths, flags: flags)
     }
 }
 
@@ -313,7 +321,11 @@ class FileTreeViewController: NSViewController {
         )
 
         let pathsToWatch = [path] as CFArray
-        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer)
+        let flags = FSEventStreamCreateFlags(
+            kFSEventStreamCreateFlagFileEvents
+                | kFSEventStreamCreateFlagNoDefer
+                | kFSEventStreamCreateFlagUseCFTypes
+        )
 
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
@@ -374,6 +386,57 @@ class FileTreeViewController: NSViewController {
         for child in node.children {
             expandLoadedItems(from: child)
         }
+    }
+
+    /// Decide whether a batch of FSEvents warrants rebuilding the tree. Most git
+    /// internals (`.git/index`, loose objects, refs, logs) don't change the
+    /// working-tree file *listing* we display, so refreshing on them just burns a
+    /// full rebuild + reloadData on the main thread — the staging/commit lag.
+    /// Only refresh for events that can actually change what's shown.
+    func handleFileSystemEvents(paths: [String], flags: [FSEventStreamEventFlags]) {
+        var relevant = false
+        for (index, flag) in flags.enumerated() {
+            // When FSEvents loses history or asks us to rescan, we can't reason
+            // about individual paths — refresh conservatively.
+            let mustRescan = FSEventStreamEventFlags(
+                kFSEventStreamEventFlagMustScanSubDirs
+                    | kFSEventStreamEventFlagUserDropped
+                    | kFSEventStreamEventFlagKernelDropped
+                    | kFSEventStreamEventFlagRootChanged
+            )
+            if flag & mustRescan != 0 {
+                relevant = true
+                break
+            }
+            let path = index < paths.count ? paths[index] : ""
+            if pathAffectsFileTree(path) {
+                relevant = true
+                break
+            }
+        }
+        guard relevant else { return }
+        scheduleRefreshFromFileEvent()
+    }
+
+    /// Whether a single changed path can affect the displayed tree.
+    private func pathAffectsFileTree(_ path: String) -> Bool {
+        // With hidden files shown, `.git` itself is part of the listing, so we
+        // can't filter changes under it.
+        guard !showHidden else { return true }
+
+        let gitDir = currentPath + "/.git"
+        // Anything outside the repo's `.git` directory affects the listing —
+        // including `.gitignore` files and the working-tree files a checkout
+        // adds/removes (those arrive as their own events). For worktrees and
+        // submodules `.git` is a file, so this prefix simply never matches and
+        // nothing is over-filtered.
+        guard path == gitDir || path.hasPrefix(gitDir + "/") else { return true }
+
+        // Inside `.git`: only ignore-rule changes alter what we display (which
+        // entries render dimmed). `.git/index` is intentionally NOT treated as
+        // relevant — that's the staging write we want to stop rebuilding on; a
+        // newly-tracked file keeps its prior dimming until the next real refresh.
+        return path.hasSuffix("/.git/info/exclude")
     }
 
     fileprivate func scheduleRefreshFromFileEvent() {

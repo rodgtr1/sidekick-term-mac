@@ -90,12 +90,23 @@ class GitStatusModel: ObservableObject {
     // Fallback poll for changes FSEvents can't see (e.g. edits over NFS).
     private let fallbackRefreshInterval: TimeInterval = 30.0
     private let refreshDebounce: TimeInterval = 0.3
+    // How long to keep ignoring watcher events after an app-owned git mutation
+    // finishes, so the mutation's own FSEvents (delivered up to the stream's
+    // latency late) don't trigger a redundant refresh on top of the explicit one.
+    private let watcherSettleDelay: TimeInterval = 0.6
     // Set on the main actor; torn down in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var refreshTimer: Timer?
     nonisolated(unsafe) private var eventStream: FSEventStreamRef?
     nonisolated(unsafe) private var pendingRefresh: DispatchWorkItem?
     private let gitService: GitService
     private var refreshGeneration: Int = 0
+    // Number of in-flight git mutations the app itself started. While > 0 (and
+    // for a short settle window after), watcher-driven refreshes are suppressed:
+    // those operations refresh explicitly when they finish, so reacting to their
+    // `.git` writes is redundant work that lands on the main thread mid-typing.
+    private var pendingMutationCount: Int = 0
+    private var watcherSuppressed: Bool = false
+    private var unsuppressWork: DispatchWorkItem?
 
     init(gitService: GitService = GitService()) {
         self.gitService = gitService
@@ -235,6 +246,9 @@ class GitStatusModel: ObservableObject {
     }
 
     private func scheduleDebouncedRefresh() {
+        // App-owned mutations (stage/commit/checkout/…) refresh themselves when
+        // they complete; ignore the `.git` churn they generate in the meantime.
+        guard !watcherSuppressed else { return }
         pendingRefresh?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.refreshStatus() }
@@ -279,7 +293,7 @@ class GitStatusModel: ObservableObject {
     func stageFile(_ file: GitFileItem) {
         executeGitCommand(["add", file.path]) { [weak self] success in
             if success {
-                self?.refreshStatus()
+                self?.refreshStatus(force: true)
             }
         }
     }
@@ -287,7 +301,7 @@ class GitStatusModel: ObservableObject {
     func unstageFile(_ file: GitFileItem) {
         executeGitCommand(["reset", "HEAD", file.path]) { [weak self] success in
             if success {
-                self?.refreshStatus()
+                self?.refreshStatus(force: true)
             }
         }
     }
@@ -295,7 +309,7 @@ class GitStatusModel: ObservableObject {
     func stageAllFiles() {
         executeGitCommand(["add", "."]) { [weak self] success in
             if success {
-                self?.refreshStatus()
+                self?.refreshStatus(force: true)
             }
         }
     }
@@ -303,7 +317,7 @@ class GitStatusModel: ObservableObject {
     func unstageAllFiles() {
         executeGitCommand(["reset", "HEAD"]) { [weak self] success in
             if success {
-                self?.refreshStatus()
+                self?.refreshStatus(force: true)
             }
         }
     }
@@ -317,7 +331,7 @@ class GitStatusModel: ObservableObject {
         executeGitCommand(["commit", "-m", message]) { [weak self] success in
             if success {
                 self?.commitMessage = ""
-                self?.refreshStatus()
+                self?.refreshStatus(force: true)
                 completion(true, nil)
             } else {
                 completion(false, "Failed to commit changes")
@@ -336,7 +350,7 @@ class GitStatusModel: ObservableObject {
                 do {
                     try FileManager.default.removeItem(atPath: fullPath)
                     DispatchQueue.main.async {
-                        MainActor.assumeIsolated { self?.refreshStatus() }
+                        MainActor.assumeIsolated { self?.refreshStatus(force: true) }
                     }
                 } catch {
                     let message = error.localizedDescription
@@ -356,7 +370,7 @@ class GitStatusModel: ObservableObject {
 
         executeGitCommand(command) { [weak self] success in
             if success {
-                self?.refreshStatus()
+                self?.refreshStatus(force: true)
             }
         }
     }
@@ -364,7 +378,7 @@ class GitStatusModel: ObservableObject {
     func pull(completion: @escaping @MainActor (Bool, String?) -> Void) {
         executeGitCommandWithOutput(["pull"]) { [weak self] success, output, errorOutput in
             if success {
-                self?.refreshStatus()
+                self?.refreshStatus(force: true)
                 completion(true, output)
             } else {
                 completion(false, errorOutput ?? "Failed to pull changes")
@@ -375,7 +389,7 @@ class GitStatusModel: ObservableObject {
     func push(completion: @escaping @MainActor (Bool, String?) -> Void) {
         executeGitCommandWithOutput(["push"]) { [weak self] success, output, errorOutput in
             if success {
-                self?.refreshStatus()
+                self?.refreshStatus(force: true)
                 completion(true, output)
             } else {
                 completion(false, errorOutput ?? "Failed to push changes")
@@ -386,7 +400,7 @@ class GitStatusModel: ObservableObject {
     func fetch(completion: @escaping @MainActor (Bool, String?) -> Void) {
         executeGitCommandWithOutput(["fetch"]) { [weak self] success, output, errorOutput in
             if success {
-                self?.refreshStatus()
+                self?.refreshStatus(force: true)
                 completion(true, output)
             } else {
                 completion(false, errorOutput ?? "Failed to fetch changes")
@@ -397,17 +411,22 @@ class GitStatusModel: ObservableObject {
     private func executeGitCommand(_ arguments: [String], completion: @escaping @MainActor (Bool) -> Void) {
         let service = gitService
         let repoPath = _repositoryPath
+        beginAppMutation()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let result = try service.run(repositoryRoot: repoPath, arguments: arguments)
                 let success = result.succeeded
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { completion(success) }
+                    MainActor.assumeIsolated {
+                        self?.endAppMutation()
+                        completion(success)
+                    }
                 }
             } catch {
                 let message = error.localizedDescription
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
+                        self?.endAppMutation()
                         self?.error = "Failed to execute git command: \(message)"
                         completion(false)
                     }
@@ -419,23 +438,49 @@ class GitStatusModel: ObservableObject {
     private func executeGitCommandWithOutput(_ arguments: [String], completion: @escaping @MainActor (Bool, String?, String?) -> Void) {
         let service = gitService
         let repoPath = _repositoryPath
+        beginAppMutation()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let result = try service.run(repositoryRoot: repoPath, arguments: arguments)
                 let success = result.succeeded
 
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { completion(success, result.stdout, result.stderr) }
+                    MainActor.assumeIsolated {
+                        self?.endAppMutation()
+                        completion(success, result.stdout, result.stderr)
+                    }
                 }
             } catch {
                 let message = error.localizedDescription
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
+                        self?.endAppMutation()
                         self?.error = "Failed to execute git command: \(message)"
                         completion(false, nil, message)
                     }
                 }
             }
         }
+    }
+
+    // MARK: - App-owned mutation suppression
+
+    private func beginAppMutation() {
+        pendingMutationCount += 1
+        watcherSuppressed = true
+        unsuppressWork?.cancel()
+        unsuppressWork = nil
+    }
+
+    private func endAppMutation() {
+        pendingMutationCount = max(0, pendingMutationCount - 1)
+        guard pendingMutationCount == 0 else { return }
+        // Keep suppressing briefly so trailing FSEvents from the finished
+        // mutation are swallowed; the caller's explicit refresh covers the update.
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.watcherSuppressed = false }
+        }
+        unsuppressWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + watcherSettleDelay, execute: work)
     }
 }
