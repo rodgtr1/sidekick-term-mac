@@ -13,7 +13,6 @@ class PreferencesWindowController: NSWindowController {
     private var opacitySlider: NSSlider!
     private var opacityLabel: NSTextField!
     private var blurCheckbox: NSButton!
-    private var showTeleportCheckbox: NSButton!
     private var restoreSessionCheckbox: NSButton!
     private var rawConfigButton: NSButton!
 
@@ -163,14 +162,6 @@ class PreferencesWindowController: NSWindowController {
         blurCheckbox.font = NSFont.systemFont(ofSize: 13)
         blurCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
-        showTeleportCheckbox = NSButton(
-            checkboxWithTitle: "Show Teleport hosts (tsh) in Hosts panel",
-            target: self,
-            action: #selector(showTeleportChanged(_:))
-        )
-        showTeleportCheckbox.font = NSFont.systemFont(ofSize: 13)
-        showTeleportCheckbox.translatesAutoresizingMaskIntoConstraints = false
-
         restoreSessionCheckbox = NSButton(
             checkboxWithTitle: "Reopen previous tabs on launch (off starts with one tab at ~/)",
             target: self,
@@ -192,7 +183,6 @@ class PreferencesWindowController: NSWindowController {
         generalView.addSubview(opacitySlider)
         generalView.addSubview(opacityLabel)
         generalView.addSubview(blurCheckbox)
-        generalView.addSubview(showTeleportCheckbox)
         generalView.addSubview(restoreSessionCheckbox)
         generalView.addSubview(rawConfigLabel)
         generalView.addSubview(rawConfigButton)
@@ -212,10 +202,7 @@ class PreferencesWindowController: NSWindowController {
             blurCheckbox.topAnchor.constraint(equalTo: opacitySlider.bottomAnchor, constant: 20),
             blurCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
 
-            showTeleportCheckbox.topAnchor.constraint(equalTo: blurCheckbox.bottomAnchor, constant: 12),
-            showTeleportCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
-
-            restoreSessionCheckbox.topAnchor.constraint(equalTo: showTeleportCheckbox.bottomAnchor, constant: 12),
+            restoreSessionCheckbox.topAnchor.constraint(equalTo: blurCheckbox.bottomAnchor, constant: 12),
             restoreSessionCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
 
             rawConfigLabel.topAnchor.constraint(equalTo: restoreSessionCheckbox.bottomAnchor, constant: 30),
@@ -757,9 +744,6 @@ class PreferencesWindowController: NSWindowController {
         // Load blur setting
         blurCheckbox.state = config.window.enableBlur ? .on : .off
 
-        // Load Teleport hosts setting
-        showTeleportCheckbox.state = (config.hosts?.showTeleport ?? false) ? .on : .off
-
         // Load session-restore setting
         restoreSessionCheckbox.state = config.behavior.restoreSession ? .on : .off
 
@@ -858,15 +842,6 @@ class PreferencesWindowController: NSWindowController {
 
     @objc private func restoreSessionChanged(_ sender: NSButton) {
         config.behavior.restoreSession = sender.state == .on
-        config.save()
-    }
-
-    @objc private func showTeleportChanged(_ sender: NSButton) {
-        if config.hosts == nil {
-            config.hosts = HostsConfig()
-        }
-        config.hosts?.showTeleport = sender.state == .on
-        mainWindowController?.applyRuntimeConfig(config)
         config.save()
     }
 

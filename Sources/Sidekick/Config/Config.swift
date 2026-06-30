@@ -11,7 +11,6 @@ public struct Config: Codable {
     public var shell: ShellConfig
     public var diff: DiffConfig
     public var editor: EditorConfig?  // Make optional for backwards compatibility
-    public var hosts: HostsConfig?  // Make optional for backwards compatibility
     public var approval: ApprovalConfig?  // Make optional for backwards compatibility
     public var telemetry: TelemetryConfig?  // Make optional for backwards compatibility
 
@@ -24,7 +23,6 @@ public struct Config: Codable {
         self.shell = ShellConfig()
         self.diff = DiffConfig()
         self.editor = EditorConfig()
-        self.hosts = HostsConfig()
         self.approval = ApprovalConfig()
         self.telemetry = TelemetryConfig()
     }
@@ -144,11 +142,6 @@ font_size = 13
 font_family = ""
 # show_hidden_files: true | false — show hidden/gitignored files (dimmed).
 show_hidden_files = false
-
-[hosts]
-# show_teleport: true | false — show Teleport nodes (from `tsh ls`) in the
-#   Hosts sidebar panel.
-show_teleport = false
 
 [approval]
 # mode: whether agents launched in panes prompt before applying file edits.
@@ -498,24 +491,6 @@ public struct EditorConfig: Codable {
         self.fontSize = try container.decodeIfPresent(Int.self, forKey: .fontSize) ?? 13
         self.showHiddenFiles = try container.decodeIfPresent(Bool.self, forKey: .showHiddenFiles) ?? false
         self.fontFamily = try container.decodeIfPresent(String.self, forKey: .fontFamily) ?? ""
-    }
-}
-
-// MARK: - Hosts Panel Configuration
-public struct HostsConfig: Codable {
-    public var showTeleport: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case showTeleport = "show_teleport"
-    }
-
-    public init() {
-        self.showTeleport = false
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.showTeleport = try container.decodeIfPresent(Bool.self, forKey: .showTeleport) ?? false
     }
 }
 

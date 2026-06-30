@@ -1,31 +1,11 @@
 import Cocoa
 
-/// A lock-guarded `Data` accumulator safe to mutate from a background pipe
-/// readability handler. Reference-typed so strict concurrency accepts the
-/// capture (a captured `var` mutated off the main actor is rejected even when
-/// lock-guarded); the lock makes the concurrent appends data-race free.
-private nonisolated final class LockedData: @unchecked Sendable {
-    private let lock = NSLock()
-    private var data = Data()
-
-    func append(_ chunk: Data) {
-        lock.lock(); defer { lock.unlock() }
-        data.append(chunk)
-    }
-
-    func snapshot() -> Data {
-        lock.lock(); defer { lock.unlock() }
-        return data
-    }
-}
-
 protocol HostsPanelDelegate: AnyObject {
     func hostsPanel(_ panel: HostsPanelViewController, didRequestConnectCommand command: String)
 }
 
-/// Sidebar panel listing connectable hosts: ~/.ssh/config entries and
-/// Teleport nodes from `tsh ls`. Clicking a host opens a new tab running
-/// the matching ssh / tsh ssh command.
+/// Sidebar panel listing connectable hosts from ~/.ssh/config. Clicking a
+/// host opens a new tab running the matching ssh command.
 final class HostsPanelViewController: NSViewController {
     weak var delegate: HostsPanelDelegate?
 
@@ -37,9 +17,6 @@ final class HostsPanelViewController: NSViewController {
 
     private var items: [Item] = []
     private var sshHosts: [String] = []
-    private var teleportNodes: [(name: String, detail: String?, command: String)] = []
-    private var teleportMessage: String?
-    private var showTeleport = false
 
     private var tableView: NSTableView!
     private var scrollView: NSScrollView!
@@ -122,27 +99,9 @@ final class HostsPanelViewController: NSViewController {
         refresh()
     }
 
-    /// Enables or disables the Teleport section. When disabled, tsh is never
-    /// invoked at all.
-    func setShowTeleport(_ show: Bool) {
-        guard show != showTeleport else { return }
-        showTeleport = show
-        if !show {
-            teleportNodes = []
-            teleportMessage = nil
-        }
-        if isViewLoaded {
-            refresh()
-        }
-    }
-
     func refresh() {
         sshHosts = Self.parseSSHConfigHosts()
         rebuildItems()
-
-        if showTeleport {
-            loadTeleportNodes()
-        }
     }
 
     private func rebuildItems() {
@@ -154,17 +113,6 @@ final class HostsPanelViewController: NSViewController {
         } else {
             for host in sshHosts {
                 newItems.append(.host(name: host, detail: nil, command: "ssh \(host)"))
-            }
-        }
-
-        if showTeleport {
-            newItems.append(.header("TELEPORT"))
-            if let message = teleportMessage {
-                newItems.append(.message(message))
-            } else {
-                for node in teleportNodes {
-                    newItems.append(.host(name: node.name, detail: node.detail, command: node.command))
-                }
             }
         }
 
@@ -195,148 +143,6 @@ final class HostsPanelViewController: NSViewController {
             }
         }
         return hosts
-    }
-
-    // MARK: - Teleport
-
-    private func loadTeleportNodes() {
-        guard let tshURL = ProcessRunner.executableURL(named: "tsh", commonPaths: [
-            "/opt/homebrew/bin/tsh",
-            "/usr/local/bin/tsh",
-            "/usr/bin/tsh"
-        ]) else {
-            teleportMessage = "tsh not found"
-            rebuildItems()
-            return
-        }
-
-        teleportMessage = "Loading…"
-        rebuildItems()
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            var nodes: [(String, String?, String)] = []
-            var message: String?
-
-            // `tsh ls` with an expired profile tries to reauthenticate
-            // interactively and hangs without a TTY — so check the local
-            // session state first, and put hard timeouts on both calls.
-            let status = Self.runTsh(tshURL, arguments: ["status"], timeout: 5)
-            if status.timedOut || status.exitCode != 0 {
-                message = status.timedOut
-                    ? "tsh not responding"
-                    : "Session expired — run `tsh login`"
-            } else {
-                let list = Self.runTsh(tshURL, arguments: ["ls", "--format=json"], timeout: 15)
-                if !list.timedOut, list.exitCode == 0,
-                   let parsed = try? JSONSerialization.jsonObject(with: list.stdout) as? [[String: Any]] {
-                    for entry in parsed {
-                        let spec = entry["spec"] as? [String: Any]
-                        let metadata = entry["metadata"] as? [String: Any]
-                        guard let hostname = spec?["hostname"] as? String
-                                ?? metadata?["name"] as? String else { continue }
-                        let labels = metadata?["labels"] as? [String: Any]
-
-                        // Beam instances list as nodes with a beam-<uuid>
-                        // hostname, but tsh ssh can't dial that — they connect
-                        // via `tsh beams ssh <alias>` using the friendly alias
-                        // from their labels.
-                        if let alias = labels?["teleport.internal/beams/alias"] as? String {
-                            nodes.append((alias, "Teleport Beam", "tsh beams ssh \(alias)"))
-                            continue
-                        }
-
-                        let labelText = labels?
-                            .map { "\($0.key)=\($0.value)" }
-                            .sorted()
-                            .joined(separator: " ")
-                        nodes.append((
-                            hostname,
-                            labelText?.isEmpty == false ? labelText : nil,
-                            "tsh ssh \(hostname)"
-                        ))
-                    }
-                    nodes.sort { $0.0 < $1.0 }
-                } else {
-                    message = list.timedOut ? "tsh ls timed out" : "Failed to list nodes"
-                }
-            }
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self, self.showTeleport else { return }
-                self.teleportNodes = nodes
-                self.teleportMessage = nodes.isEmpty ? (message ?? "No nodes") : nil
-                self.rebuildItems()
-            }
-        }
-    }
-
-    private struct TshResult {
-        let exitCode: Int32
-        let stdout: Data
-        let timedOut: Bool
-    }
-
-    /// Runs tsh with a hard timeout, killing the process if it hangs
-    /// (e.g. waiting for interactive reauthentication).
-    nonisolated private static func runTsh(_ url: URL, arguments: [String], timeout: TimeInterval) -> TshResult {
-        let task = Process()
-        task.executableURL = url
-        task.arguments = arguments
-        // Belt and suspenders: detach from any TTY-based prompting.
-        var environment = ProcessInfo.processInfo.environment
-        environment["TELEPORT_INTERACTIVE"] = "false"
-        task.environment = environment
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe()
-        task.standardInput = FileHandle.nullDevice
-
-        // Collect output with a readability handler instead of a blocking
-        // read-to-EOF: pipe FDs are inherited by any child process the app
-        // spawns while tsh runs (shells, git), and a long-lived child holding
-        // the write end means EOF never arrives even after tsh exits.
-        // A reference-typed, lock-guarded box instead of a captured `var`: the
-        // readability handler runs on a background queue, and strict concurrency
-        // rejects mutating a captured local from it (the lock alone isn't proof).
-        let buffer = LockedData()
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            if chunk.isEmpty {
-                handle.readabilityHandler = nil
-            } else {
-                buffer.append(chunk)
-            }
-        }
-
-        let exited = DispatchSemaphore(value: 0)
-        task.terminationHandler = { _ in exited.signal() }
-
-        do {
-            try task.run()
-        } catch {
-            pipe.fileHandleForReading.readabilityHandler = nil
-            return TshResult(exitCode: -1, stdout: Data(), timedOut: false)
-        }
-
-        // Wait on process exit, not pipe EOF, so the timeout always holds.
-        var timedOut = false
-        if exited.wait(timeout: .now() + timeout) == .timedOut {
-            timedOut = true
-            task.terminate()
-            if exited.wait(timeout: .now() + 2) == .timedOut {
-                kill(task.processIdentifier, SIGKILL)
-                _ = exited.wait(timeout: .now() + 2)
-            }
-        }
-
-        // Brief grace period so the handler drains any final output.
-        usleep(100_000)
-        pipe.fileHandleForReading.readabilityHandler = nil
-        let data = buffer.snapshot()
-
-        let exitCode = task.isRunning ? -1 : task.terminationStatus
-        return TshResult(exitCode: exitCode, stdout: data, timedOut: timedOut)
     }
 
     @objc private func rowDoubleClicked() {

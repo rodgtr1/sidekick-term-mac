@@ -429,9 +429,6 @@ font_family = ""             # empty = system monospaced font
 word_wrap = true             # true = word wrap, false = horizontal scroll
 font_size = 13               # built-in editor text size (points)
 show_hidden_files = false    # show hidden/gitignored files in the file tree (dimmed)
-
-[hosts]
-show_teleport = false        # show Teleport nodes (from `tsh ls`) in the Hosts panel
 ```
 
 ## Development

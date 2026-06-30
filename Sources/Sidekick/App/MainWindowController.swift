@@ -362,7 +362,6 @@ class MainWindowController: NSWindowController {
         sidebarContainerView = SidebarContainerView()
         sidebarContainerView.delegate = self
         sidebarContainerView.setVisible(false)
-        sidebarContainerView.setShowTeleportHosts(config.hosts?.showTeleport ?? false)
         sidebarContainerView.translatesAutoresizingMaskIntoConstraints = false
         window?.contentView?.addSubview(sidebarContainerView)
 
@@ -460,7 +459,6 @@ class MainWindowController: NSWindowController {
         configureWindowBackgroundEffect()
         activityBarView?.topInset = CGFloat(newConfig.window.padding)
         sidebarContainerView?.setShowHiddenFiles(newConfig.editor?.showHiddenFiles ?? false)
-        sidebarContainerView?.setShowTeleportHosts(newConfig.hosts?.showTeleport ?? false)
 
         for tab in tabs {
             for pane in tab.panes {
