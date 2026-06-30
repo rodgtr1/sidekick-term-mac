@@ -2,11 +2,19 @@ import Foundation
 import Cocoa
 import UniformTypeIdentifiers
 
-// Deliberately non-isolated: the file tree is built and walked on background
-// queues (see FileTreeViewController.loadFileTree) to keep directory scans off
-// the main thread. Access is serialized by that dispatch pattern, so the class
-// is an unchecked Sendable. Under the target's default MainActor isolation,
-// leaving this isolated makes loadChildren() trap when called off-main.
+// Deliberately non-isolated so directory scans can run off the main thread (see
+// FileTreeViewController). The threading contract that keeps this @unchecked
+// Sendable sound — without blanket locking — is:
+//
+//   • `children` / `isLoaded` are part of the live tree that AppKit's data
+//     source walks on the main thread, so they are only ever MUTATED on the
+//     main thread (`commitChildren`) — or on a node that is still DETACHED from
+//     the live tree (`loadSubtree`), where no other thread can observe it yet.
+//   • `scanChildren` performs the heavy directory I/O and returns a fresh array
+//     WITHOUT touching `self`, so it is safe to call from any queue.
+//
+// Under the target's default MainActor isolation, leaving this isolated would
+// make the background scans trap when called off-main, hence `nonisolated`.
 nonisolated final class FileTreeNode: @unchecked Sendable {
     let url: URL
     let name: String
@@ -16,7 +24,6 @@ nonisolated final class FileTreeNode: @unchecked Sendable {
     var children: [FileTreeNode] = []
     var isExpanded: Bool = false
     var isLoaded: Bool = false
-    var hasCheckedForChildren: Bool = false
 
     weak var parent: FileTreeNode?
 
@@ -53,15 +60,8 @@ nonisolated final class FileTreeNode: @unchecked Sendable {
         // Check if hidden (starts with .)
         self.isHidden = name.hasPrefix(".")
 
-        // For directories, we'll lazy load children
-        if self.isDirectory {
-            self.isLoaded = false
-            // Quick check if directory has any content to show disclosure triangle
-            self.hasCheckedForChildren = false
-        } else {
-            self.isLoaded = true
-            self.hasCheckedForChildren = true
-        }
+        // Directories load their children lazily on expansion; files have none.
+        self.isLoaded = !self.isDirectory
     }
 
     /// Quick synchronous check if directory has any children (for showing disclosure triangle)
@@ -77,14 +77,13 @@ nonisolated final class FileTreeNode: @unchecked Sendable {
         return true
     }
 
-    func loadChildren(showHidden: Bool = false, gitIgnoreChecker: GitIgnoreChecker? = nil, completion: (() -> Void)? = nil) {
-        guard isDirectory && !isLoaded else {
-            completion?()
-            return
-        }
-
-        // Mark as checked since we're loading now
-        hasCheckedForChildren = true
+    /// Scans this directory and returns freshly built child nodes. Does NOT
+    /// mutate `self`, so it is safe to call from any queue (the heavy I/O is
+    /// meant to run off the main thread). Publish the result onto a live node
+    /// with `commitChildren(_:)` on the main thread, or build a detached subtree
+    /// with `loadSubtree(...)`.
+    func scanChildren(showHidden: Bool, gitIgnoreChecker: GitIgnoreChecker?) -> [FileTreeNode] {
+        guard isDirectory else { return [] }
 
         do {
             let contents = try FileManager.default.contentsOfDirectory(
@@ -92,8 +91,6 @@ nonisolated final class FileTreeNode: @unchecked Sendable {
                 includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey],
                 options: [.skipsPackageDescendants]
             )
-
-            var newChildren: [FileTreeNode] = []
 
             // Read the (already-fetched) resource values once per entry
             // instead of stat-ing inside the sort comparator and again in
@@ -109,6 +106,7 @@ nonisolated final class FileTreeNode: @unchecked Sendable {
                     return lhs.url.lastPathComponent.localizedCaseInsensitiveCompare(rhs.url.lastPathComponent) == .orderedAscending
                 }
 
+            var newChildren: [FileTreeNode] = []
             for entry in entries {
                 let child = FileTreeNode(url: entry.url, parent: self, isDirectory: entry.isDirectory)
 
@@ -128,42 +126,38 @@ nonisolated final class FileTreeNode: @unchecked Sendable {
                 newChildren.append(child)
             }
 
-            self.children = newChildren
-            self.isLoaded = true
-            completion?()
-
+            return newChildren
         } catch {
-            print("Error loading directory contents: \(error)")
-            self.isLoaded = true
-            completion?()
+            Log.error("Error loading directory contents for \(url.path): \(error)", category: "sidebar")
+            return []
         }
     }
 
-    func expand(showHidden: Bool = false, gitIgnoreChecker: GitIgnoreChecker? = nil, completion: (() -> Void)? = nil) {
-        guard isDirectory else {
-            completion?()
-            return
-        }
-
-        if !isLoaded {
-            loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker, completion: completion)
-        } else {
-            completion?()
-        }
-
-        isExpanded = true
+    /// Publishes scanned children onto a node that is already part of the live
+    /// tree. MUST run on the main thread: `children`/`isLoaded` are read by
+    /// AppKit's data source there, so the live tree is only mutated on main.
+    func commitChildren(_ newChildren: [FileTreeNode]) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        children = newChildren
+        isLoaded = true
     }
 
-    func collapse() {
-        isExpanded = false
-    }
+    /// Recursively builds this subtree, also loading any descendant directories
+    /// whose paths are in `expandedPaths` (used to restore expansion on
+    /// refresh). MUST only be called on a node that is still DETACHED from the
+    /// live tree — the background mutation of `children`/`isLoaded` is safe
+    /// precisely because no other thread can observe the node until it's
+    /// published (by assigning it as `rootNode` on the main thread).
+    func loadSubtree(expandedPaths: Set<String>, showHidden: Bool, gitIgnoreChecker: GitIgnoreChecker?) {
+        guard isDirectory, !isLoaded else { return }
 
-    func toggle(showHidden: Bool = false, gitIgnoreChecker: GitIgnoreChecker? = nil, completion: (() -> Void)? = nil) {
-        if isExpanded {
-            collapse()
-            completion?()
-        } else {
-            expand(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker, completion: completion)
+        let scanned = scanChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
+        children = scanned
+        isLoaded = true
+
+        for child in scanned where child.isDirectory && expandedPaths.contains(child.url.path) {
+            child.isExpanded = true
+            child.loadSubtree(expandedPaths: expandedPaths, showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
         }
     }
 

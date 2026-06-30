@@ -33,6 +33,9 @@ class FileTreeViewController: NSViewController {
     private var expandedPathsByRoot: [String: Set<String>] = [:]
     /// A file we want to expand-to and select once the tree is loaded.
     private var pendingRevealURL: URL?
+    /// Bumped on every full tree rebuild so a slow background build that has
+    /// been superseded by a newer one is discarded instead of clobbering it.
+    private var loadGeneration = 0
 
     override func loadView() {
         view = NSView()
@@ -137,74 +140,61 @@ class FileTreeViewController: NSViewController {
         if pathChanged {
             startWatching(path: displayPath)
         }
-        let url = URL(fileURLWithPath: displayPath)
-        Log.debug("🌳 Creating root node for: \(url.path)", category: "sidebar")
 
-        // Check if this is a git repository
-        let gitPath = url.appendingPathComponent(".git").path
-        if FileManager.default.fileExists(atPath: gitPath) {
-            gitIgnoreChecker = GitIgnoreChecker(rootPath: displayPath)
-            // Reload tree when git ignore data finishes loading
-            gitIgnoreChecker?.onLoadComplete = { [weak self] in
-                guard let self = self else { return }
-                Log.debug("🔄 GitIgnore data loaded, refreshing tree", category: "sidebar")
-                let expandedPaths = self.expandedDirectoryPaths()
-                // Reload the root node to apply git ignore filtering
-                self.rootNode?.isLoaded = false
-                guard let rootNode = self.rootNode else { return }
-                let showHidden = self.showHidden
-                let gitIgnoreChecker = self.gitIgnoreChecker
-                DispatchQueue.global(qos: .userInitiated).async { [weak self, weak rootNode] in
-                    rootNode?.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) {
-                        if let rootNode {
-                            self?.loadExpandedDescendants(
-                                from: rootNode,
-                                expandedPaths: expandedPaths,
-                                showHidden: showHidden,
-                                gitIgnoreChecker: gitIgnoreChecker
-                            )
-                        }
-                        DispatchQueue.main.async {
-                            guard let self = self,
-                                  let rootNode = rootNode,
-                                  self.rootNode === rootNode else { return }
-                            self.outlineView.reloadData()
-                            self.expandLoadedItems(from: rootNode)
-                            self.attemptRevealPending()
-                        }
-                    }
-                }
-            }
-        } else {
+        // (Re)create the gitignore checker for this root. It loads asynchronously
+        // and triggers another rebuild once ready to apply ignore filtering.
+        setupGitIgnoreChecker(for: displayPath)
+
+        rebuildTree(displayPath: displayPath, expandedPaths: expandedPaths)
+    }
+
+    /// Configures `gitIgnoreChecker` for `displayPath`: a checker for git repos
+    /// (which rebuilds the tree once its ignore data loads), or nil otherwise.
+    private func setupGitIgnoreChecker(for displayPath: String) {
+        let gitPath = URL(fileURLWithPath: displayPath).appendingPathComponent(".git").path
+        guard FileManager.default.fileExists(atPath: gitPath) else {
             gitIgnoreChecker = nil
+            return
         }
 
-        rootNode = FileTreeNode(url: url)
-        // Load the root's children synchronously so they're available immediately
-        rootNode?.isExpanded = true
-        guard let rootNodeToLoad = rootNode else { return }
-        let currentShowHidden = showHidden
-        let currentGitIgnoreChecker = gitIgnoreChecker
-        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak rootNodeToLoad] in
-            rootNodeToLoad?.loadChildren(showHidden: currentShowHidden, gitIgnoreChecker: currentGitIgnoreChecker) {
-                if let rootNodeToLoad = rootNodeToLoad {
-                    self?.loadExpandedDescendants(
-                        from: rootNodeToLoad,
-                        expandedPaths: expandedPaths,
-                        showHidden: currentShowHidden,
-                        gitIgnoreChecker: currentGitIgnoreChecker
-                    )
-                }
+        let checker = GitIgnoreChecker(rootPath: displayPath)
+        checker.onLoadComplete = { [weak self] in
+            guard let self = self, self.currentPath == displayPath else { return }
+            Log.debug("🔄 GitIgnore data loaded, refreshing tree", category: "sidebar")
+            // Rebuild applying ignore filtering, preserving the live expansion.
+            self.rebuildTree(displayPath: displayPath, expandedPaths: self.expandedDirectoryPaths())
+        }
+        gitIgnoreChecker = checker
+    }
 
-                DispatchQueue.main.async {
-                    guard let self = self, self.rootNode === rootNodeToLoad else { return }
-                    Log.debug("📁 Root node loaded with \(self.rootNode?.children.count ?? 0) children", category: "sidebar")
-                    self.outlineView.reloadData()
-                    if let rootNode = self.rootNode {
-                        self.expandLoadedItems(from: rootNode)
-                    }
-                    self.attemptRevealPending()
-                }
+    /// Builds a fresh tree for `displayPath` entirely off the main thread, then
+    /// swaps it in atomically on the main thread. The new tree is fully DETACHED
+    /// (never assigned to `rootNode` or seen by AppKit) until the swap, so the
+    /// background scan can never race the data source — which only ever reads the
+    /// live tree on the main thread. A generation token discards a build that a
+    /// newer rebuild has superseded.
+    private func rebuildTree(displayPath: String, expandedPaths: Set<String>) {
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let showHidden = self.showHidden
+        let gitIgnoreChecker = self.gitIgnoreChecker
+        let newRoot = FileTreeNode(url: URL(fileURLWithPath: displayPath))
+        newRoot.isExpanded = true
+        Log.debug("🌳 Rebuilding tree for: \(displayPath) (gen \(generation))", category: "sidebar")
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            newRoot.loadSubtree(
+                expandedPaths: expandedPaths,
+                showHidden: showHidden,
+                gitIgnoreChecker: gitIgnoreChecker
+            )
+            DispatchQueue.main.async {
+                guard let self = self, self.loadGeneration == generation else { return }
+                self.rootNode = newRoot
+                Log.debug("📁 Root node loaded with \(newRoot.children.count) children", category: "sidebar")
+                self.outlineView.reloadData()
+                self.expandLoadedItems(from: newRoot)
+                self.attemptRevealPending()
             }
         }
     }
@@ -287,18 +277,23 @@ class FileTreeViewController: NSViewController {
             outlineView.expandItem(child)
             revealStep(target: target, in: child)
         } else {
+            // Scan off-main, then commit onto the live `child` on main (the node
+            // is part of the displayed tree, so it must only be mutated there).
             let showHidden = self.showHidden
             let gitIgnoreChecker = self.gitIgnoreChecker
             DispatchQueue.global(qos: .userInitiated).async { [weak self, weak child] in
-                child?.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker) {
-                    DispatchQueue.main.async {
-                        guard let self = self, let child = child,
-                              self.pendingRevealURL == target else { return }
-                        child.isExpanded = true
-                        self.outlineView.reloadItem(child, reloadChildren: true)
-                        self.outlineView.expandItem(child)
-                        self.revealStep(target: target, in: child)
+                guard let scanTarget = child else { return }
+                let scanned = scanTarget.scanChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
+                DispatchQueue.main.async { [weak child] in
+                    guard let self = self, let child = child,
+                          self.pendingRevealURL == target else { return }
+                    if !child.isLoaded {
+                        child.commitChildren(scanned)
                     }
+                    child.isExpanded = true
+                    self.outlineView.reloadItem(child, reloadChildren: true)
+                    self.outlineView.expandItem(child)
+                    self.revealStep(target: target, in: child)
                 }
             }
         }
@@ -366,26 +361,6 @@ class FileTreeViewController: NSViewController {
 
         for child in node.children {
             collectExpandedDirectoryPaths(from: child, into: &paths)
-        }
-    }
-
-    private nonisolated func loadExpandedDescendants(
-        from node: FileTreeNode,
-        expandedPaths: Set<String>,
-        showHidden: Bool,
-        gitIgnoreChecker: GitIgnoreChecker?
-    ) {
-        guard node.isDirectory else { return }
-
-        for child in node.children where child.isDirectory && expandedPaths.contains(child.url.path) {
-            child.isExpanded = true
-            child.loadChildren(showHidden: showHidden, gitIgnoreChecker: gitIgnoreChecker)
-            loadExpandedDescendants(
-                from: child,
-                expandedPaths: expandedPaths,
-                showHidden: showHidden,
-                gitIgnoreChecker: gitIgnoreChecker
-            )
         }
     }
 
@@ -492,14 +467,24 @@ extension FileTreeViewController: NSOutlineViewDataSource {
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         if item == nil {
-            return rootNode!
+            return rootNode ?? NSNull()
         }
 
         guard let node = item as? FileTreeNode else {
             return NSNull()
         }
 
-        return node.children[index]
+        // The live tree is only mutated on the main thread now, so this is no
+        // longer racy — but AppKit can still ask for an index from a count it
+        // cached before an interleaved reload. Bounds-check defensively and
+        // return a placeholder instead of trapping; the next reload reconciles.
+        let children = node.children
+        guard index >= 0, index < children.count else {
+            Log.error("⚠️ child index \(index) out of range (count \(children.count)) for \(node.name)", category: "sidebar")
+            return NSNull()
+        }
+
+        return children[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
@@ -589,16 +574,23 @@ extension FileTreeViewController: NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
         guard let node = item as? FileTreeNode else { return false }
 
+        node.isExpanded = true
+
         if node.isDirectory && !node.isLoaded {
+            // Scan off-main, then commit onto the live `node` on main: the node is
+            // displayed, so its children/isLoaded must only be mutated there.
             let currentShowHidden = showHidden
             let currentGitIgnoreChecker = gitIgnoreChecker
             DispatchQueue.global(qos: .userInitiated).async { [weak self, weak node] in
-                node?.loadChildren(showHidden: currentShowHidden, gitIgnoreChecker: currentGitIgnoreChecker) {
-                    DispatchQueue.main.async {
-                        guard let self = self, let node = node else { return }
-                        self.outlineView.reloadItem(node, reloadChildren: true)
-                        self.outlineView.expandItem(node)
+                guard let scanTarget = node else { return }
+                let scanned = scanTarget.scanChildren(showHidden: currentShowHidden, gitIgnoreChecker: currentGitIgnoreChecker)
+                DispatchQueue.main.async { [weak node] in
+                    guard let self = self, let node = node else { return }
+                    if !node.isLoaded {
+                        node.commitChildren(scanned)
                     }
+                    self.outlineView.reloadItem(node, reloadChildren: true)
+                    self.outlineView.expandItem(node)
                 }
             }
         } else {
@@ -608,7 +600,6 @@ extension FileTreeViewController: NSOutlineViewDelegate {
             }
         }
 
-        node.isExpanded = true
         return true
     }
 
