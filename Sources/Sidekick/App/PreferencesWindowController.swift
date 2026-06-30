@@ -468,12 +468,14 @@ class PreferencesWindowController: NSWindowController {
         approvalModePopup.translatesAutoresizingMaskIntoConstraints = false
 
         let modeHelp = NSTextField(
-            labelWithString: "Auto-approve edits lets Claude Code apply file edits without prompting (it still asks for risky commands like git push). Auto-approve everything skips all prompts, falling back to edits-only where a corporate policy blocks it. Applies to agents started after the change; toggle edits per session from View ▸ Auto-approve Agent Edits (⇧⌘A), which resets on relaunch."
+            labelWithString: "Edits are applied without prompting; risky commands still ask. \"Everything\" skips all prompts. Applies to new agents — toggle per session with ⇧⌘A."
         )
         modeHelp.font = NSFont.systemFont(ofSize: 11)
         modeHelp.textColor = AppTheme.secondaryText
         modeHelp.lineBreakMode = .byWordWrapping
         modeHelp.maximumNumberOfLines = 6
+        modeHelp.preferredMaxLayoutWidth = 420
+        modeHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         modeHelp.translatesAutoresizingMaskIntoConstraints = false
 
         // Auto-allow globs
@@ -490,12 +492,14 @@ class PreferencesWindowController: NSWindowController {
         autoAllowField.translatesAutoresizingMaskIntoConstraints = false
 
         let autoAllowHelp = NSTextField(
-            labelWithString: "Approved silently even when asking. No effect when auto-approving everything."
+            labelWithString: "Approved silently in ask mode. Ignored when auto-approving everything."
         )
         autoAllowHelp.font = NSFont.systemFont(ofSize: 11)
         autoAllowHelp.textColor = AppTheme.secondaryText
         autoAllowHelp.lineBreakMode = .byWordWrapping
         autoAllowHelp.maximumNumberOfLines = 2
+        autoAllowHelp.preferredMaxLayoutWidth = 420
+        autoAllowHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         autoAllowHelp.translatesAutoresizingMaskIntoConstraints = false
 
         // Always-ask globs
@@ -512,12 +516,14 @@ class PreferencesWindowController: NSWindowController {
         alwaysAskField.translatesAutoresizingMaskIntoConstraints = false
 
         let alwaysAskHelp = NSTextField(
-            labelWithString: "Always show the popup for these, even when auto-approving. Highest precedence — good for secrets."
+            labelWithString: "Always prompts, even when auto-approving. Highest precedence — use for secrets."
         )
         alwaysAskHelp.font = NSFont.systemFont(ofSize: 11)
         alwaysAskHelp.textColor = AppTheme.secondaryText
         alwaysAskHelp.lineBreakMode = .byWordWrapping
         alwaysAskHelp.maximumNumberOfLines = 2
+        alwaysAskHelp.preferredMaxLayoutWidth = 420
+        alwaysAskHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         alwaysAskHelp.translatesAutoresizingMaskIntoConstraints = false
 
         approvalsView.addSubview(modeLabel)
