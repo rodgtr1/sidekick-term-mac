@@ -4,6 +4,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var mainWindowController: MainWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Ignore SIGPIPE process-wide. When an agent finishes and disconnects,
+        // the app may still write its IPC response to the now-closed socket;
+        // a raised SIGPIPE has no handler and kills the app with no crash
+        // report (always "on agent conclusion"). With SIG_IGN, write() returns
+        // -1/EPIPE instead and the sendResponse loop bails cleanly. This is
+        // stronger than the per-socket SO_NOSIGPIPE, which was observed to
+        // still leak the signal on the telemetry-report reply path.
+        signal(SIGPIPE, SIG_IGN)
+
         // Log uncaught ObjC exceptions to the persistent log so production
         // crashes leave a trace (see ~/Library/Logs/Sidekick/Sidekick.log).
         NSSetUncaughtExceptionHandler { exception in
