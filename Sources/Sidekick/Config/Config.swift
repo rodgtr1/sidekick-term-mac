@@ -151,12 +151,20 @@ show_hidden_files = false
 show_teleport = false
 
 [approval]
-# mode: how agent edits (the Write/Edit/MultiEdit PreToolUse hook) are reviewed:
-#   "ask"  — show Sidekick's diff-approval popup for every edit (default)
-#   "auto" — approve edits silently, no popup
-#   Unrecognized values fall back to "ask". Applies live (no relaunch needed).
-#   Also toggle per session from the menu — View ▸ Auto-approve Agent Edits
-#   (⇧⌘A); the menu reflects the effective state and resets on relaunch.
+# mode: whether agents launched in panes prompt before applying file edits.
+# Sidekick writes Claude Code's permissions.defaultMode in ~/.claude/settings.json;
+# Claude reads it at launch, so a change applies to the next agent started in a
+# pane, not running ones.
+#   "ask"    — leave Claude Code's normal per-edit prompting in place (default)
+#   "auto"   — defaultMode = "acceptEdits": file edits apply without a prompt
+#              (risky Bash like `git push` still prompts). Works even on
+#              corporate machines that disable bypass mode.
+#   "bypass" — defaultMode = "bypassPermissions": no prompts at all. Falls back
+#              to "acceptEdits" when a managed policy disables bypass mode.
+#   A managed/enterprise policy that pins defaultMode wins regardless, so on a
+#   fully locked-down machine prompts may remain. Unrecognized values fall back
+#   to "ask". Also toggle per session from the menu — View ▸ Auto-approve Agent
+#   Edits (⇧⌘A); that turns on "auto" for the session and resets on relaunch.
 mode = "ask"
 # Glob rules layered on top of `mode`, matched against each edited file path.
 # Patterns match anywhere in the path on a "/" boundary unless they start with
@@ -343,8 +351,12 @@ public struct BehaviorConfig: Codable {
 
 // MARK: - Approval Configuration
 nonisolated public struct ApprovalConfig: Codable, Sendable {
-    /// "ask" — show the review panel for every agent edit (default).
-    /// "auto" — allow edits without prompting.
+    /// How agents launched in panes prompt before acting:
+    /// "ask"    — leave Claude Code's normal per-edit prompting (default).
+    /// "auto"   — auto-approve file edits (maps to Claude's `acceptEdits`);
+    ///            risky Bash still prompts.
+    /// "bypass" — auto-approve everything (maps to Claude's `bypassPermissions`),
+    ///            falling back to `acceptEdits` where a managed policy blocks it.
     public var mode: String
 
     /// Globs whose edits are approved silently even while `mode = "ask"`.
@@ -375,8 +387,12 @@ nonisolated public struct ApprovalConfig: Codable, Sendable {
         alwaysAsk = try container.decodeIfPresent([String].self, forKey: .alwaysAsk) ?? alwaysAsk
     }
 
-    /// True when edits should be approved without a popup.
-    public var autoApprove: Bool { mode.lowercased() == "auto" }
+    /// True when edits should be approved without a popup — both "auto" and the
+    /// broader "bypass" auto-approve edits.
+    public var autoApprove: Bool {
+        let m = mode.lowercased()
+        return m == "auto" || m == "bypass"
+    }
 }
 
 // MARK: - Telemetry Configuration

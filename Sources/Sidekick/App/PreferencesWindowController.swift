@@ -471,18 +471,22 @@ class PreferencesWindowController: NSWindowController {
         modeLabel.translatesAutoresizingMaskIntoConstraints = false
 
         approvalModePopup = NSPopUpButton()
-        approvalModePopup.addItems(withTitles: ["Ask before every edit", "Auto-approve all edits"])
+        approvalModePopup.addItems(withTitles: [
+            "Ask before every edit",
+            "Auto-approve edits",
+            "Auto-approve everything (no prompts)"
+        ])
         approvalModePopup.target = self
         approvalModePopup.action = #selector(approvalModeChanged(_:))
         approvalModePopup.translatesAutoresizingMaskIntoConstraints = false
 
         let modeHelp = NSTextField(
-            labelWithString: "Toggle per session from View ▸ Auto-approve Agent Edits (⇧⌘A); that resets on relaunch."
+            labelWithString: "Auto-approve edits lets Claude Code apply file edits without prompting (it still asks for risky commands like git push). Auto-approve everything skips all prompts, falling back to edits-only where a corporate policy blocks it. Applies to agents started after the change; toggle edits per session from View ▸ Auto-approve Agent Edits (⇧⌘A), which resets on relaunch."
         )
         modeHelp.font = NSFont.systemFont(ofSize: 11)
         modeHelp.textColor = AppTheme.secondaryText
         modeHelp.lineBreakMode = .byWordWrapping
-        modeHelp.maximumNumberOfLines = 2
+        modeHelp.maximumNumberOfLines = 6
         modeHelp.translatesAutoresizingMaskIntoConstraints = false
 
         // Auto-allow globs
@@ -805,7 +809,7 @@ class PreferencesWindowController: NSWindowController {
 
         // Load approval settings (defaults when the section is absent).
         let approval = config.approval ?? ApprovalConfig()
-        approvalModePopup.selectItem(at: approval.autoApprove ? 1 : 0)
+        approvalModePopup.selectItem(at: Self.approvalModeIndex(approval.mode))
         autoAllowField.stringValue = approval.autoAllow.joined(separator: ", ")
         alwaysAskField.stringValue = approval.alwaysAsk.joined(separator: ", ")
 
@@ -960,9 +964,17 @@ class PreferencesWindowController: NSWindowController {
         config.save()
     }
 
+    /// Approval mode strings indexed to match the popup item order.
+    private static let approvalModes = ["ask", "auto", "bypass"]
+
+    private static func approvalModeIndex(_ mode: String) -> Int {
+        approvalModes.firstIndex(of: mode.lowercased()) ?? 0
+    }
+
     @objc private func approvalModeChanged(_ sender: NSPopUpButton) {
         ensureApprovalConfig()
-        config.approval?.mode = sender.indexOfSelectedItem == 1 ? "auto" : "ask"
+        let index = sender.indexOfSelectedItem
+        config.approval?.mode = Self.approvalModes[safe: index] ?? "ask"
         mainWindowController?.applyRuntimeConfig(config)
         config.save()
     }

@@ -88,6 +88,185 @@ final class AgentIntegrationInstallerTests: XCTestCase {
         XCTAssertEqual(hookCommands(hooks, event: "Notification"), ["/a/sidekick-agent-status ready"])
     }
 
+    // MARK: - Claude auto-approve permission mode
+
+    func testAutoApproveSetsAcceptEditsOnEmptySettings() {
+        var settings: [String: Any] = [:]
+        let changed = AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: "acceptEdits")
+
+        XCTAssertTrue(changed)
+        let permissions = settings["permissions"] as? [String: Any]
+        XCTAssertEqual(permissions?["defaultMode"] as? String, "acceptEdits")
+    }
+
+    func testAutoApprovePreservesOtherPermissionKeys() {
+        var settings: [String: Any] = ["permissions": ["allow": ["Edit"]]]
+        _ = AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: "acceptEdits")
+
+        let permissions = settings["permissions"] as? [String: Any]
+        XCTAssertEqual(permissions?["defaultMode"] as? String, "acceptEdits")
+        XCTAssertEqual(permissions?["allow"] as? [String], ["Edit"])
+    }
+
+    func testAutoApproveNoOpWhenAlreadyAcceptEdits() {
+        var settings: [String: Any] = ["permissions": ["defaultMode": "acceptEdits"]]
+        XCTAssertFalse(AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: "acceptEdits"))
+    }
+
+    func testAcceptEditsLeavesBroaderBypassMode() {
+        // bypassPermissions already auto-approves edits; don't downgrade it.
+        var settings: [String: Any] = ["permissions": ["defaultMode": "bypassPermissions"]]
+        XCTAssertFalse(AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: "acceptEdits"))
+        let permissions = settings["permissions"] as? [String: Any]
+        XCTAssertEqual(permissions?["defaultMode"] as? String, "bypassPermissions")
+    }
+
+    func testBypassSetsBypassPermissions() {
+        var settings: [String: Any] = [:]
+        let changed = AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: "bypassPermissions")
+
+        XCTAssertTrue(changed)
+        let permissions = settings["permissions"] as? [String: Any]
+        XCTAssertEqual(permissions?["defaultMode"] as? String, "bypassPermissions")
+    }
+
+    func testBypassUpgradesFromAcceptEdits() {
+        // Asking for full bypass while on acceptEdits must upgrade, not no-op.
+        var settings: [String: Any] = ["permissions": ["defaultMode": "acceptEdits"]]
+        let changed = AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: "bypassPermissions")
+
+        XCTAssertTrue(changed)
+        let permissions = settings["permissions"] as? [String: Any]
+        XCTAssertEqual(permissions?["defaultMode"] as? String, "bypassPermissions")
+    }
+
+    func testDisableRemovesManagedAcceptEditsMode() {
+        var settings: [String: Any] = ["permissions": ["defaultMode": "acceptEdits"]]
+        let changed = AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: nil)
+
+        XCTAssertTrue(changed)
+        // The permissions table is dropped once it's empty.
+        XCTAssertNil(settings["permissions"])
+    }
+
+    func testDisableRemovesManagedBypassMode() {
+        var settings: [String: Any] = ["permissions": ["defaultMode": "bypassPermissions"]]
+        let changed = AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: nil)
+
+        XCTAssertTrue(changed)
+        XCTAssertNil(settings["permissions"])
+    }
+
+    func testDisablePreservesUnmanagedMode() {
+        // We never set "plan"; turning prompting back on must not touch it.
+        var settings: [String: Any] = ["permissions": ["defaultMode": "plan"]]
+        XCTAssertFalse(AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: nil))
+        let permissions = settings["permissions"] as? [String: Any]
+        XCTAssertEqual(permissions?["defaultMode"] as? String, "plan")
+    }
+
+    func testDisableKeepsSiblingPermissionKeys() {
+        var settings: [String: Any] = ["permissions": ["defaultMode": "acceptEdits", "allow": ["Edit"]]]
+        let changed = AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: nil)
+
+        XCTAssertTrue(changed)
+        let permissions = settings["permissions"] as? [String: Any]
+        XCTAssertNil(permissions?["defaultMode"])
+        XCTAssertEqual(permissions?["allow"] as? [String], ["Edit"])
+    }
+
+    // MARK: - Codex auto-approve policy/sandbox keys
+
+    private func codexValue(_ config: String, _ key: String) -> String? {
+        for line in config.components(separatedBy: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("\(key) ") || t.hasPrefix("\(key)=") {
+                return t.components(separatedBy: "=").last?
+                    .trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
+        }
+        return nil
+    }
+
+    func testCodexAutoSetsWorkspaceWriteOnRequest() {
+        let result = AgentIntegrationInstaller.applyCodexAutoApprove(to: "", mode: "auto")
+        XCTAssertEqual(codexValue(result, "sandbox_mode"), "workspace-write")
+        XCTAssertEqual(codexValue(result, "approval_policy"), "on-request")
+    }
+
+    func testCodexBypassSetsDangerFullAccessNever() {
+        let result = AgentIntegrationInstaller.applyCodexAutoApprove(to: "", mode: "bypass")
+        XCTAssertEqual(codexValue(result, "sandbox_mode"), "danger-full-access")
+        XCTAssertEqual(codexValue(result, "approval_policy"), "never")
+    }
+
+    func testCodexKeysInsertedAheadOfTables() {
+        let config = """
+        [features]
+        hooks = true
+        """
+        let result = AgentIntegrationInstaller.applyCodexAutoApprove(to: config, mode: "auto")
+        // Top-level scalars must precede the first table header to stay top-level.
+        XCTAssertLessThan(
+            result.range(of: "sandbox_mode")!.lowerBound,
+            result.range(of: "[features]")!.lowerBound
+        )
+        XCTAssertTrue(result.contains("hooks = true"))
+    }
+
+    func testCodexAutoReplacesExistingKeysNoDuplicates() {
+        let config = """
+        sandbox_mode = "read-only"
+        approval_policy = "untrusted"
+
+        [features]
+        hooks = true
+        """
+        let result = AgentIntegrationInstaller.applyCodexAutoApprove(to: config, mode: "bypass")
+        XCTAssertEqual(codexValue(result, "sandbox_mode"), "danger-full-access")
+        XCTAssertEqual(codexValue(result, "approval_policy"), "never")
+        // Replaced in place, not appended.
+        let occurrences = result.components(separatedBy: "sandbox_mode").count - 1
+        XCTAssertEqual(occurrences, 1)
+    }
+
+    func testCodexAskRemovesOnlyOurManagedCombo() {
+        let config = """
+        sandbox_mode = "workspace-write"
+        approval_policy = "on-request"
+
+        [features]
+        hooks = true
+        """
+        let result = AgentIntegrationInstaller.applyCodexAutoApprove(to: config, mode: "ask")
+        XCTAssertNil(codexValue(result, "sandbox_mode"))
+        XCTAssertNil(codexValue(result, "approval_policy"))
+        XCTAssertTrue(result.contains("hooks = true"))
+    }
+
+    func testCodexAskPreservesUserPickedPolicy() {
+        // read-only/untrusted is not a combo we set, so leave it alone.
+        let config = """
+        sandbox_mode = "read-only"
+        approval_policy = "untrusted"
+        """
+        let result = AgentIntegrationInstaller.applyCodexAutoApprove(to: config, mode: "ask")
+        XCTAssertEqual(codexValue(result, "sandbox_mode"), "read-only")
+        XCTAssertEqual(codexValue(result, "approval_policy"), "untrusted")
+    }
+
+    func testCodexDoesNotTouchKeysInsideTables() {
+        // A key named like ours but inside a table is not top-level — leave it.
+        let config = """
+        [some_table]
+        sandbox_mode = "read-only"
+        """
+        let result = AgentIntegrationInstaller.applyCodexAutoApprove(to: config, mode: "ask")
+        XCTAssertTrue(result.contains("[some_table]"))
+        XCTAssertTrue(result.contains("sandbox_mode = \"read-only\""))
+    }
+
     // MARK: - Codex TOML features section
 
     func testCodexHooksEnabledAddedToEmptyConfig() {

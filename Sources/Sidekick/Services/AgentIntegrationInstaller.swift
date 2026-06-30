@@ -156,6 +156,236 @@ enum AgentIntegrationInstaller {
         ("PermissionRequest", "ready")
     ]
 
+    /// Claude Code's auto-approve-edits permission mode: silences the prompt for
+    /// file Edit/Write/MultiEdit while still asking for risky Bash, and — unlike
+    /// `bypassPermissions` — is not blocked by a corporate
+    /// `disableBypassPermissionsMode` policy, so it keeps working on locked-down
+    /// machines. Also the fallback when bypass is requested but disabled.
+    static let autoApproveMode = "acceptEdits"
+
+    /// Claude Code's "no prompts at all" permission mode.
+    static let bypassMode = "bypassPermissions"
+
+    /// The defaultMode values Sidekick manages. On returning to "ask" we clear
+    /// only these, leaving a user's own pick (e.g. "plan") intact.
+    static let managedModes: Set<String> = [autoApproveMode, bypassMode]
+
+    /// Reflects Sidekick's approval preference into Claude Code's own permission
+    /// system by writing `permissions.defaultMode` in `~/.claude/settings.json`.
+    /// Claude reads this at launch, so it takes effect for the next `claude`
+    /// session started in a pane — Sidekick never sees the agent's edits itself,
+    /// so this is the only lever that actually suppresses the in-terminal prompts.
+    ///
+    /// `desired` is the mode to write, or `nil` to restore Claude's normal
+    /// prompting. When `bypassPermissions` is requested but a managed policy
+    /// disables it, we fall back to `acceptEdits` so a locked-down machine still
+    /// gets the strongest available silencing instead of a rejected launch.
+    ///
+    /// No-ops when Claude Code isn't present. A managed/enterprise policy that
+    /// pins `defaultMode` wins regardless (managed settings outrank user
+    /// settings), so on a fully locked-down machine this writes the user file
+    /// but prompts remain — by design, not an error.
+    static func syncClaudeAutoApprove(desiredMode desired: String?) throws {
+        guard directoryExists(home.appendingPathComponent(".claude")) else { return }
+
+        var target = desired
+        if target == bypassMode, managedBypassDisabled() {
+            target = autoApproveMode
+        }
+
+        let settingsURL = home.appendingPathComponent(".claude/settings.json")
+        var settings: [String: Any] = [:]
+        if let data = try? Data(contentsOf: settingsURL), !data.isEmpty {
+            guard let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw InstallError.message("~/.claude/settings.json is not a JSON object.")
+            }
+            settings = parsed
+        }
+
+        // Nothing to persist when the desired mode is already in place.
+        guard applyAutoApproveMode(to: &settings, desiredMode: target) else { return }
+
+        let data = try JSONSerialization.data(
+            withJSONObject: settings,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try FileManager.default.createDirectory(
+            at: settingsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: settingsURL)
+    }
+
+    /// Pure core of `syncClaudeAutoApprove`: mutates a parsed settings dict to
+    /// the `desired` defaultMode (`nil` clears it) and returns whether anything
+    /// changed, so callers can skip a needless rewrite. Internal for tests.
+    static func applyAutoApproveMode(to settings: inout [String: Any], desiredMode desired: String?) -> Bool {
+        var permissions = settings["permissions"] as? [String: Any] ?? [:]
+        let current = permissions["defaultMode"] as? String
+
+        if let desired {
+            // acceptEdits is satisfied by the broader bypass too — don't downgrade.
+            if desired == autoApproveMode, current == autoApproveMode || current == bypassMode {
+                return false
+            }
+            if current == desired { return false }
+            permissions["defaultMode"] = desired
+        } else {
+            // Restoring prompting: clear only a mode we manage.
+            guard let current, managedModes.contains(current) else { return false }
+            permissions.removeValue(forKey: "defaultMode")
+        }
+
+        if permissions.isEmpty {
+            settings.removeValue(forKey: "permissions")
+        } else {
+            settings["permissions"] = permissions
+        }
+        return true
+    }
+
+    /// Whether a managed (enterprise) settings file disables `bypassPermissions`.
+    /// macOS reads `/Library/Application Support/ClaudeCode/managed-settings.json`;
+    /// when its `permissions.disableBypassPermissionsMode` is `"disable"`, writing
+    /// bypass to the user file would be rejected, so we fall back to acceptEdits.
+    private static func managedBypassDisabled() -> Bool {
+        let url = URL(fileURLWithPath: "/Library/Application Support/ClaudeCode/managed-settings.json")
+        guard let data = try? Data(contentsOf: url), !data.isEmpty,
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let permissions = parsed["permissions"] as? [String: Any] else {
+            return false
+        }
+        return (permissions["disableBypassPermissionsMode"] as? String) == "disable"
+    }
+
+    /// Maps a Sidekick approval level ("ask"/"auto"/"bypass") to the Claude Code
+    /// `permissions.defaultMode`, or `nil` for normal prompting. Centralizes the
+    /// agent-specific mapping so callers only deal in the abstract level.
+    static func claudeMode(forApprovalMode mode: String) -> String? {
+        switch mode.lowercased() {
+        case "auto": return autoApproveMode
+        case "bypass": return bypassMode
+        default: return nil
+        }
+    }
+
+    // MARK: - Codex auto-approve
+
+    /// Reflects a Sidekick approval level into Codex's own config by writing the
+    /// top-level `approval_policy` + `sandbox_mode` keys in `~/.codex/config.toml`.
+    /// Codex re-reads the file per launch, so this affects the next `codex`
+    /// started in a pane — the same model as the Claude path.
+    ///
+    /// Codex has no exact `acceptEdits` analog: its "auto" safety comes from the
+    /// sandbox (edits confined to the workspace), not per-command gating. Mapping:
+    ///   - "auto":   sandbox `workspace-write` + approval `on-request` (= --full-auto)
+    ///   - "bypass": sandbox `danger-full-access` + approval `never` (= --yolo)
+    ///   - "ask":    remove the keys we manage, restoring Codex's own behavior.
+    ///
+    /// No-ops when Codex isn't present. A managed `requirements.toml` policy that
+    /// disallows a value makes Codex silently downgrade to a permitted one and
+    /// notify the user, so locked-down machines degrade gracefully on their own.
+    static func syncCodexAutoApprove(forMode mode: String) throws {
+        guard directoryExists(home.appendingPathComponent(".codex")) else { return }
+
+        let configURL = home.appendingPathComponent(".codex/config.toml")
+        let original = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
+        let updated = applyCodexAutoApprove(to: original, mode: mode)
+        guard updated != original else { return }
+
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try updated.write(to: configURL, atomically: true, encoding: .utf8)
+    }
+
+    /// Codex (sandbox_mode, approval_policy) pairs Sidekick writes per level.
+    private static let codexAutoSettings = (sandbox: "workspace-write", approval: "on-request")
+    private static let codexBypassSettings = (sandbox: "danger-full-access", approval: "never")
+
+    /// Pure core of `syncCodexAutoApprove`: returns the config text with our two
+    /// keys set (auto/bypass) or removed (ask). Internal for tests.
+    static func applyCodexAutoApprove(to config: String, mode: String) -> String {
+        switch mode.lowercased() {
+        case "auto":
+            return setCodexKeys(in: config, codexAutoSettings)
+        case "bypass":
+            return setCodexKeys(in: config, codexBypassSettings)
+        default:
+            // Restore Codex's own behavior — but only undo a combo we'd have set,
+            // leaving a user's hand-picked policy intact.
+            guard codexHasManagedAutoApprove(config) else { return config }
+            var c = removeCodexTopLevelKey(in: config, key: "sandbox_mode")
+            c = removeCodexTopLevelKey(in: c, key: "approval_policy")
+            return c
+        }
+    }
+
+    private static func setCodexKeys(in config: String, _ settings: (sandbox: String, approval: String)) -> String {
+        var c = setCodexTopLevelKey(in: config, key: "sandbox_mode", value: "\"\(settings.sandbox)\"")
+        c = setCodexTopLevelKey(in: c, key: "approval_policy", value: "\"\(settings.approval)\"")
+        return c
+    }
+
+    /// True when the current top-level keys match one of the combos we set, so
+    /// "ask" knows it's safe to clear them.
+    static func codexHasManagedAutoApprove(_ config: String) -> Bool {
+        let sandbox = codexTopLevelValue(in: config, key: "sandbox_mode")
+        let approval = codexTopLevelValue(in: config, key: "approval_policy")
+        return (sandbox == codexAutoSettings.sandbox && approval == codexAutoSettings.approval)
+            || (sandbox == codexBypassSettings.sandbox && approval == codexBypassSettings.approval)
+    }
+
+    /// Index of the first TOML table header (`[...]`), before which top-level
+    /// keys must live. Returns the line count when there's no table.
+    private static func firstCodexTableIndex(_ lines: [String]) -> Int {
+        lines.firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") } ?? lines.count
+    }
+
+    private static func lineDefinesKey(_ line: String, _ key: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        return trimmed.hasPrefix("\(key) ") || trimmed.hasPrefix("\(key)=")
+    }
+
+    /// Sets a top-level scalar `key = value` (value written verbatim, already
+    /// quoted), replacing an existing top-level occurrence or inserting at the
+    /// top so it stays ahead of every table header. Internal for tests.
+    static func setCodexTopLevelKey(in config: String, key: String, value: String) -> String {
+        var lines = config.components(separatedBy: "\n")
+        let firstTable = firstCodexTableIndex(lines)
+        for index in 0..<firstTable where lineDefinesKey(lines[index], key) {
+            lines[index] = "\(key) = \(value)"
+            return lines.joined(separator: "\n")
+        }
+        lines.insert("\(key) = \(value)", at: 0)
+        return lines.joined(separator: "\n")
+    }
+
+    /// Removes a top-level scalar `key` (occurrences before the first table).
+    /// Internal for tests.
+    static func removeCodexTopLevelKey(in config: String, key: String) -> String {
+        let lines = config.components(separatedBy: "\n")
+        let firstTable = firstCodexTableIndex(lines)
+        let kept = lines.enumerated().filter { index, line in
+            !(index < firstTable && lineDefinesKey(line, key))
+        }.map(\.element)
+        return kept.joined(separator: "\n")
+    }
+
+    /// The unquoted value of a top-level scalar `key`, or nil when absent.
+    private static func codexTopLevelValue(in config: String, key: String) -> String? {
+        let lines = config.components(separatedBy: "\n")
+        let firstTable = firstCodexTableIndex(lines)
+        for index in 0..<firstTable where lineDefinesKey(lines[index], key) {
+            guard let eq = lines[index].firstIndex(of: "=") else { continue }
+            return lines[index][lines[index].index(after: eq)...]
+                .trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        }
+        return nil
+    }
+
     private static func installClaude() throws {
         guard let statusBinary = helperURL(named: "sidekick-agent-status") else {
             throw InstallError.helperMissing

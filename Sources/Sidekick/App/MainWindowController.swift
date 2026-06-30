@@ -199,6 +199,38 @@ class MainWindowController: NSWindowController {
 
         setupConfigWatcher()
         setupSessionPersistence()
+        syncAgentAutoApprove()
+    }
+
+    /// Reflects the effective auto-approve preference into each installed agent's
+    /// own permission system so agents launched in panes stop prompting. Per-agent
+    /// and best-effort — only affects future launches, so failures are logged, not
+    /// surfaced. Called at launch (which also reverts a stale value left by last
+    /// session's menu toggle) and whenever the state changes.
+    private func syncAgentAutoApprove() {
+        let mode = effectiveApprovalMode
+        do {
+            try AgentIntegrationInstaller.syncClaudeAutoApprove(
+                desiredMode: AgentIntegrationInstaller.claudeMode(forApprovalMode: mode)
+            )
+        } catch {
+            Log.debug("Failed to sync Claude auto-approve setting: \(error)", category: "app")
+        }
+        do {
+            try AgentIntegrationInstaller.syncCodexAutoApprove(forMode: mode)
+        } catch {
+            Log.debug("Failed to sync Codex auto-approve setting: \(error)", category: "app")
+        }
+    }
+
+    /// Effective Sidekick approval level ("ask"/"auto"/"bypass"): the persistent
+    /// `[approval]` mode, but the per-session ⇧⌘A toggle forces at least "auto"
+    /// and never downgrades a configured "bypass".
+    private var effectiveApprovalMode: String {
+        let configMode = (config.approval?.mode ?? "ask").lowercased()
+        if configMode == "bypass" { return "bypass" }
+        if sessionAutoApproveEdits { return "auto" }
+        return configMode == "auto" ? "auto" : "ask"
     }
 
     private func setupConfigWatcher() {
@@ -436,6 +468,8 @@ class MainWindowController: NSWindowController {
                 pane.editorViewController?.applyConfig(newConfig)
             }
         }
+
+        syncAgentAutoApprove()
     }
 
     private func configureWindowBackgroundEffect() {
@@ -1449,9 +1483,12 @@ extension MainWindowController: AutomationHost {
         config.telemetry?.resolvedRates() ?? TelemetryRates.defaults
     }
 
-    /// Flips the per-session auto-approve toggle. Menu-driven.
+    /// Flips the per-session auto-approve toggle. Menu-driven. Writes Claude
+    /// Code's permission mode so the change reaches agents launched afterward;
+    /// the next relaunch re-syncs from the persistent `[approval]` mode.
     func toggleAutoApproveEdits() {
         sessionAutoApproveEdits.toggle()
+        syncAgentAutoApprove()
     }
 
     func automationSplitController(forTab tabID: UUID) -> PaneSplitController? {
