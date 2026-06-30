@@ -29,6 +29,34 @@ final class TranscriptUsageTests: XCTestCase {
         XCTAssertEqual(u.assistantResponses, 2)
         XCTAssertEqual(u.userPrompts, 1)               // the tool-result user line doesn't count
         XCTAssertEqual(u.totalInputTokens, 1200 + 800 + 2000)
+        // Context occupancy is the LAST turn's footprint, not the session sum:
+        // turn 2 = input 200 + cacheRead 0 + cacheWrite 300.
+        XCTAssertEqual(u.contextTokens, 500)
+    }
+
+    // MARK: - Context window
+
+    func testContextFractionUsesLatestTurnAgainstStandardWindow() {
+        // 50k occupied of the 200k standard window = 0.25.
+        let u = TranscriptUsage(model: "claude-opus-4-8", contextTokens: 50_000)
+        XCTAssertEqual(try XCTUnwrap(u.contextFraction()), 0.25, accuracy: 1e-9)
+    }
+
+    func testContextFractionNilWithoutBilledTurn() {
+        XCTAssertNil(TranscriptUsage(model: "claude-opus-4-8", contextTokens: 0).contextFraction())
+    }
+
+    func testContextWindowPromotesToExtendedOncePastStandard() {
+        // Above 200k the session must be running the 1M window, so it reads
+        // against 1M rather than overflowing the standard cap.
+        let u = TranscriptUsage(model: "claude-opus-4-8", contextTokens: 300_000)
+        XCTAssertEqual(ContextWindow.tokens(forModel: u.model, occupancy: u.contextTokens), 1_000_000)
+        XCTAssertEqual(try XCTUnwrap(u.contextFraction()), 0.3, accuracy: 1e-9)
+    }
+
+    func testContextFractionClampsToFull() {
+        let u = TranscriptUsage(model: "claude-opus-4-8", contextTokens: 199_999)
+        XCTAssertEqual(try XCTUnwrap(u.contextFraction()), 199_999.0 / 200_000.0, accuracy: 1e-9)
     }
 
     func testEmptyAndAllNoiseYieldZero() {

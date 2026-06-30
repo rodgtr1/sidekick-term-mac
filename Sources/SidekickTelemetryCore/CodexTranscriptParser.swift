@@ -13,6 +13,7 @@ public enum CodexTranscriptParser {
     public static func aggregate<S: StringProtocol>(jsonl: S) -> TranscriptUsage {
         var usage = TranscriptUsage()
         var latestTotal: [String: Any]?
+        var latestTurn: [String: Any]?
 
         for rawLine in jsonl.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let object = try? JSONSerialization.jsonObject(with: Data(rawLine.utf8)) as? [String: Any]
@@ -32,9 +33,14 @@ public enum CodexTranscriptParser {
                 usage.userPrompts += 1
             case "token_count":
                 usage.assistantResponses += 1
-                if let info = payload["info"] as? [String: Any],
-                   let total = info["total_token_usage"] as? [String: Any] {
-                    latestTotal = total   // cumulative — last wins
+                if let info = payload["info"] as? [String: Any] {
+                    if let total = info["total_token_usage"] as? [String: Any] {
+                        latestTotal = total   // cumulative — last wins
+                    }
+                    // Per-turn usage drives context occupancy (last wins).
+                    if let last = info["last_token_usage"] as? [String: Any] {
+                        latestTurn = last
+                    }
                 }
             default:
                 break
@@ -47,6 +53,15 @@ public enum CodexTranscriptParser {
             usage.inputTokens = max(0, input - cached)   // fresh (uncached) input
             usage.cacheReadTokens = cached
             usage.outputTokens = int(total["output_tokens"])
+        }
+        // Context occupancy = the last turn's input (Codex's `input_tokens`
+        // already folds in `cached_input_tokens`), i.e. the prompt size sent
+        // for the most recent turn. Falls back to the cumulative total when only
+        // that's present (older rollouts had no `last_token_usage`).
+        if let last = latestTurn {
+            usage.contextTokens = int(last["input_tokens"])
+        } else if let total = latestTotal {
+            usage.contextTokens = int(total["input_tokens"])
         }
         return usage
     }

@@ -45,7 +45,39 @@ public enum TelemetryRates {
     }
 }
 
+public enum ContextWindow {
+    /// The standard Claude context window.
+    public static let standard = 200_000
+    /// The opt-in 1M-token (beta) window.
+    public static let extended = 1_000_000
+
+    /// Best-effort context-window size for `model` given current `occupancy`.
+    ///
+    /// The transcript's model id (e.g. `claude-opus-4-8`) doesn't reliably carry
+    /// the `[1m]` extended-context marker, so we can't always read the window off
+    /// the name. We therefore default to the standard 200k and promote to 1M when
+    /// either the id explicitly mentions `1m` or occupancy has already exceeded
+    /// 200k — in which case the session must be running the extended window. This
+    /// keeps the bar correct for 1M sessions once they cross 200k and clamps it
+    /// otherwise; below 200k a 1M session reads against the 200k cap, which only
+    /// over-reports early in a session.
+    public static func tokens(forModel model: String?, occupancy: Int) -> Int {
+        if let model, model.lowercased().contains("1m") { return extended }
+        return occupancy > standard ? extended : standard
+    }
+}
+
 public extension TranscriptUsage {
+    /// Fraction (0...1) of the context window currently occupied, or nil when no
+    /// billed assistant turn has been seen yet (nothing to show). Clamped so a
+    /// mis-sized window can never drive a bar past full.
+    func contextFraction() -> Double? {
+        guard contextTokens > 0 else { return nil }
+        let window = ContextWindow.tokens(forModel: model, occupancy: contextTokens)
+        guard window > 0 else { return nil }
+        return min(1.0, max(0.0, Double(contextTokens) / Double(window)))
+    }
+
     /// Estimated USD cost for this usage under `rates`. Cache reads bill ≈0.1×
     /// the input rate; 5-minute cache writes 1.25×, 1-hour writes 2×. Returns
     /// nil when the model has no known rate (e.g. a non-Claude agent), so the

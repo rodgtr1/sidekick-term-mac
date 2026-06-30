@@ -329,6 +329,7 @@ extension AgentDashboardViewController: NSTableViewDelegate {
         ])
 
         // Telemetry line (model · est$ · turns), with the full breakdown on hover.
+        var lastBottom: NSLayoutYAxisAnchor = detailLabel.bottomAnchor
         if let usage = rowData.usage, let line = Self.telemetryLine(usage, cost: rowData.cost) {
             let telemetryLabel = NSTextField(labelWithString: line)
             telemetryLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
@@ -342,16 +343,76 @@ extension AgentDashboardViewController: NSTableViewDelegate {
                 telemetryLabel.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 2),
                 telemetryLabel.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8)
             ])
+            lastBottom = telemetryLabel.bottomAnchor
+        }
+
+        // Context-window bar: fills left→right with the share of the model's
+        // context window the latest turn occupies. Only shown once a turn has
+        // been billed (fraction != nil).
+        if let usage = rowData.usage, let fraction = usage.contextFraction() {
+            let bar = Self.makeContextBar(fraction: fraction)
+            bar.toolTip = Self.contextTooltip(usage)
+            cell.addSubview(bar)
+            NSLayoutConstraint.activate([
+                bar.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+                bar.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
+                bar.topAnchor.constraint(equalTo: lastBottom, constant: 5)
+            ])
         }
 
         return cell
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard row < rows.count, let usage = rows[row].usage,
-              Self.telemetryLine(usage, cost: rows[row].cost) != nil else {
-            return 42
+        guard row < rows.count, let usage = rows[row].usage else { return 42 }
+        var height: CGFloat = 42
+        if Self.telemetryLine(usage, cost: rows[row].cost) != nil { height += 16 }
+        if usage.contextFraction() != nil { height += 9 }
+        return height
+    }
+
+    // MARK: - Context bar
+
+    /// A thin two-layer bar (muted track + colored fill) whose fill spans
+    /// `fraction` of the width. Color shifts green→yellow→red as it fills.
+    private static func makeContextBar(fraction: Double) -> NSView {
+        let track = NSView()
+        track.wantsLayer = true
+        track.layer?.backgroundColor = AppTheme.divider.withAlphaComponent(0.6).cgColor
+        track.layer?.cornerRadius = 2
+
+        let fill = NSView()
+        fill.wantsLayer = true
+        fill.layer?.backgroundColor = contextBarColor(fraction).cgColor
+        fill.layer?.cornerRadius = 2
+        fill.translatesAutoresizingMaskIntoConstraints = false
+        track.addSubview(fill)
+        track.translatesAutoresizingMaskIntoConstraints = false
+
+        NSLayoutConstraint.activate([
+            track.heightAnchor.constraint(equalToConstant: 4),
+            fill.leadingAnchor.constraint(equalTo: track.leadingAnchor),
+            fill.topAnchor.constraint(equalTo: track.topAnchor),
+            fill.bottomAnchor.constraint(equalTo: track.bottomAnchor),
+            // A near-empty window still shows a sliver so the bar reads as a bar.
+            fill.widthAnchor.constraint(equalTo: track.widthAnchor, multiplier: CGFloat(max(0.02, fraction)))
+        ])
+        return track
+    }
+
+    private static func contextBarColor(_ fraction: Double) -> NSColor {
+        switch fraction {
+        case ..<0.6: return AppTheme.success
+        case ..<0.85: return AppTheme.warning
+        default: return AppTheme.error
         }
-        return 58
+    }
+
+    /// Hover text for the context bar, e.g. `context 82k / 200k (41%)`.
+    private static func contextTooltip(_ usage: TranscriptUsage) -> String {
+        guard let fraction = usage.contextFraction() else { return "" }
+        let window = ContextWindow.tokens(forModel: usage.model, occupancy: usage.contextTokens)
+        let percent = Int((fraction * 100).rounded())
+        return "context \(TelemetryFormat.compactTokens(usage.contextTokens)) / \(TelemetryFormat.compactTokens(window)) (\(percent)%)"
     }
 }

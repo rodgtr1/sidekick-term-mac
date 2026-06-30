@@ -27,6 +27,15 @@ public struct TranscriptUsage: Equatable, Codable, Sendable {
     /// estimate — handy for agents whose model isn't in the rate card.
     public var reportedCostUSD: Double?
 
+    /// Current context-window occupancy: the full input footprint (fresh input
+    /// + cache reads + cache writes) of the *most recent* assistant turn. Unlike
+    /// the cumulative `*Tokens` fields above (which sum the whole session for
+    /// cost), this is the size of the prompt the model last processed — i.e. how
+    /// full the context window is right now. It rises as the conversation grows
+    /// and drops after a compaction, so it's the right number to drive a
+    /// context-usage bar. 0 when no billed assistant turn was seen.
+    public var contextTokens: Int
+
     public init(
         model: String? = nil,
         inputTokens: Int = 0,
@@ -36,7 +45,8 @@ public struct TranscriptUsage: Equatable, Codable, Sendable {
         cacheCreation1hTokens: Int = 0,
         assistantResponses: Int = 0,
         userPrompts: Int = 0,
-        reportedCostUSD: Double? = nil
+        reportedCostUSD: Double? = nil,
+        contextTokens: Int = 0
     ) {
         self.model = model
         self.inputTokens = inputTokens
@@ -47,6 +57,7 @@ public struct TranscriptUsage: Equatable, Codable, Sendable {
         self.assistantResponses = assistantResponses
         self.userPrompts = userPrompts
         self.reportedCostUSD = reportedCostUSD
+        self.contextTokens = contextTokens
     }
 
     /// All cache-creation (cache-write) tokens, 5-minute + 1-hour.
@@ -90,13 +101,24 @@ public enum TranscriptParser {
             usage.outputTokens += int(usageObject["output_tokens"])
             usage.cacheReadTokens += int(usageObject["cache_read_input_tokens"])
 
+            let cacheRead = int(usageObject["cache_read_input_tokens"])
+            let cacheWrite: Int
             if let cacheCreation = usageObject["cache_creation"] as? [String: Any] {
-                usage.cacheCreation5mTokens += int(cacheCreation["ephemeral_5m_input_tokens"])
-                usage.cacheCreation1hTokens += int(cacheCreation["ephemeral_1h_input_tokens"])
+                let write5m = int(cacheCreation["ephemeral_5m_input_tokens"])
+                let write1h = int(cacheCreation["ephemeral_1h_input_tokens"])
+                usage.cacheCreation5mTokens += write5m
+                usage.cacheCreation1hTokens += write1h
+                cacheWrite = write5m + write1h
             } else {
                 // Older transcripts only carry the flat total; bill it as 5-min.
-                usage.cacheCreation5mTokens += int(usageObject["cache_creation_input_tokens"])
+                cacheWrite = int(usageObject["cache_creation_input_tokens"])
+                usage.cacheCreation5mTokens += cacheWrite
             }
+
+            // Context occupancy is this turn's full input footprint (it already
+            // includes the whole prior conversation Claude re-sends each turn),
+            // so the last assistant turn wins — not a sum across the session.
+            usage.contextTokens = int(usageObject["input_tokens"]) + cacheRead + cacheWrite
         }
         return usage
     }

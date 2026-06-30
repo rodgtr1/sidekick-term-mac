@@ -34,10 +34,16 @@ public enum PiTranscriptParser {
 
             usage.assistantResponses += 1
             if let model = message["model"] as? String { usage.model = model }
-            usage.inputTokens += int(turn["input"])           // fresh input (excludes cacheRead)
+            let turnInput = int(turn["input"])               // fresh input (excludes cacheRead)
+            let turnCacheRead = int(turn["cacheRead"])
+            let turnCacheWrite = int(turn["cacheWrite"])
+            usage.inputTokens += turnInput
             usage.outputTokens += int(turn["output"])
-            usage.cacheReadTokens += int(turn["cacheRead"])
-            usage.cacheCreation5mTokens += int(turn["cacheWrite"])
+            usage.cacheReadTokens += turnCacheRead
+            usage.cacheCreation5mTokens += turnCacheWrite
+
+            // Context occupancy = this turn's full input footprint (last wins).
+            usage.contextTokens = turnInput + turnCacheRead + turnCacheWrite
 
             if let cost = turn["cost"] as? [String: Any], let total = double(cost["total"]) {
                 totalCost += total
