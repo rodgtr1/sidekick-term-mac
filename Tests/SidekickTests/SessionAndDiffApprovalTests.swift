@@ -7,7 +7,7 @@ final class DiffApprovalUnifiedDiffTests: XCTestCase {
         let old = "line one\nline two\nline three\n"
         let new = "line one\nline 2\nline three\n"
 
-        let diff = DiffApprovalPanel.unifiedDiff(old: old, new: new, path: "/tmp/example.txt")
+        let diff = UnifiedDiff.text(old: old, new: new, path: "/tmp/example.txt")
 
         XCTAssertTrue(diff.contains("--- a/example.txt"))
         XCTAssertTrue(diff.contains("+++ b/example.txt"))
@@ -16,7 +16,7 @@ final class DiffApprovalUnifiedDiffTests: XCTestCase {
     }
 
     func testUnifiedDiffForNewFileShowsAllLinesAdded() {
-        let diff = DiffApprovalPanel.unifiedDiff(old: "", new: "first\nsecond\n", path: "/tmp/new.txt")
+        let diff = UnifiedDiff.text(old: "", new: "first\nsecond\n", path: "/tmp/new.txt")
 
         XCTAssertTrue(diff.contains("+first"))
         XCTAssertTrue(diff.contains("+second"))

@@ -46,4 +46,8 @@ nonisolated extension Notification.Name {
 
     /// An editor pane's modified state changed. `object` is the editor.
     static let editorModifiedStateChanged = Notification.Name("EditorModifiedStateChanged")
+
+    /// The pending diff-approval queue gained or lost entries. `object` is the
+    /// `ApprovalQueue`; read its `pending` list for the current state.
+    static let pendingApprovalsChanged = Notification.Name("PendingApprovalsChanged")
 }

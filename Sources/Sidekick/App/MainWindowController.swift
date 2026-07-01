@@ -589,6 +589,13 @@ class MainWindowController: NSWindowController {
             name: .paneAgentStateChanged,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(pendingApprovalsChanged(_:)),
+            name: .pendingApprovalsChanged,
+            object: nil
+        )
     }
 
     @objc private func terminalCWDChanged(_ notification: Notification) {
@@ -730,11 +737,34 @@ class MainWindowController: NSWindowController {
         }
     }
 
-    /// Updates the activity-bar badge with the number of tabs whose agent is
-    /// waiting for input.
+    /// Updates the activity-bar badge with everything waiting on the user:
+    /// tabs whose agent needs input, plus edits queued for approval.
     func refreshAgentsBadge() {
         let waiting = tabs.filter { $0.agentState == .ready }.count
-        activityBarView.updateAgentsBadge(count: waiting)
+        activityBarView.updateAgentsBadge(count: waiting + ApprovalQueue.shared.pending.count)
+    }
+
+    /// The last pending-approval count, so queue-change notifications can tell
+    /// growth (ask for attention) from shrinkage (just refresh the badge).
+    private var lastPendingApprovalCount = 0
+
+    /// The approvals queue changed: sync the badge, and when a new edit landed,
+    /// call for attention the way a blocked agent does — dock bounce, plus a
+    /// user notification when Sidekick isn't frontmost.
+    @objc private func pendingApprovalsChanged(_ notification: Notification) {
+        let pending = ApprovalQueue.shared.pending
+        defer { lastPendingApprovalCount = pending.count }
+        refreshAgentsBadge()
+
+        guard pending.count > lastPendingApprovalCount else { return }
+        NSApp.requestUserAttention(.informationalRequest)
+        if !NSApp.isActive, let newest = pending.last {
+            postUserNotification(
+                title: "Agent waiting for edit approval",
+                body: (newest.path as NSString).lastPathComponent,
+                playSound: true
+            )
+        }
     }
 
     /// Forwards to the tab controller. Public entry point used by the menu,

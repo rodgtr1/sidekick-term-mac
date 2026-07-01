@@ -1,74 +1,58 @@
 import AppKit
 
 /// The slice of the window controller `DiffApprovalCoordinator` needs to decide
-/// and present a hook edit approval: the live `[approval]` config, the global
-/// auto-approve toggle, and the window a review sheet attaches to (nil when
-/// there's nothing on screen to review in). `AutomationHost` refines this, so
-/// MainWindowController satisfies both through one conformance.
+/// a hook edit approval: the live `[approval]` config, the global auto-approve
+/// toggle, and the window approvals are reviewed in (nil when the app is
+/// closing and there's nothing left to review in). `AutomationHost` refines
+/// this, so MainWindowController satisfies both through one conformance.
 protocol DiffApprovalHost: AnyObject {
-    /// When true, hook edits are approved without a review popup — driven by the
+    /// When true, hook edits are approved without review — driven by the
     /// `[approval]` config mode and the per-session toggle.
     var shouldAutoApproveEdits: Bool { get }
     /// The active `[approval]` config, supplying the auto_allow / always_ask
     /// glob rules layered on top of `shouldAutoApproveEdits`.
     var approvalConfig: ApprovalConfig { get }
-    /// The window a diff-approval sheet attaches to, or nil when there's none
-    /// to review in (app closing / backgrounded).
+    /// The window approvals are reviewed in, or nil when there's none (app
+    /// closing / already gone).
     var automationWindow: NSWindow? { get }
 }
 
-/// Owns the hook diff-approval queue: the policy decision, the one-sheet-at-a-time
-/// review presentation, per-pane "approve & remember" grants, and the fail-open
-/// drain when there's no window to review in. Split out of AutomationCoordinator,
-/// which stays the IPC + event-emit site and drives this through `requestApproval`
-/// / `prepareForWindowClose`, reporting the diff lifecycle via `onEvent`.
+/// Owns hook diff-approval policy: silent allows, per-pane "approve & remember"
+/// grants, and the fail-open drain when there is no window left to review in.
+/// Approvals that need a human land in `ApprovalQueue` and are reviewed from
+/// the agents panel's approvals list (F3) — a non-modal review queue — rather
+/// than one blocking sheet at a time, so several agents' requests can be
+/// decided in any order. Split out of AutomationCoordinator, which stays the
+/// IPC + event-emit site and drives this through `requestApproval` /
+/// `prepareForWindowClose`, reporting the diff lifecycle via `onEvent`.
 final class DiffApprovalCoordinator {
     private weak var host: DiffApprovalHost?
+    private let queue: ApprovalQueue
 
     /// Reports the approval lifecycle (pending/accepted/rejected) for `path` so
     /// the owner can emit a `diff` event — keeping event emission centralized
     /// there rather than spread across coordinators.
     private let onEvent: (_ path: String, _ decision: String) -> Void
 
-    /// Pending hook diff approvals, shown one sheet at a time.
-    private var queue: [(paneID: UUID?, path: String, old: String, new: String, completion: (Bool) -> Void)] = []
-    private var activePanel: DiffApprovalPanel?
-
-    /// "Approve & remember" grants from the review sheet, scoped per pane (the
+    /// "Approve & remember" grants from the review list, scoped per pane (the
     /// pane the edit hook ran in; nil for a hook that didn't report one). Per-pane
     /// scoping keeps a grant in one agent's pane from auto-approving another's.
     /// Reset on relaunch, like the auto-approve menu toggle.
     private var sessionApprovals: [UUID?: SessionApprovals] = [:]
 
-    /// Retained observer tokens for window-reappearance notifications. Set on
-    /// the main actor; read once in the nonisolated deinit at end-of-life.
-    nonisolated(unsafe) private var reappearanceObservers: [NSObjectProtocol] = []
-
-    init(host: DiffApprovalHost?, onEvent: @escaping (_ path: String, _ decision: String) -> Void) {
+    init(
+        host: DiffApprovalHost?,
+        queue: ApprovalQueue = .shared,
+        onEvent: @escaping (_ path: String, _ decision: String) -> Void
+    ) {
         self.host = host
+        self.queue = queue
         self.onEvent = onEvent
-
-        // Approvals queued while the window was miniaturized or the app hidden
-        // are held, not resolved (see presentNextIfIdle) — present them as soon
-        // as the review surface is back on screen.
-        let center = NotificationCenter.default
-        for name in [NSWindow.didDeminiaturizeNotification, NSApplication.didUnhideNotification] {
-            reappearanceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.presentNextIfIdle()
-                }
-            })
-        }
     }
 
-    deinit {
-        for observer in reappearanceObservers {
-            NotificationCenter.default.removeObserver(observer)
-        }
-    }
-
-    /// Decides `path` against policy and either allows it silently or queues a
-    /// review sheet, resolving `completion` with the accept/reject outcome.
+    /// Decides `path` against policy and either allows it silently or parks it
+    /// in the review queue, resolving `completion` with the accept/reject
+    /// outcome once the user (or a drain) decides.
     func requestApproval(
         paneID: UUID?,
         path: String,
@@ -80,25 +64,51 @@ final class DiffApprovalCoordinator {
             // Allowed silently by glob rule, "remember" grant, or auto mode.
             onEvent(path, "accepted")
             completion(true)
-        } else {
-            // Hook approval: hold the response until the user decides.
-            onEvent(path, "pending")
-            enqueue(paneID: paneID, path: path, old: old, new: new) { [weak self] accepted in
-                self?.onEvent(path, accepted ? "accepted" : "rejected")
-                completion(accepted)
+            return
+        }
+
+        // No window at all to review in (app closing / already gone): resolve
+        // with the drain's fail-open contract rather than park an entry no one
+        // can ever see. A merely miniaturized or hidden window still has a
+        // queue surface — entries just wait there.
+        guard host?.automationWindow != nil else {
+            let accepted = !isAlwaysAsk(path, pane: paneID)
+            onEvent(path, accepted ? "accepted" : "rejected")
+            completion(accepted)
+            return
+        }
+
+        onEvent(path, "pending")
+        queue.enqueue(paneID: paneID, path: path, old: old, new: new) { [weak self] outcome in
+            // Record an "approve & remember" grant into the originating pane's
+            // bucket before resolving, so later edits from that pane already
+            // see it. always_ask still wins.
+            if outcome.accepted {
+                self?.sessionApprovals[paneID, default: SessionApprovals()]
+                    .record(outcome.remember, path: path)
+            }
+            self?.onEvent(path, outcome.accepted ? "accepted" : "rejected")
+            completion(outcome.accepted)
+            if outcome.accepted && outcome.remember != .none {
+                self?.resolveNewlyAllowed()
             }
         }
     }
 
     /// Called from the host's windowWillClose. Don't strand hook processes
-    /// blocked on approval: cancel the visible sheet and resolve the queue.
+    /// blocked on approval: resolve everything still queued. Most fail OPEN —
+    /// allowing the edit — to match the hook's contract that an unavailable
+    /// Sidekick lets edits through. The exception is `always_ask` paths: that
+    /// list exists to force a human decision, so without a window to review in
+    /// they fail CLOSED (reject) rather than slip through unreviewed.
     func prepareForWindowClose() {
-        activePanel?.cancel()
-        activePanel = nil
-        drainQueue()
+        queue.drainAll { [weak self] entry in
+            let alwaysAsk = self?.isAlwaysAsk(entry.path, pane: entry.paneID) ?? true
+            return ApprovalOutcome(accepted: !alwaysAsk, remember: .none)
+        }
     }
 
-    // MARK: - Policy + queue
+    // MARK: - Policy
 
     /// Resolves the approval policy for `path` against the config glob rules,
     /// the pane's own "remember" grants, and the global auto toggle.
@@ -113,68 +123,15 @@ final class DiffApprovalCoordinator {
         )
     }
 
-    private func enqueue(
-        paneID: UUID?,
-        path: String,
-        old: String,
-        new: String,
-        completion: @escaping (Bool) -> Void
-    ) {
-        queue.append((paneID: paneID, path: path, old: old, new: new, completion: completion))
-        presentNextIfIdle()
-    }
-
-    private func presentNextIfIdle() {
-        guard activePanel == nil, !queue.isEmpty else { return }
-
-        // No window at all to attach a sheet to: fail open rather than leave
-        // the hook blocked and the queue wedged. (Window close is handled by
-        // prepareForWindowClose, which drains explicitly.)
-        guard let window = host?.automationWindow else {
-            drainQueue()
-            return
-        }
-
-        // The window exists but isn't on screen — miniaturized or app hidden
-        // (⌘H) both report isVisible == false. Those are ordinary "minimize
-        // while the agent works" gestures, not "Sidekick is unavailable":
-        // silently resolving here would approve edits nobody reviewed. Hold
-        // the queue, ask for attention, and the reappearance observers
-        // re-enter this method when the window is back.
-        guard window.isVisible else {
-            NSApp.requestUserAttention(.informationalRequest)
-            return
-        }
-
-        let request = queue.removeFirst()
-        let panel = DiffApprovalPanel()
-        activePanel = panel
-        panel.show(relativeTo: window, path: request.path, old: request.old, new: request.new) { [weak self] outcome in
-            // Record an "approve & remember" grant into the originating pane's
-            // bucket before resolving, so later edits from that pane already see
-            // it. always_ask still wins.
-            if outcome.accepted {
-                self?.sessionApprovals[request.paneID, default: SessionApprovals()]
-                    .record(outcome.remember, path: request.path)
-            }
-            request.completion(outcome.accepted)
-            self?.activePanel = nil
-            self?.presentNextIfIdle()
-        }
-    }
-
-    /// Resolves every queued approval when there is no window to review in
-    /// (window closing or already gone — a merely miniaturized/hidden window
-    /// holds the queue instead, see presentNextIfIdle). Most fail OPEN —
-    /// allowing the edit — to match the hook's contract that an unavailable
-    /// Sidekick lets edits through. The exception is `always_ask` paths: that
-    /// list exists to force a human decision, so without a window to prompt in
-    /// they fail CLOSED (reject) rather than slip through unreviewed.
-    private func drainQueue() {
-        let pending = queue
-        queue.removeAll()
-        for request in pending {
-            request.completion(!isAlwaysAsk(request.path, pane: request.paneID))
+    /// After an "approve & remember" grant, entries already queued from the
+    /// same pane may now be allowed by policy — resolve them rather than make
+    /// the user click through requests the grant they just gave already
+    /// covers. (`queue.pending` is a value snapshot, so resolving while
+    /// iterating is safe; the resolved entries' `remember` is `.none`, so this
+    /// can't recurse.)
+    private func resolveNewlyAllowed() {
+        for entry in queue.pending where approvalDecision(for: entry.path, pane: entry.paneID) == .allow {
+            queue.resolve(id: entry.id, outcome: ApprovalOutcome(accepted: true, remember: .none))
         }
     }
 
