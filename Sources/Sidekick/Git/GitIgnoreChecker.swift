@@ -79,7 +79,7 @@ class GitIgnoreChecker {
         // child, which the old hand-rolled version risked), and adds a timeout.
         guard let result = try? ProcessRunner.shared.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-            arguments: ["-C", rootPath, "ls-files", "--ignored", "--exclude-standard", "--others"],
+            arguments: ["-C", rootPath, "ls-files", "--ignored", "--exclude-standard", "--others", "--directory"],
             currentDirectoryURL: URL(fileURLWithPath: rootPath)
         ), result.succeeded else {
             // Git not available or not a git repo: ignore silently.
