@@ -214,11 +214,6 @@ class PaneModel: Identifiable, Hashable {
         if let observer = editorDirtyStateObserver {
             NotificationCenter.default.removeObserver(observer)
         }
-        terminalViewController = nil
-        editorViewController = nil
-        diffViewController = nil
-        uncommittedChangesViewController = nil
-        view = nil
     }
 }
 

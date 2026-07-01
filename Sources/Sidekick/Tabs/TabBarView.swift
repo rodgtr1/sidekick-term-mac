@@ -464,7 +464,7 @@ class TabBarView: NSView {
     /// Recomputes tab widths for the current bounds and updates frames of the
     /// existing buttons without touching the view hierarchy.
     private func repositionTabButtons() {
-        let availableWidth = bounds.width - 40 // Leave space for new tab button
+        let availableWidth = bounds.width
         let tabCount = CGFloat(tabs.count)
         var tabWidth = tabCount > 0 ? availableWidth / tabCount : tabMinWidth
         tabWidth = max(tabMinWidth, min(tabMaxWidth, tabWidth))
