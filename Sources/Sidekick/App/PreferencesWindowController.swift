@@ -823,32 +823,31 @@ class PreferencesWindowController: NSWindowController {
     // MARK: - Actions
 
     @objc private func opacitySliderChanged(_ sender: NSSlider) {
-        config.window.opacity = sender.doubleValue
+        let opacity = sender.doubleValue
+        mutateConfig { $0.window.opacity = opacity }
         updateOpacityLabel()
         applyOpacityChange()
-        config.save()
     }
 
     @objc private func themeChanged(_ sender: NSPopUpButton) {
         let names = themeSelectionNames
         let index = sender.indexOfSelectedItem
         guard index >= 0 && index < names.count else { return }
-        config.theme.name = names[index]
+        mutateConfig { $0.theme.name = names[index] }
         // Posts .themeDidChange, which every window observes to repaint live
         // (chrome + open terminals) and sets the matching NSApp appearance.
         Theme.shared.setSelection(names[index])
-        config.save()
     }
 
     @objc private func blurCheckboxChanged(_ sender: NSButton) {
-        config.window.enableBlur = sender.state == .on
-        config.save()
+        let enabled = sender.state == .on
+        mutateConfig { $0.window.enableBlur = enabled }
         showRestartAlert()
     }
 
     @objc private func restoreSessionChanged(_ sender: NSButton) {
-        config.behavior.restoreSession = sender.state == .on
-        config.save()
+        let enabled = sender.state == .on
+        mutateConfig { $0.behavior.restoreSession = enabled }
     }
 
     /// Popup title meaning "no family configured — use the system mono font".
@@ -882,67 +881,61 @@ class PreferencesWindowController: NSWindowController {
 
     @objc private func fontFamilyChanged(_ sender: NSPopUpButton) {
         if let selectedTitle = sender.selectedItem?.title {
-            config.font.family = selectedTitle
+            mutateConfig { $0.font.family = selectedTitle }
             applyFontChanges()
-            config.save()
         }
     }
 
     @objc private func fontSizeSliderChanged(_ sender: NSSlider) {
-        config.font.size = Int(sender.doubleValue)
+        let size = Int(sender.doubleValue)
+        mutateConfig { $0.font.size = size }
         updateFontSizeLabel()
         applyFontChanges()
-        config.save()
     }
 
     @objc private func boldIsBrightChanged(_ sender: NSButton) {
-        config.font.boldIsBright = sender.state == .on
+        let on = sender.state == .on
+        mutateConfig { $0.font.boldIsBright = on }
         mainWindowController?.applyRuntimeConfig(config)
-        config.save()
     }
 
     @objc private func paddingSliderChanged(_ sender: NSSlider) {
-        config.window.padding = Int(sender.doubleValue)
+        let padding = Int(sender.doubleValue)
+        mutateConfig { $0.window.padding = padding }
         updatePaddingLabel()
         mainWindowController?.applyRuntimeConfig(config)
-        config.save()
     }
 
     @objc private func fileOpenModeChanged(_ sender: NSPopUpButton) {
-        ensureEditorConfig()
-        config.editor?.fileOpenMode = sender.indexOfSelectedItem == 1 ? "builtin" : "terminal"
+        let mode = sender.indexOfSelectedItem == 1 ? "builtin" : "terminal"
+        mutateConfig { Self.ensuringEditor(&$0); $0.editor?.fileOpenMode = mode }
         mainWindowController?.applyRuntimeConfig(config)
-        config.save()
     }
 
     @objc private func editorFontSizeChanged(_ sender: NSSlider) {
-        ensureEditorConfig()
-        config.editor?.fontSize = Int(sender.doubleValue)
+        let size = Int(sender.doubleValue)
+        mutateConfig { Self.ensuringEditor(&$0); $0.editor?.fontSize = size }
         updateEditorFontSizeLabel()
         mainWindowController?.applyRuntimeConfig(config)
-        config.save()
     }
 
     @objc private func editorFontFamilyChanged(_ sender: NSPopUpButton) {
-        ensureEditorConfig()
         let title = sender.selectedItem?.title ?? Self.systemDefaultFontTitle
-        config.editor?.fontFamily = (title == Self.systemDefaultFontTitle) ? "" : title
+        let family = (title == Self.systemDefaultFontTitle) ? "" : title
+        mutateConfig { Self.ensuringEditor(&$0); $0.editor?.fontFamily = family }
         mainWindowController?.applyRuntimeConfig(config)
-        config.save()
     }
 
     @objc private func wordWrapChanged(_ sender: NSButton) {
-        ensureEditorConfig()
-        config.editor?.wordWrap = sender.state == .on
+        let on = sender.state == .on
+        mutateConfig { Self.ensuringEditor(&$0); $0.editor?.wordWrap = on }
         mainWindowController?.applyRuntimeConfig(config)
-        config.save()
     }
 
     @objc private func showHiddenFilesChanged(_ sender: NSButton) {
-        ensureEditorConfig()
-        config.editor?.showHiddenFiles = sender.state == .on
+        let on = sender.state == .on
+        mutateConfig { Self.ensuringEditor(&$0); $0.editor?.showHiddenFiles = on }
         mainWindowController?.applyRuntimeConfig(config)
-        config.save()
     }
 
     /// Approval mode strings indexed to match the popup item order.
@@ -953,25 +946,21 @@ class PreferencesWindowController: NSWindowController {
     }
 
     @objc private func approvalModeChanged(_ sender: NSPopUpButton) {
-        ensureApprovalConfig()
-        let index = sender.indexOfSelectedItem
-        config.approval?.mode = Self.approvalModes[safe: index] ?? "ask"
+        let mode = Self.approvalModes[safe: sender.indexOfSelectedItem] ?? "ask"
+        mutateConfig { Self.ensuringApproval(&$0); $0.approval?.mode = mode }
         mainWindowController?.applyRuntimeConfig(config)
-        config.save()
     }
 
     @objc private func autoAllowChanged(_ sender: NSTextField) {
-        ensureApprovalConfig()
-        config.approval?.autoAllow = Self.parseGlobs(sender.stringValue)
+        let globs = Self.parseGlobs(sender.stringValue)
+        mutateConfig { Self.ensuringApproval(&$0); $0.approval?.autoAllow = globs }
         mainWindowController?.applyRuntimeConfig(config)
-        config.save()
     }
 
     @objc private func alwaysAskChanged(_ sender: NSTextField) {
-        ensureApprovalConfig()
-        config.approval?.alwaysAsk = Self.parseGlobs(sender.stringValue)
+        let globs = Self.parseGlobs(sender.stringValue)
+        mutateConfig { Self.ensuringApproval(&$0); $0.approval?.alwaysAsk = globs }
         mainWindowController?.applyRuntimeConfig(config)
-        config.save()
     }
 
     /// Split a comma-separated glob list into trimmed, non-empty patterns.
@@ -1044,17 +1033,56 @@ class PreferencesWindowController: NSWindowController {
     }
 
     @objc private func rawConfigButtonClicked(_ sender: NSButton) {
-        config.save()
+        // Every control already persists on change, so there's nothing pending to
+        // flush; writing our snapshot here would clobber on-disk edits. Loading
+        // just recreates a default when the file is missing, without overwriting
+        // an existing (or broken) one, so "Edit raw config" always opens a file.
+        _ = Config.load()
         mainWindowController?.openConfigFile()
     }
 
-    private func ensureEditorConfig() {
+    /// Set once we've warned the user that on-disk config is broken, so a
+    /// stream of control changes doesn't stack a modal per click.
+    private var didWarnBrokenConfig = false
+
+    /// Apply a single-field change on top of the *latest* on-disk config, then
+    /// persist and refresh our snapshot. Re-reading before writing means each
+    /// control only rewrites the field the user just touched — concurrent
+    /// external edits (or a ConfigWatcher reload) to *other* fields survive
+    /// instead of being clobbered by this window's stale whole-file snapshot
+    /// (M4). If the on-disk file failed to parse, nothing is written and the
+    /// running config is left as-is, so a broken config isn't overwritten with
+    /// defaults (M3); the user is told once why the change didn't stick.
+    private func mutateConfig(_ apply: (inout Config) -> Void) {
+        var fresh = Config.load()
+        guard !fresh.loadDidFail else {
+            warnBrokenConfigOnce()
+            return
+        }
+        apply(&fresh)
+        config = fresh
+        fresh.save()
+    }
+
+    private func warnBrokenConfigOnce() {
+        guard !didWarnBrokenConfig else { return }
+        didWarnBrokenConfig = true
+        let alert = NSAlert()
+        alert.messageText = "Couldn't save your change"
+        alert.informativeText =
+            "~/.config/sidekick/config.toml can't be parsed, so Sidekick won't overwrite it and lose your existing settings. Fix or remove that file (a backup is at config.toml.bak), then try again."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private static func ensuringEditor(_ config: inout Config) {
         if config.editor == nil {
             config.editor = EditorConfig()
         }
     }
 
-    private func ensureApprovalConfig() {
+    private static func ensuringApproval(_ config: inout Config) {
         if config.approval == nil {
             config.approval = ApprovalConfig()
         }
@@ -1105,7 +1133,8 @@ class PreferencesWindowController: NSWindowController {
 // MARK: - NSWindowDelegate
 extension PreferencesWindowController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
-        // Save configuration when window closes
-        config.save()
+        // Nothing to flush: every control persists its own field on change via
+        // mutateConfig. Writing the whole snapshot here would clobber any
+        // external edits made while this window was open (M4).
     }
 }

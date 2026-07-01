@@ -546,20 +546,29 @@ class PaneSplitController: NSViewController {
         }
     }
 
+    /// Appends `pane` as a new arranged subview of the root split, leaving any
+    /// existing nested split subtrees untouched — so opening an editor beside a
+    /// 2×2 grid keeps the grid intact instead of flattening it (unlike
+    /// rebuildSplitView, which discards the nested tree). The caller is
+    /// responsible for having already appended `pane` to the tab's model.
     func addPane(_ pane: PaneModel) {
+        guard let paneView = pane.view else {
+            Log.error("⚠️ addPane: pane (\(pane.paneType)) has no view!", category: "panes")
+            return
+        }
+
         panes.append(pane)
+        let container = wrapPaneInContainer(pane, paneView: paneView)
+        rootSplitView.addArrangedSubview(container)
+        updatePaneCloseButtons()
+        // setActivePane paints the active border on the new pane and clears the
+        // old one; calling addPaneBorder(isActive:false) afterward would wrongly
+        // overwrite that with an inactive border, so let setActivePane own it.
+        setActivePane(index: panes.count - 1)
 
-        if let paneView = pane.view {
-            let container = wrapPaneInContainer(pane, paneView: paneView)
-            rootSplitView.addArrangedSubview(container)
-            setActivePane(index: panes.count - 1)
-            addPaneBorder(to: paneView, isActive: false)
-            updatePaneCloseButtons()
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                SplitLayoutManager.distributeEvenly(in: self.rootSplitView)
-            }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            SplitLayoutManager.distributeEvenly(in: self.rootSplitView)
         }
     }
 }

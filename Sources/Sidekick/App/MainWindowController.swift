@@ -983,9 +983,11 @@ extension MainWindowController: SidebarContainerDelegate {
 
         let editorPane = PaneFactory.editorPane(for: url, line: line, searchTerm: searchTerm)
         currentTab.addPane(editorPane)
-        currentTab.activePaneIndex = currentTab.panes.count - 1
-        currentPaneSplitController?.rebuildSplitView(for: currentTab)
-        currentPaneSplitController?.setActivePane(index: currentTab.activePaneIndex)
+        // Add into the existing split tree rather than rebuilding it flat, so a
+        // nested layout (e.g. a 2×2 grid) survives opening the editor. addPane
+        // activates the new pane, which syncs currentTab.activePaneIndex via the
+        // didActivatePane delegate.
+        currentPaneSplitController?.addPane(editorPane)
 
         updateTabBar()
         syncSidebarToActiveTab()

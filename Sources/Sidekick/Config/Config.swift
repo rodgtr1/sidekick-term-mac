@@ -14,6 +14,19 @@ public struct Config: Codable {
     public var approval: ApprovalConfig?  // Make optional for backwards compatibility
     public var telemetry: TelemetryConfig?  // Make optional for backwards compatibility
 
+    /// True when this value is the defaults returned because the on-disk file
+    /// existed but could not be read or parsed — as opposed to a legitimate
+    /// fresh default. `save()` refuses to overwrite the file in that case so a
+    /// recoverable-but-broken config is never silently clobbered with defaults.
+    /// Transient runtime state, never encoded (excluded from `CodingKeys`).
+    public var loadDidFail: Bool = false
+
+    // Only the real config sections are (de)coded; `loadDidFail` is transient
+    // and its default keeps synthesized Codable happy without persisting it.
+    enum CodingKeys: String, CodingKey {
+        case theme, font, cursor, window, behavior, shell, diff, editor, approval, telemetry
+    }
+
     public init() {
         self.theme = ThemeConfig()
         self.font = FontConfig()
@@ -40,7 +53,7 @@ public struct Config: Codable {
         guard let data = try? Data(contentsOf: fileURL),
               let tomlString = String(data: data, encoding: .utf8) else {
             Log.error("Failed to read config file at \(expandedPath)", category: "config")
-            return Config()
+            return failedLoad()
         }
 
         do {
@@ -51,8 +64,25 @@ public struct Config: Codable {
             return config
         } catch {
             Log.error("Failed to parse config: \(error)", category: "config")
-            return Config()
+            // Preserve the user's broken-but-recoverable file alongside itself so
+            // it survives even if something later recreates a default in place.
+            let bakURL = fileURL.appendingPathExtension("bak")
+            do {
+                try data.write(to: bakURL)
+                Log.error("Backed up unparseable config to \(bakURL.path)", category: "config")
+            } catch {
+                Log.error("Failed to back up unparseable config: \(error)", category: "config")
+            }
+            return failedLoad()
         }
+    }
+
+    /// Defaults tagged as originating from a failed load, so `save()` won't
+    /// overwrite the on-disk file with them. See `loadDidFail`.
+    private static func failedLoad() -> Config {
+        var config = Config()
+        config.loadDidFail = true
+        return config
     }
 
     private static func createDefaultConfig(at url: URL) {
@@ -194,6 +224,14 @@ always_ask = []
     }
 
     public func save(to path: String = "~/.config/sidekick/config.toml") {
+        // Never write defaults back over a file that failed to load — doing so
+        // would destroy a config that is merely broken (and recoverable). The
+        // original is left untouched, with a copy at config.toml.bak.
+        guard !loadDidFail else {
+            Log.error("Refusing to save config: the on-disk file failed to load, so writing would clobber it with defaults. Fix or remove ~/.config/sidekick/config.toml (a backup is at config.toml.bak).", category: "config")
+            return
+        }
+
         let expandedPath = NSString(string: path).expandingTildeInPath
         let fileURL = URL(fileURLWithPath: expandedPath)
         // Write to the real target when the config is a stowed symlink, so the
