@@ -34,6 +34,17 @@ public final class SidekickIPCClient {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
 
+        // Convert a broken-pipe write into an EPIPE return instead of a SIGPIPE:
+        // if Sidekick closes the read side mid-`write` below, the default signal
+        // would terminate the caller — fatal for the long-lived `sidekick-mcp`
+        // server. The write loop already treats a non-positive return as failure,
+        // so EPIPE is handled gracefully. Darwin-only socket option; on Linux the
+        // helpers ignore SIGPIPE process-wide instead.
+        #if !canImport(Glibc)
+        var noSigPipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        #endif
+
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let maxPathLength = MemoryLayout.size(ofValue: address.sun_path)

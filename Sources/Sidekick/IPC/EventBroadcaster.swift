@@ -61,10 +61,12 @@ nonisolated struct SidekickEvent: Codable, Sendable {
 ///
 /// Lifecycle: the connection's own IPC thread registers the FD, then blocks
 /// reading it (a client never sends on an event stream) so EOF unblocks promptly
-/// for cleanup. That reader thread is the *sole owner* of `close`. `emit` runs on
-/// the main thread (notifications fire there); to a dead or wedged consumer it
-/// `shutdown`s the socket — never `close`s it — so the owning reader closes it
-/// and no FD number can be reused out from under an in-flight write.
+/// for cleanup. That reader thread is the *sole owner* of `close`, which it takes
+/// under `writeLock` so it can't fire mid-write; `send` re-checks membership under
+/// `lock` while holding `writeLock`, so an in-flight emit that snapshotted the fd
+/// never writes into a recycled descriptor. `emit` runs on the main thread
+/// (notifications fire there); to a dead or wedged consumer it `shutdown`s the
+/// socket — never `close`s it — so the owning reader wakes and closes it.
 /// Optional narrowing for an `events --follow` subscriber. A nil field matches
 /// everything; the `hello` connection marker is always delivered regardless, so
 /// a client always learns it connected even under a filter that excludes it.
@@ -134,8 +136,14 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
     }
 
     /// Called by the owning reader thread once its socket reaches EOF. The sole
-    /// `close` site, so a `shutdown` from `emit` can't race FD reuse.
+    /// `close` site. Taken under `writeLock` so the close can't fire while `emit`
+    /// holds it mid-`write`; paired with the membership re-check in `send(line:)`,
+    /// this closes the FD-reuse window — an in-flight emit that snapshotted this
+    /// fd re-verifies subscription under `writeLock` before writing, so it either
+    /// writes before removal or skips after it, never into a recycled descriptor.
     func removeSubscriber(_ fd: Int32) {
+        writeLock.lock()
+        defer { writeLock.unlock() }
         lock.lock()
         subscribers[fd] = nil
         lock.unlock()
@@ -189,6 +197,15 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
     private func send(line: Data, to fd: Int32) {
         writeLock.lock()
         defer { writeLock.unlock() }
+        // Re-verify membership under `lock` while holding `writeLock`:
+        // `removeSubscriber` clears the entry and closes the fd in the same
+        // writeLock-guarded section, so an fd still present here is guaranteed
+        // open for the duration of this write — never closed and recycled
+        // between `emit`'s snapshot and this `write()`.
+        lock.lock()
+        let subscribed = subscribers[fd] != nil
+        lock.unlock()
+        guard subscribed else { return }
         guard isWritable(fd) else {
             drop(fd)
             return

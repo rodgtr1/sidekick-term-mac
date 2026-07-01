@@ -318,6 +318,13 @@ private func handleToolsCall(id: Any, params: [String: Any]) {
 
 // MARK: - Main loop
 
+// Survive a broken pipe on either channel: writing to stdout after the MCP
+// client disconnects, or the IPC socket closing mid-write, would otherwise
+// deliver SIGPIPE and kill this long-lived server. Ignoring it turns both into
+// EPIPE returns the write paths already handle. (The IPC socket also sets
+// SO_NOSIGPIPE; this additionally covers the stdout protocol channel.)
+signal(SIGPIPE, SIG_IGN)
+
 logLine("ready on \(defaultSidekickSocketPath())")
 
 while let line = readLine(strippingNewline: true) {

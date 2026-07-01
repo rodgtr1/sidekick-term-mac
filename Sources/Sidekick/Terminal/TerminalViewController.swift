@@ -1380,8 +1380,15 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     /// Returns agent tracking to a clean slate (state idle, heuristics
     /// re-armed) once the agent process is known to be gone.
+    ///
+    /// Runs unconditionally — never short-circuits on `lastDetectedAgentState ==
+    /// .idle`. A hooked agent often reports `idle` (OSC 666) as its last status
+    /// before exiting; guarding on idle would skip `hasExplicitAgentStatus =
+    /// false` and latch the pane in hook-authoritative mode, so the text
+    /// heuristics never resume for a later un-hooked process here. Every line
+    /// below is idempotent, and `notifyDetectedAgentState` self-dedups, so the
+    /// redundant-idle case this guard once handled is covered without the latch.
     private func resetAgentState() {
-        guard lastDetectedAgentState != .idle else { return }
         hasExplicitAgentStatus = false
         recentOutput = ""
         agentDoneTimer?.invalidate()
