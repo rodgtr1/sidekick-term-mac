@@ -1,6 +1,6 @@
 import Cocoa
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var mainWindowController: MainWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -226,9 +226,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(NSMenuItem.separator())
 
         // Auto-approve agent edits this session (checkmark reflects effective
-        // state, including the [approval] config mode). ⇧⌘A.
-        let autoApproveItem = NSMenuItem(title: "Auto-approve Agent Edits", action: #selector(toggleAutoApproveEdits), keyEquivalent: "a")
-        autoApproveItem.keyEquivalentModifierMask = [.command, .shift]
+        // state, including the [approval] config mode). No key equivalent: ⇧⌘A
+        // is owned by the Agents panel (KeyboardCommandRouter), whose event
+        // monitor intercepts the chord before menu dispatch, so a shortcut here
+        // would be dead. It's also security-sensitive, so it stays a deliberate
+        // menu action rather than a hotkey that could be toggled by accident.
+        let autoApproveItem = NSMenuItem(title: "Auto-approve Agent Edits", action: #selector(toggleAutoApproveEdits), keyEquivalent: "")
         autoApproveItem.target = self
         viewMenu.addItem(autoApproveItem)
 
@@ -268,7 +271,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindowController?.toggleAutoApproveEdits()
     }
 
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleAutoApproveEdits) {
             menuItem.state = (mainWindowController?.shouldAutoApproveEdits ?? false) ? .on : .off
         }

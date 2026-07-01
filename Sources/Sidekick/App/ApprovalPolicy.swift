@@ -96,14 +96,24 @@ nonisolated enum ApprovalPolicy {
         return globalAuto ? .allow : .ask
     }
 
-    /// True when an `auto_allow` glob would match essentially every path — an
-    /// empty pattern or one that translates to a bare `.*` (e.g. `**`). Such a
+    /// True when an `auto_allow` glob would match essentially every path. Such a
     /// pattern is rejected so a typo can't silently auto-approve the whole tree.
+    ///
+    /// Inspecting the compiled regex body misses catch-alls whose body isn't
+    /// literally `.*`: `*` compiles to `(^|/)[^/]*$`, `/**` to `^/.*$`, and
+    /// `**/*` to `(^|/).*[^/]*$` — each matches every path. Instead, probe the
+    /// matcher with a set of maximally dissimilar absolute paths; anything that
+    /// matches all of them is a blanket allow, not a selective allow-list entry.
     static func isOverBroad(_ pattern: String) -> Bool {
         let trimmed = pattern.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return true }
-        let body = regexBody((trimmed as NSString).expandingTildeInPath)
-        return body.isEmpty || body == ".*"
+        let probes = [
+            "/a",
+            "/z/y/x/w.txt",
+            "/Users/nobody/.env",
+            "/etc/hosts",
+        ]
+        return probes.allSatisfy { globMatch(trimmed, canonicalPath: $0) == .match }
     }
 
     /// Canonicalizes a path for matching: expands `~`, resolves symlinks, and
@@ -136,7 +146,11 @@ nonisolated enum ApprovalPolicy {
         let anchored = expandedPattern.hasPrefix("/")
         let body = regexBody(expandedPattern)
         let prefix = anchored ? "^" : "(^|/)"
-        guard let regex = try? NSRegularExpression(pattern: prefix + body + "$") else {
+        // Case-insensitive: the default macOS filesystem (APFS/HFS+) is
+        // case-insensitive, so `.ENV` and `.env` are the same file. Matching
+        // case-sensitively would let an agent bypass an `always_ask` rule by
+        // reporting a differently-cased path for the same on-disk file.
+        guard let regex = try? NSRegularExpression(pattern: prefix + body + "$", options: [.caseInsensitive]) else {
             return .invalid
         }
         let range = NSRange(path.startIndex..., in: path)

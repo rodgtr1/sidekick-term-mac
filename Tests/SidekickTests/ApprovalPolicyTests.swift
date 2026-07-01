@@ -26,6 +26,33 @@ final class ApprovalPolicyTests: XCTestCase {
         XCTAssertFalse(ApprovalPolicy.glob("/other/**", matches: "/repo/Sources/Foo.swift"))
     }
 
+    func testMatchingIsCaseInsensitive() {
+        // The default macOS filesystem is case-insensitive, so a rule for
+        // `.env` must also cover `.ENV` / `.Env` — same file on disk.
+        XCTAssertTrue(ApprovalPolicy.glob(".env", matches: "/repo/.ENV"))
+        XCTAssertTrue(ApprovalPolicy.glob("Secrets/**", matches: "/repo/secrets/key.pem"))
+    }
+
+    // MARK: - Over-broad auto_allow guard
+
+    func testOverBroadPatternsRejected() {
+        for pattern in ["", "   ", "*", "**", "/**", "**/*", "*/**", "?*"] {
+            XCTAssertTrue(ApprovalPolicy.isOverBroad(pattern), "expected over-broad: \(pattern)")
+        }
+    }
+
+    func testSelectivePatternsNotOverBroad() {
+        for pattern in ["*.swift", "Sources/**", ".env", "/repo/**", "**/*.env", "src/*.ts"] {
+            XCTAssertFalse(ApprovalPolicy.isOverBroad(pattern), "expected selective: \(pattern)")
+        }
+    }
+
+    func testOverBroadAutoAllowIgnored() {
+        // A bare `*` typo must not silently auto-approve every edit in ask mode.
+        XCTAssertEqual(decide("/repo/.env", autoAllow: ["*"]), .ask)
+        XCTAssertEqual(decide("/repo/Sources/Foo.swift", autoAllow: ["/**"]), .ask)
+    }
+
     // MARK: - Decision precedence
 
     private func decide(
