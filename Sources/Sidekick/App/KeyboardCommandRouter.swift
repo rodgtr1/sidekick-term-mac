@@ -50,6 +50,11 @@ extension KeyboardCommand {
         case .zoomOut: return "⌘-"
         case .zoomReset: return "⌘0"
         case .preferences: return "⌘,"
+        case .saveFile: return "⌘S"
+        case .cycleTabs(let forward): return forward ? "⌃Tab" : "⌃⇧Tab"
+        case .focusPane(let forward): return forward ? "⌘]" : "⌘["
+        case .pasteIntoTerminal: return "⌘V"
+        case .focusAgentAttention: return "⇧⌘J"
         default: return nil
         }
     }

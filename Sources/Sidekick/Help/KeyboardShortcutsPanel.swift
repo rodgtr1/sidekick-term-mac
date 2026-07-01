@@ -30,42 +30,68 @@ class KeyboardShortcutsPanel: NSPanel {
         center()
     }
 
+    /// Which commands to list, and how to describe/categorize them. The key
+    /// string itself always comes from `KeyboardCommand.displayShortcut` —
+    /// the single source of truth in KeyboardCommandRouter — so this panel
+    /// can't drift from the actual bindings the way a hand-copied list did.
+    private static let entries: [(command: KeyboardCommand, description: String, category: String)] = [
+        // Tabs
+        (.newTab, "New terminal tab", "Tabs"),
+        (.closeTab, "Close the current tab", "Tabs"),
+        (.cycleTabs(forward: true), "Cycle to next tab", "Tabs"),
+        (.cycleTabs(forward: false), "Cycle to previous tab", "Tabs"),
+
+        // Panes
+        (.closeCurrentPane, "Close the current pane", "Panes"),
+        (.splitPane(.horizontal), "Split terminal right", "Panes"),
+        (.splitPane(.vertical), "Split terminal down", "Panes"),
+        (.focusPane(forward: false), "Focus previous pane", "Panes"),
+        (.focusPane(forward: true), "Focus next pane", "Panes"),
+
+        // Sidebar
+        (.toggleSidebar, "Toggle sidebar", "Sidebar"),
+        (.showPanel(.files), "Show file explorer panel", "Sidebar"),
+        (.showPanel(.git), "Show git panel", "Sidebar"),
+        (.showPanel(.search), "Show search-in-files panel", "Sidebar"),
+        (.showPanel(.agents), "Show agents panel", "Sidebar"),
+        (.showPanel(.hosts), "Show SSH hosts panel", "Sidebar"),
+        (.toggleHiddenFiles, "Toggle hidden files in the file tree", "Sidebar"),
+
+        // Agents
+        (.focusAgentAttention, "Jump to next agent needing attention", "Agents"),
+
+        // Files
+        (.quickOpen, "Quick open: search file names", "Files"),
+        (.commandPalette, "Open command palette", "Files"),
+        (.saveFile, "Save the current editor tab", "Files"),
+
+        // Terminal
+        (.findInTerminal, "Find in terminal", "Terminal"),
+        (.jumpToPrompt(previous: true), "Jump to previous prompt", "Terminal"),
+        (.jumpToPrompt(previous: false), "Jump to next prompt", "Terminal"),
+        (.pasteIntoTerminal, "Paste (clipboard images become a temp file path)", "Terminal"),
+        (.zoomIn, "Zoom in", "Terminal"),
+        (.zoomOut, "Zoom out", "Terminal"),
+        (.zoomReset, "Reset zoom", "Terminal"),
+
+        // General
+        (.preferences, "Open preferences", "General"),
+    ]
+
     private func loadShortcuts() {
-        shortcuts = [
-            // Tab Management
-            KeyboardShortcut(keys: "⌘T", description: "New terminal tab", category: "Tabs"),
-            KeyboardShortcut(keys: "⌘W", description: "Close the current tab", category: "Tabs"),
-            KeyboardShortcut(keys: "⌃Tab", description: "Cycle to next tab", category: "Tabs"),
-            KeyboardShortcut(keys: "⌃⇧Tab", description: "Cycle to previous tab", category: "Tabs"),
-            KeyboardShortcut(keys: "⌘1-9", description: "Switch to specific tab by number", category: "Tabs"),
+        shortcuts = Self.entries.compactMap { entry in
+            guard let keys = entry.command.displayShortcut else {
+                assertionFailure("Missing displayShortcut for \(entry.command)")
+                return nil
+            }
+            return KeyboardShortcut(keys: keys, description: entry.description, category: entry.category)
+        }
 
-            // Pane Management
-            KeyboardShortcut(keys: "⌘⇧W", description: "Close the current pane", category: "Panes"),
-            KeyboardShortcut(keys: "⌘⇧D", description: "Split terminal right", category: "Panes"),
-            KeyboardShortcut(keys: "⌘⇧X", description: "Split terminal down", category: "Panes"),
-            KeyboardShortcut(keys: "⌘[", description: "Cycle to previous pane", category: "Panes"),
-            KeyboardShortcut(keys: "⌘]", description: "Cycle to next pane", category: "Panes"),
-            KeyboardShortcut(keys: "⌘⌥←/↑", description: "Cycle to previous pane (alternative)", category: "Panes"),
-            KeyboardShortcut(keys: "⌘⌥→/↓", description: "Cycle to next pane (alternative)", category: "Panes"),
-
-            // Sidebar
-            KeyboardShortcut(keys: "⌘⇧B", description: "Toggle sidebar", category: "Sidebar"),
-            KeyboardShortcut(keys: "⌘⇧E", description: "Show file explorer panel", category: "Sidebar"),
-            KeyboardShortcut(keys: "⌘⇧G", description: "Show git panel", category: "Sidebar"),
-            KeyboardShortcut(keys: "⌘⇧F", description: "Show search-in-files panel", category: "Sidebar"),
-
-            // Agents
-            KeyboardShortcut(keys: "⌘⇧A", description: "Show agents panel", category: "Agents"),
-            KeyboardShortcut(keys: "⌘⇧J", description: "Jump to next agent needing attention", category: "Agents"),
-
-            // File Operations
-            KeyboardShortcut(keys: "⌘F", description: "Quick open: search file names", category: "Files"),
-            KeyboardShortcut(keys: "⌘S", description: "Save the current editor tab", category: "Files"),
-
-            // General
-            KeyboardShortcut(keys: "⌘K", description: "Show Keyboard Shortcuts", category: "General"),
-            KeyboardShortcut(keys: "Esc", description: "Close Panel/Dialog", category: "General"),
-        ]
+        // Not single KeyboardCommand cases, so listed directly rather than
+        // derived from displayShortcut.
+        shortcuts.append(KeyboardShortcut(keys: "⌘1-9", description: "Switch to specific tab by number", category: "Tabs"))
+        shortcuts.append(KeyboardShortcut(keys: "⌘K", description: "Show Keyboard Shortcuts", category: "General"))
+        shortcuts.append(KeyboardShortcut(keys: "Esc", description: "Close Panel/Dialog", category: "General"))
     }
 
     private func setupUI() {

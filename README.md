@@ -1,145 +1,87 @@
-# Sidekick macOS — Native Swift/AppKit Terminal
+# Sidekick
 
-A native macOS terminal application built with Swift and AppKit, featuring multi-tab support, split panes, and VS Code-style sidebar panels.
+![Sidekick's Agents panel showing live agent status and per-agent context-usage bars](screenshot-agents-panel.png)
+
+A native macOS terminal built for running AI coding agents — Claude Code,
+Codex, and friends — alongside a real dev environment, not just a shell
+prompt. It's fast (Swift/AppKit, not Electron), it looks like a normal
+terminal, and it adds exactly the things that make agent-driven development
+easier: live per-tab agent status, a context-usage bar so you can see a
+session approaching its token limit, one-click git worktrees so parallel
+agents don't collide, and an inline diff review before an agent's edits land.
+
+Everything else you'd want from a terminal — tabs, splits, a file tree, a git
+panel, a built-in editor — is there too, and every opinionated bit (built-in
+editor vs. your own `$EDITOR`/nvim, sidebar visibility, theme) is a config
+toggle, not a requirement.
+
+## Why Sidekick
+
+- **Built for agent workflows, not bolted onto a generic terminal.** An
+  Agents dashboard shows every running agent's state (working / waiting /
+  done) with a live context-usage bar per agent, dock bounces and
+  notifications when one needs you, and a diff approval panel to review an
+  agent's proposed edits before they land — with configurable auto-approve
+  rules for the edits you trust.
+- **Git worktree per agent.** Spin up an isolated worktree — and optionally
+  launch an agent straight into it — with one action, so parallel agents
+  never fight over the same working tree.
+- **A real sidebar without leaving the terminal.** Files, Search, Git,
+  Worktrees, Agents, and SSH Hosts panels, VS Code-style, in a native window.
+- **Scriptable down to the socket.** A Unix-socket IPC layer, a `sidekick-ctl`
+  CLI, and a full [MCP](https://modelcontextprotocol.io) server mean any
+  agent or script — not just the ones running inside Sidekick — can list
+  panes, split them, run commands, and read output.
+- **Native and fast.** Swift + AppKit, not a bundled browser.
+- **Configurable, not opinionated.** Theme, fonts, editor mode, approval
+  policy — all in one live-reloading `config.toml` or the Preferences window.
 
 ## Features
 
-✅ **Terminal Core**
-- SwiftTerm-powered terminal emulation
-- Auto-detects shell from `$SHELL` environment variable
-- Current working directory tracking with git branch display
-- Catppuccin Mocha color scheme
-- Full copy/paste support (Cmd+C/V)
+**Terminal** — SwiftTerm-powered emulation, auto-detected shell, cwd + git
+branch in the tab title, Catppuccin Mocha/Latte themes (or drop in your own
+JSON palette), tabs, up to 4 splits per tab, and full session restore
+(tabs/panes/cwd) across restarts.
 
-✅ **Multi-Tab Interface**
-- Custom tab bar with close buttons
-- Tab switching with keyboard shortcuts (Ctrl+Tab, Cmd+1-9)
-- Tab title shows current directory + git branch
-- Visual tab indicators for Claude/Codex agent states
-- Dock icon bounces when an agent waits for input or finishes
-- Active tab highlighted with blue border
+**Sidebar** — Files (with git status and a hidden-file toggle), Search,
+Git (stage/unstage/commit/push/pull), Worktrees (create/open/remove with a
+guard against discarding uncommitted work), and Hosts (jump straight into an
+`ssh` session for anything in `~/.ssh/config`).
 
-✅ **Split Panes**
-- Horizontal splits (side-by-side)
-- Vertical splits (top/bottom)
-- Focus tracking with visual borders (blue = active)
-- Pane navigation with Cmd+[ and Cmd+]
-- Up to 4 panes per tab
+**Agent orchestration** — an Agents dashboard with live state per tab and a
+per-agent context-usage bar (green → yellow → red as a session's context
+window fills up); macOS notifications and dock bounces when an agent needs
+input or finishes; an inline diff approval panel with accept/reject/"remember
+for this session"; and a configurable approval policy (ask every edit,
+auto-approve edits, or fully autonomous) with always-allow/always-ask glob
+overrides for things like `.env` and secrets.
 
-✅ **Activity Bar + Sidebar**
-- VS Code-style activity bar with Files, Search, Git, Worktrees, Agents, and Hosts panels
-- File tree with git integration and hidden file toggle
-- Toggle sidebar visibility
-- SF Symbols icons with tooltips
+**Editor** — a built-in editor with tree-sitter syntax highlighting (Swift,
+Go, Rust, Python, TypeScript/JavaScript/JSX/TSX, Markdown), or set
+`file_open_mode = "terminal"` to open files in your own `$EDITOR`/nvim
+instead — the built-in editor is opt-in, not the only option.
 
-✅ **Worktrees panel**
-- Lists the active repo's git worktrees, discovered live from git
-- Per-worktree agent state (from a pane in that checkout) and dirty/conflicted summary
-- Open/focus the worktree's pane, open its diff, or create a new worktree (optionally launching an agent)
-- Guarded removal that warns before discarding uncommitted work
+**MCP server (`sidekick-mcp`)** — exposes pane orchestration as native MCP
+tools (`pane_list`, `pane_split`, `pane_run`, `pane_read`,
+`wait_agent_status`, and more) so Claude Code, Claude Desktop, Cursor, or any
+other MCP client can drive Sidekick directly. See [MCP Server](#mcp-server).
 
-✅ **Editor Integration**
-- Built-in text editor for file viewing/editing
-- Syntax highlighting support
-- Auto-focus on file open
-- Dirty state tracking (● indicator)
-
-✅ **Git Panel**
-- Real-time git status with color-coded indicators
-- Stage/unstage individual files or all changes
-- Commit with multi-line message editor
-- Push/pull operations with progress feedback
-- Branch display and auto-refresh
-
-✅ **Session Restore**
-- Tabs, split panes, and working directories saved to `~/.config/sidekick/session.json`
-- Autosaves every minute and on window close; restores on launch
-- Disable with `restore_session = false` under `[behavior]` in config.toml
-
-✅ **MCP Server (`sidekick-mcp`)**
-- A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes
-  Sidekick's pane orchestration as native tools, so any MCP client (Claude
-  Desktop, Claude Code, Cursor, …) can drive Sidekick directly — no `sidekick-ctl`
-  shell-outs or skill install required
-- Tools: `pane_list` / `pane_current` / `pane_split` / `pane_focus` / `pane_close`,
-  `pane_send_text` / `pane_run` / `pane_send_key`, `pane_read` (incl. `--json`
-  command records), `wait_agent_status` / `wait_output`, and `new_tab`
-- Speaks MCP over stdio (newline-delimited JSON-RPC 2.0) and translates each
-  `tools/call` into the same Unix-socket IPC `sidekick-ctl` uses, so the running
-  app is the single source of truth
-- `scripts/install-agent-status-hooks` builds it, installs it to
-  `~/.local/bin/sidekick-mcp`, and registers it with Claude Code
-  (`claude mcp add --scope user sidekick …`). It also ships inside the app bundle
-  at `Sidekick.app/Contents/MacOS/sidekick-mcp` via `build-app.sh`
-- For other MCP clients (Claude Desktop, Cursor), point them at the binary —
-  example `.mcp.json`:
-  ```json
-  { "mcpServers": { "sidekick": { "command": "/path/to/sidekick-mcp" } } }
-  ```
-- Honours `SIDEKICK_SOCKET_PATH` (defaults to `~/.config/sidekick/sidekick.sock`)
-
-✅ **Quality of Life**
-- App-wide font zoom: `Cmd+=` / `Cmd+-` / `Cmd+0`
-- Paste an image from the clipboard into a terminal (`Cmd+V`): it's written to
-  a temp PNG and the quoted path is typed — handy for handing screenshots to agents
-- Rename tabs (right-click) and drag tabs to reorder
-- macOS notifications when an agent waits for input / finishes or a long
-  command (≥30s) ends while the app is in the background
-- Activity-bar badge counts agents waiting for input
-- config.toml changes apply live (no restart)
-
-## Keyboard Shortcuts
-
-### Tabs
-- `Cmd+T` or `Cmd+Shift+T` - New tab
-- `Cmd+W` - Close tab
-- `Ctrl+Tab` - Next tab
-- `Ctrl+Shift+Tab` - Previous tab
-- `Cmd+1-9` - Switch to tab by index
-- `Cmd+Shift+J` - Jump to next tab whose agent wants attention (needs-input first, then done, then working)
-
-### Splits
-- `Cmd+D` - Split right (horizontal)
-- `Cmd+Shift+D` - Split right (horizontal, alternative)
-- `Cmd+Shift+X` - Split down (vertical)
-- `Cmd+Shift+W` - Close current pane
-
-### Pane Navigation
-- `Cmd+[` - Focus previous pane
-- `Cmd+]` - Focus next pane
-
-### Terminal
-- `Cmd+C` - Copy selected text
-- `Cmd+V` - Paste (clipboard images become a temp PNG path)
-- `Cmd+F` - Find in terminal
-- `Cmd+=` / `Cmd+-` / `Cmd+0` - Zoom in / out / reset (all terminals)
-
-### Sidebar Panels
-- `Cmd+B` - Toggle sidebar
-- `Cmd+Shift+E` - Files panel
-- `Cmd+Shift+G` - Git panel
-- `Cmd+Shift+F` - Search panel
-- `Cmd+Shift+R` - Run panel
-
-### File Operations
-- `Cmd+P` - Quick open file
-- `Cmd+S` - Save current editor file
-
-### System
-- `Cmd+,` - Preferences
+**Quality of life** — quick open (`⌘P`) and a command palette (`⇧⌘P`),
+paste an image straight into a terminal as a temp-file path, app-wide font
+zoom, drag-to-reorder tabs, and `config.toml` changes that apply live with no
+restart.
 
 ## Quick Start
 
 ### Run from Source
 ```bash
-cd sidekick-mac
 swift build
 .build/debug/Sidekick
 ```
 
-### Build macOS App Bundle
+### Build the macOS App
 ```bash
-# Build optimized .app bundle, plus build/Sidekick.dmg and build/Sidekick.zip
+# Build build/Sidekick.app, build/Sidekick.dmg, and build/Sidekick.zip
 ./build-app.sh
 
 # Install by opening the DMG and dragging Sidekick to Applications
@@ -147,314 +89,172 @@ open build/Sidekick.dmg
 
 # Or install to Applications non-interactively
 ./install.sh
-
-# Or manually install
-cp -r build/Sidekick.app /Applications/
 ```
 
-### CLI Tools
+The app isn't notarized yet, so on first launch you may need to go to
+System Settings → Privacy & Security → "Open Anyway" (macOS no longer
+supports right-click → Open to bypass this on recent versions).
+
+Optional one-button setup, once it's installed:
+- **Preferences → Terminal → Install for zsh** — shell integration (prompt
+  marks, cwd tracking, agent-exit cleanup).
+- **Preferences → Agents** — auto-detects Claude Code, Codex, and Pi and
+  wires up the Agents panel. Safe to re-run.
+
+Apple Silicon only for now — Intel would need a universal build
+(`swift build --arch arm64 --arch x86_64`).
+
+## Keyboard Shortcuts
+
+A few of the most-used ones — the full, always-current list is in the app
+via `⌘K` ("Keyboard Shortcuts").
+
+| Shortcut | Action |
+|---|---|
+| `⌘T` / `⌘W` | New tab / close tab |
+| `⌘1`–`⌘9` | Switch to tab by number |
+| `⌘D` / `⇧⌘D` | Split right / split down |
+| `⌘[` / `⌘]` | Focus previous / next pane |
+| `⇧⌘E` / `⇧⌘G` / `⇧⌘F` | Files / Git / Search panel |
+| `⌘P` / `⇧⌘P` | Quick open / command palette |
+| `⇧⌘J` | Jump to the next agent that needs attention |
+| `⌘B` | Toggle sidebar |
+| `⌘=` / `⌘-` / `⌘0` | Zoom in / out / reset |
+| `⌘,` | Preferences |
+
+## MCP Server
+
+`sidekick-mcp` exposes Sidekick's pane orchestration as MCP tools over
+stdio, so any MCP client can drive it directly — no `sidekick-ctl` shell-outs
+needed:
+
+```json
+{ "mcpServers": { "sidekick": { "command": "/path/to/sidekick-mcp" } } }
+```
+
 ```bash
-# Test IPC connection
-.build/debug/sidekick-ctl ping
+# Register it with Claude Code (also installs a build to ~/.local/bin)
+scripts/install-agent-status-hooks
 
-# Emit agent status markers for hooks
-.build/debug/sidekick-agent-status busy
-
-# Or if installed system-wide
-sidekick-ctl ping
+# Or point Claude Code at the copy inside the app bundle directly
+claude mcp add --scope user sidekick /Applications/Sidekick.app/Contents/MacOS/sidekick-mcp
 ```
 
-### Pane Automation
+Tools: `pane_list` / `pane_current` / `pane_split` / `pane_focus` /
+`pane_close`, `pane_send_text` / `pane_run` / `pane_send_key`, `pane_read`
+(incl. `--json` command records), `wait_agent_status` / `wait_output`, and
+`new_tab`. Honors `SIDEKICK_SOCKET_PATH` (default
+`~/.config/sidekick/sidekick.sock`).
 
-`sidekick-ctl` exposes live terminal panes to scripts and coding agents. Pane
-IDs are returned as JSON and remain stable for the lifetime of the pane.
+## Pane Automation (`sidekick-ctl`)
+
+For scripts and agents that want lower-level control, `sidekick-ctl` talks to
+the same Unix socket the MCP server uses:
 
 ```bash
 # Discover panes and the caller's own pane
 sidekick-ctl pane list
 sidekick-ctl pane current
 
-# Split and launch a real process without changing UI focus
+# Split and launch a process without changing UI focus
 sidekick-ctl pane split "$SIDEKICK_PANE_ID" \
   --direction right --cwd "$PWD" --no-focus --exec claude
 
-# Fan out a parallel agent onto its own git worktree (created if needed)
+# Fan an agent out onto its own git worktree (created if needed)
 sidekick-ctl pane split "$SIDEKICK_PANE_ID" \
   --worktree feature/login --no-focus --exec claude
 
-# Control and inspect the returned pane ID
+# Control and inspect a pane
 sidekick-ctl pane run "$PANE_ID" "Review the API error handling"
 sidekick-ctl pane read "$PANE_ID" --source recent --lines 100
 sidekick-ctl wait agent-status "$PANE_ID" done --timeout 600000
 
-# Subscribe to a live event stream (JSONL): agent-state transitions,
-# command completions (OSC 133), and edit-approval decisions
+# Subscribe to a live JSONL event stream: agent-state transitions,
+# command completions, and edit-approval decisions
 sidekick-ctl events --follow
 ```
 
 `pane split --worktree <branch>` resolves the git repo containing the source
-pane, creates (or reuses) a worktree for the branch in a sibling
-`<repo>.worktrees/<branch>` directory, and opens the new pane there — so
-parallel agents can work without clobbering each other's tree.
-
-`events --follow` holds the connection open and emits one JSON object per line
-as things happen, so a supervising agent can react instead of polling:
-
-```json
-{"type":"hello","at":"2026-06-25T12:00:00.000Z"}
-{"type":"agent_state","at":"…","pane_id":"…","tab_id":"…","state":"working"}
-{"type":"command","at":"…","pane_id":"…","command":"swift build","exit_code":0,"duration":4.9}
-{"type":"diff","at":"…","path":"/repo/src/api.swift","decision":"accepted"}
-```
-
-Managed terminals receive `SIDEKICK_ENV`, `SIDEKICK_SOCKET_PATH`, and
-`SIDEKICK_PANE_ID`. Direct `--exec` launches use an argv array rather than a
-shell command. Sidekick currently allows four panes per tab.
-
-The bundled `scripts/install-agent-status-hooks` installer copies the pane
-orchestration skill to both `~/.claude/skills` and `~/.codex/skills`; its source
-is `.claude/skills/sidekick-panes/SKILL.md`.
+pane, creates (or reuses) a worktree for that branch in a sibling
+`<repo>.worktrees/<branch>` directory, and opens the new pane there.
 
 ### Claude/Codex Agent Status Hooks
 
-Sidekick can drive tab status indicators from Claude Code and Codex lifecycle hooks.
-This is more reliable than detecting agent state from terminal text. The helper
-writes an OSC 666 terminal property directly to `/dev/tty`, so hook stdout stays
-clean for the agent.
+Sidekick can drive tab status indicators from Claude Code and Codex
+lifecycle hooks — more reliable than parsing terminal text:
 
 ```bash
 scripts/install-agent-status-hooks
 ```
 
-The installer builds `sidekick-agent-status`, installs it to `~/.local/bin`, and
-adds hooks to `~/.claude/settings.json` and `~/.codex/config.toml`. Restart open
-Claude Code or Codex sessions after installing.
-
-Hook status mapping:
-
-```text
-UserPromptSubmit  -> busy
-PermissionRequest -> ready
-Stop              -> done
-```
-
-Manual status commands are also available:
-
-```bash
-sidekick-agent-status busy
-sidekick-agent-status ready
-sidekick-agent-status done
-sidekick-agent-status idle
-```
-
-## IPC Commands
-
-Sidekick supports IPC commands via Unix socket at `~/.config/sidekick/sidekick.sock`:
-
-```bash
-# Notify that an agent is busy (shows 🟢 on tab)
-echo '{"action":"agent_busy"}' | nc -U ~/.config/sidekick/sidekick.sock
-
-# Notify that an agent is waiting for input (shows 🟡 on tab, bounces dock icon)
-echo '{"action":"agent_ready"}' | nc -U ~/.config/sidekick/sidekick.sock
-
-# Notify that an agent finished the last run (shows 🔵 on tab, bounces dock icon)
-echo '{"action":"agent_done"}' | nc -U ~/.config/sidekick/sidekick.sock
-
-# Create a new tab
-echo '{"action":"new_tab","cwd":"/path/to/dir"}' | nc -U ~/.config/sidekick/sidekick.sock
-
-# List panes
-echo '{"action":"pane_list"}' | nc -U ~/.config/sidekick/sidekick.sock
-
-# Split a pane and directly launch a command
-echo '{"action":"pane_split","pane_id":"UUID","direction":"right","focus":false,"command":["claude"]}' \
-  | nc -U ~/.config/sidekick/sidekick.sock
-
-# Show a diff
-echo '{"action":"show_diff","path":"file.txt","old":"old content","new":"new content"}' | nc -U ~/.config/sidekick/sidekick.sock
-
-# Ping
-echo '{"action":"ping"}' | nc -U ~/.config/sidekick/sidekick.sock
-```
-
-## Deployment
-
-### App Bundle Structure
-```
-Sidekick.app/
-├── Contents/
-│   ├── Info.plist                  # App metadata
-│   ├── MacOS/
-│   │   ├── Sidekick                # Main GUI application
-│   │   ├── sidekick-ctl            # CLI utility
-│   │   ├── sidekick-agent-status   # Agent state reporter (used by hooks)
-│   │   ├── sidekick-mcp            # MCP server (pane orchestration)
-│   │   └── sidekick-telemetry      # Stop-hook token/cost reporter
-│   └── Resources/
-│       └── AppIcon.icns            # App icon
-```
-
-### Handing It to Another Mac
-
-The bundle is self-contained — no source checkout or Swift toolchain needed
-on the receiving end:
-
-1. `./build-app.sh` produces `build/Sidekick.dmg` and `build/Sidekick.zip`
-   alongside the bundle. Hand over the DMG for a normal double-click
-   install; the zip is there for `scp`/USB transfers.
-2. Transfer it. `scp`/USB skips macOS quarantine entirely; browser or
-   AirDrop transfers will need right-click → Open (or System Settings →
-   Privacy & Security → "Open Anyway") on first launch, since the app is
-   not notarized.
-3. Recipient opens the DMG (or unzips the zip) and drags `Sidekick.app` to
-   `/Applications`.
-4. In-app setup (all optional, each one button):
-   - **Preferences → Terminal → Install for zsh** — shell integration
-     (prompt marks, cwd tracking, agent-exit cleanup).
-   - **Preferences → Agents** — detects Claude Code, Codex, and Pi and
-     wires whichever are present to the agents panel, using the binaries
-     inside the app bundle. Safe to re-run; existing config is preserved.
-
-Note: the app is Apple Silicon (arm64) only as built; Intel Macs would
-need a universal build (`swift build --arch arm64 --arch x86_64`).
-
-### Installation Options
-
-**1. Direct Download**
-- Users download & drag `Sidekick.app` to Applications
-
-**2. Command Line**
-```bash
-# Install app bundle
-cp -r build/Sidekick.app /Applications/
-
-# Add CLI tools to PATH (optional)
-ln -sf /Applications/Sidekick.app/Contents/MacOS/sidekick-ctl /usr/local/bin/sidekick-ctl
-```
-
-**3. Future Distribution**
-- Homebrew Cask: `brew install --cask sidekick`
-- Mac App Store (requires Apple Developer account)
-- Notarization for Gatekeeper compatibility
-
-## Requirements
-
-- macOS 13.0+ (Ventura)
-- Swift 5.9+
-- Xcode command line tools
-
-## Dependencies
-
-- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) - Terminal emulation
-- [TOMLKit](https://github.com/LebJe/TOMLKit) - Configuration file parsing
-
-## Architecture
-
-### Phase Progress
-- ✅ Phase 1: Project scaffold, dependencies, config
-- ✅ Phase 2: Terminal core with SwiftTerm
-- ✅ Phase 3: Multi-tab + Split panes
-- ✅ Phase 4: Activity bar + Sidebar
-- ✅ Phase 5: File Tree (NSOutlineView)
-- ✅ Phase 6: Git Panel
-- 📋 Phase 7: Search Panel
-- 📋 Phase 8: Quick Open (Cmd+P)
-- 📋 Phase 9: Task Runner Panel
-- 📋 Phase 11: IPC (Unix Socket)
-- 📋 Phase 12: Polish + Packaging
-
-### Project Structure
-```
-sidekick-mac/
-├── Package.swift           # SPM configuration
-├── Sources/Sidekick/
-│   ├── App/                # AppDelegate, MainWindowController
-│   ├── Config/             # Configuration structs
-│   ├── Terminal/           # Terminal emulation + CWD detection
-│   ├── Tabs/               # Tab management
-│   ├── Panes/              # Split pane management
-│   └── Sidebar/            # Activity bar + sidebar panels
-├── Sources/sidekick-ctl/   # CLI utility
-├── Info.plist             # App bundle metadata
-├── build-app.sh           # Build script
-└── install.sh             # Installation script
-```
+This builds `sidekick-agent-status`, installs it to `~/.local/bin`, and adds
+hooks to `~/.claude/settings.json` and `~/.codex/config.toml`
+(`UserPromptSubmit` → busy, `PermissionRequest` → ready, `Stop` → done).
+Restart open Claude Code/Codex sessions after installing.
 
 ## Configuration
 
-The app loads configuration from `~/.config/sidekick/config.toml`. It's created
-with defaults on first launch; changes apply live (no restart). Every supported
-key is shown below with its default value:
+Sidekick loads `~/.config/sidekick/config.toml`, created with defaults on
+first launch. Changes apply live — no restart needed.
 
 ```toml
 [theme]
-# catppuccin-mocha (dark), catppuccin-latte (light), or "auto" to follow macOS.
-# Drop custom palettes (same JSON schema) into ~/.config/sidekick/themes/.
-name = "catppuccin-mocha"
+name = "catppuccin-mocha"    # catppuccin-mocha | catppuccin-latte | auto (follow macOS)
 
 [font]
-family = "Menlo"          # any monospace font installed on your system
-size = 13                 # points
-bold_is_bright = true     # bold text uses bright palette colors
+family = "Menlo"
+size = 13
+bold_is_bright = true
 
 [cursor]
-shape = "block"           # block | ibeam | underline
+shape = "block"              # block | ibeam | underline
 blink = true
 
 [window]
-padding = 8               # inner padding around terminal content (pixels)
-opacity = 0.9             # 0.0 (transparent) … 1.0 (opaque)
-enable_blur = true        # macOS background blur/vibrancy
+padding = 8
+opacity = 0.9
+enable_blur = true
 
 [behavior]
-scrollback_lines = 10000  # -1 for unlimited
-scroll_on_output = false  # scroll to bottom when new output appears
+scrollback_lines = 10000     # -1 for unlimited
+scroll_on_output = false
 scroll_on_keystroke = true
-allow_hyperlinks = true   # clickable URLs
-mouse_autohide = true     # hide mouse cursor while typing
+allow_hyperlinks = true
+mouse_autohide = true
 audible_bell = false
-restore_session = true    # restore tabs/cwd from previous session on launch
+restore_session = true
 
 [shell]
-program = ""              # empty = use $SHELL
+program = ""                 # empty = use $SHELL
 args = []
 default_cwd = "~"
 
 [diff]
-context_lines = 3         # context lines shown in diffs
+context_lines = 3
 
 [editor]
-file_open_mode = "terminal"  # terminal (opens in $EDITOR/nvim) | builtin (Sidekick editor pane)
-font_family = ""             # empty = system monospaced font
-word_wrap = true             # true = word wrap, false = horizontal scroll
-font_size = 13               # built-in editor text size (points)
-show_hidden_files = false    # show hidden/gitignored files in the file tree (dimmed)
+file_open_mode = "terminal"  # terminal ($EDITOR/nvim) | builtin (Sidekick's editor pane)
+font_family = ""
+word_wrap = true
+font_size = 13
+show_hidden_files = false
 ```
 
-## Development
+Drop custom theme palettes (same JSON schema as the built-ins) into
+`~/.config/sidekick/themes/`.
 
-### Building
-```bash
-# Debug build
-swift build
+## Requirements
 
-# Release build
-swift build --configuration release
+- macOS 13.0+ (Ventura)
+- Swift 6.2+ toolchain (Xcode 26+) to build from source
 
-# Build app bundle
-./build-app.sh
-```
+## Dependencies
 
-### Testing
-```bash
-# Run main app
-.build/debug/Sidekick
-
-# Test CLI
-.build/debug/sidekick-ctl ping
-```
+- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) — terminal emulation
+- [TOMLKit](https://github.com/LebJe/TOMLKit) — config file parsing
+- [SwiftTreeSitter](https://github.com/ChimeHQ/SwiftTreeSitter) + per-language
+  tree-sitter grammars — editor syntax highlighting
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT — see [LICENSE](LICENSE).
