@@ -104,6 +104,41 @@ Optional one-button setup, once it's installed:
 Apple Silicon only for now — Intel would need a universal build
 (`swift build --arch arm64 --arch x86_64`).
 
+## Preferences
+
+### Editor
+
+**Preferences → Editor → File Tree Opens** picks what happens when you open
+a file from the sidebar:
+- **Terminal Editor** — opens it with `$EDITOR` (falling back to `nvim`) right
+  in the terminal pane.
+- **Built-in Editor** — opens it in Sidekick's own editor pane, with its own
+  font/size, word-wrap, and tree-sitter syntax highlighting.
+
+A separate checkbox toggles whether hidden (dot) files show up — dimmed — in
+the file tree.
+
+### Agents
+
+**Preferences → Agents** has one row per supported agent (Claude Code, Codex,
+Pi). Sidekick detects whether each is installed (by looking for its config
+directory) and shows an **Install** button — safe to click more than once.
+Installing wires that agent's own hook/extension system to a bundled status
+helper so its state shows up live in the Agents dashboard and context-usage
+bar:
+
+- **Claude Code** — adds hooks to `~/.claude/settings.json` so prompt
+  submission, tool use, permission requests, and session end/stop map to
+  Sidekick's busy/ready/done/idle states, plus a hook that reports token
+  usage and cost.
+- **Codex** — enables `hooks = true` and adds equivalent `[[hooks.<event>]]`
+  blocks to `~/.codex/config.toml`.
+- **Pi** — drops a TypeScript extension into `~/.pi/agent/extensions/` that
+  reports status over OSC 666 and forwards session transcripts for telemetry.
+
+Approval behavior (auto-approve vs. ask-every-edit vs. fully autonomous)
+lives in the separate **Approvals** tab, not here.
+
 ## Keyboard Shortcuts
 
 A few of the most-used ones — the full, always-current list is in the app
