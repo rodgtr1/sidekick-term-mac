@@ -106,4 +106,34 @@ final class KeyboardCommandRouterZoomTests: XCTestCase {
         XCTAssertNil(route(24, []))
         XCTAssertNil(route(9, []))
     }
+
+    // MARK: - Exact modifier matching (M7)
+
+    func testControlCommandFDoesNotHijackFullscreen() {
+        // ⌃⌘F is macOS "Enter Full Screen" — must fall through, not become ⌘F.
+        XCTAssertNil(route(3, [.command, .control]))
+    }
+
+    func testExtraModifiersDoNotMatchCommandBindings() {
+        XCTAssertNil(route(17, [.command, .option]))   // ⌥⌘T ≠ ⌘T
+        XCTAssertNil(route(2, [.command, .control]))    // ⌃⌘D ≠ ⌘D
+        XCTAssertNil(route(14, [.command, .shift, .control])) // ⌃⇧⌘E ≠ ⇧⌘E
+    }
+
+    func testArrowShortcutsSurviveDeviceFlags() {
+        // Arrow keys report .function/.numericPad alongside the real modifiers;
+        // masking must ignore those so ⌘↑/⌘↓ still route.
+        XCTAssertEqual(route(126, [.command, .function, .numericPad]), .jumpToPrompt(previous: true))
+        XCTAssertEqual(route(125, [.command, .function, .numericPad]), .jumpToPrompt(previous: false))
+    }
+
+    func testCapsLockDoesNotBreakBindings() {
+        XCTAssertEqual(route(17, [.command, .capsLock]), .newTab)
+    }
+
+    func testControlTabCyclesButNotWithCommand() {
+        XCTAssertEqual(route(48, [.control]), .cycleTabs(forward: true))
+        XCTAssertEqual(route(48, [.control, .shift]), .cycleTabs(forward: false))
+        XCTAssertNil(route(48, [.control, .command])) // not a cycle chord
+    }
 }

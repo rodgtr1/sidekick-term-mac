@@ -67,14 +67,19 @@ struct KeyboardCommandRouter {
     ]
 
     func command(for event: NSEvent, tabCount: Int) -> KeyboardCommand? {
-        let modifiers = event.modifierFlags
+        // Keep only the four modifier keys we bind against, dropping device bits
+        // (caps lock, fn, and the numericPad/function flags that arrow keys set).
+        // Then match the set *exactly* so an extra modifier doesn't fall through
+        // to a looser binding — e.g. ⌃⌘F (macOS fullscreen) must not be treated
+        // as ⌘F, and ⌥⌘T must not be treated as ⌘T.
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
         let keyCode = event.keyCode
 
-        if modifiers.contains(.control) && keyCode == 48 {
+        if keyCode == 48 && (modifiers == .control || modifiers == [.control, .shift]) {
             return .cycleTabs(forward: !modifiers.contains(.shift))
         }
 
-        if modifiers.contains([.command, .shift]) {
+        if modifiers == [.command, .shift] {
             switch keyCode {
             case 14: return .showPanel(.files)
             case 5: return .showPanel(.git)
@@ -92,7 +97,7 @@ struct KeyboardCommandRouter {
             }
         }
 
-        if modifiers.contains(.command) && !modifiers.contains(.shift) {
+        if modifiers == .command {
             switch keyCode {
             case 17: return .newTab
             case 13: return .closeTab
