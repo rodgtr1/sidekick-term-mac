@@ -139,10 +139,13 @@ swift build
 
 ### Build macOS App Bundle
 ```bash
-# Build optimized .app bundle
+# Build optimized .app bundle, plus build/Sidekick.dmg and build/Sidekick.zip
 ./build-app.sh
 
-# Install to Applications (optional)
+# Install by opening the DMG and dragging Sidekick to Applications
+open build/Sidekick.dmg
+
+# Or install to Applications non-interactively
 ./install.sh
 
 # Or manually install
@@ -297,12 +300,15 @@ Sidekick.app/
 The bundle is self-contained — no source checkout or Swift toolchain needed
 on the receiving end:
 
-1. `./build-app.sh` produces `build/Sidekick.zip` alongside the bundle.
+1. `./build-app.sh` produces `build/Sidekick.dmg` and `build/Sidekick.zip`
+   alongside the bundle. Hand over the DMG for a normal double-click
+   install; the zip is there for `scp`/USB transfers.
 2. Transfer it. `scp`/USB skips macOS quarantine entirely; browser or
    AirDrop transfers will need right-click → Open (or System Settings →
    Privacy & Security → "Open Anyway") on first launch, since the app is
    not notarized.
-3. Recipient unzips and drags `Sidekick.app` to `/Applications`.
+3. Recipient opens the DMG (or unzips the zip) and drags `Sidekick.app` to
+   `/Applications`.
 4. In-app setup (all optional, each one button):
    - **Preferences → Terminal → Install for zsh** — shell integration
      (prompt marks, cwd tracking, agent-exit cleanup).

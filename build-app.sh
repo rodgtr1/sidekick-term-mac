@@ -112,10 +112,26 @@ fi
 echo "📦 Creating distribution zip..."
 ditto -c -k --keepParent "${BUILD_DIR}/${BUNDLE_NAME}" "${BUILD_DIR}/Sidekick.zip"
 
+# DMG for the standard drag-to-Applications install experience. Built from a
+# staging dir so the mounted volume shows the app next to an Applications
+# shortcut, same layout as most macOS app installers.
+echo "💿 Creating distribution DMG..."
+DMG_STAGING="${BUILD_DIR}/dmg-staging"
+rm -rf "${DMG_STAGING}"
+mkdir -p "${DMG_STAGING}"
+cp -R "${BUILD_DIR}/${BUNDLE_NAME}" "${DMG_STAGING}/${BUNDLE_NAME}"
+ln -s /Applications "${DMG_STAGING}/Applications"
+rm -f "${BUILD_DIR}/Sidekick.dmg"
+hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_STAGING}" -ov -format UDZO "${BUILD_DIR}/Sidekick.dmg"
+rm -rf "${DMG_STAGING}"
+
 echo "✅ App bundle created at: ${BUILD_DIR}/${BUNDLE_NAME}"
+echo "✅ Distribution DMG at:   ${BUILD_DIR}/Sidekick.dmg"
 echo "✅ Distribution zip at:   ${BUILD_DIR}/Sidekick.zip"
 echo ""
 echo "📱 To install:"
+echo "   open ${BUILD_DIR}/Sidekick.dmg   # then drag Sidekick to Applications"
+echo "   # or, without the DMG:"
 echo "   cp -r ${BUILD_DIR}/${BUNDLE_NAME} /Applications/"
 echo ""
 echo "🚀 To run:"
