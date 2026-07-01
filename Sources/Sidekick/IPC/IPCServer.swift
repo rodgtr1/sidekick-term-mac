@@ -123,6 +123,7 @@ nonisolated enum IPCCommandType {
     case worktreeRemove(branch: String, cwd: String?, force: Bool)
     case worktreePrune(cwd: String?)
     case reportTelemetry(paneID: UUID, usage: TranscriptUsage)
+    case resetTelemetry(paneID: UUID)
 
     static func from(_ command: IPCCommand) -> IPCCommandType? {
         switch command.action {
@@ -228,6 +229,9 @@ nonisolated enum IPCCommandType {
                   let data = json.data(using: .utf8),
                   let usage = try? JSONDecoder().decode(TranscriptUsage.self, from: data) else { return nil }
             return .reportTelemetry(paneID: paneID, usage: usage)
+        case "reset_telemetry":
+            guard let paneID = uuid(command.paneID) else { return nil }
+            return .resetTelemetry(paneID: paneID)
         default:
             return nil
         }

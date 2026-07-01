@@ -80,6 +80,9 @@ enum AgentIntegrationInstaller {
             // A pre-PermissionRequest install lacks the needs-input hook; prompt
             // a reinstall so addClaudeHook idempotently adds it.
             guard settings.contains("PermissionRequest") else { return .available }
+            // A pre-SessionStart telemetry install keeps a stale context meter
+            // after /clear; prompt a reinstall so the reset hook gets added.
+            if isTelemetryHelperBundled, !settings.contains("SessionStart") { return .available }
             return telemetryFullyInstalled(in: settings) ? .installed : .available
         case .codex:
             guard directoryExists(home.appendingPathComponent(".codex")) else { return .notDetected }
@@ -412,6 +415,10 @@ enum AgentIntegrationInstaller {
         // is bundled; it dedups against the status Stop hook by binary name.
         if let telemetryBinary = helperURL(named: "sidekick-telemetry") {
             addClaudeHook(to: &hooks, event: "Stop", command: telemetryBinary.path)
+            // SessionStart (startup, /clear, resume) re-reports or resets the
+            // pane's telemetry so the context meter doesn't keep showing the
+            // previous session until the new one finishes a turn.
+            addClaudeHook(to: &hooks, event: "SessionStart", command: telemetryBinary.path)
         }
         // The sidekick-hook PreToolUse diff popup duplicated Claude Code's own
         // approval prompt (the hook never emitted a permission decision, so the

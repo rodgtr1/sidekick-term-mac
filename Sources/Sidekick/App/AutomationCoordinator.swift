@@ -472,6 +472,19 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             emitTelemetryEvent(paneID: paneID, tab: tab, usage: usage)
             completion(IPCResponse(ok: true))
 
+        case .resetTelemetry(let paneID):
+            // A new session started in this pane (SessionStart hook after
+            // startup or /clear): the previous session's usage no longer
+            // describes it, so blank the dashboard row instead of showing the
+            // old context bar until the first turn of the new session ends.
+            paneTelemetry.removeValue(forKey: paneID)
+            Log.debug("telemetry reset pane=\(paneID.uuidString.prefix(8))", category: "telemetry")
+            let tab = automationPane(id: paneID)?.tab
+            tab.map(updateTabTelemetry)
+            NotificationCenter.default.post(name: .paneTelemetryChanged, object: tab)
+            emitTelemetryEvent(paneID: paneID, tab: tab, usage: TranscriptUsage())
+            completion(IPCResponse(ok: true))
+
         case .worktreePrune(let cwd):
             let directory = worktreeDirectory(cwd: cwd)
             DispatchQueue.global(qos: .userInitiated).async {

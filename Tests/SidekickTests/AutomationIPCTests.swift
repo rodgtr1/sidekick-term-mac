@@ -157,6 +157,20 @@ final class AutomationIPCTests: XCTestCase {
         XCTAssertNil(IPCCommandType.from(noBlob))
     }
 
+    func testResetTelemetryDecodesPane() throws {
+        let paneID = UUID()
+        let cmd = try JSONDecoder().decode(IPCCommand.self, from: JSONSerialization.data(
+            withJSONObject: ["action": "reset_telemetry", "pane_id": paneID.uuidString]))
+        guard case let .resetTelemetry(decodedPane) = IPCCommandType.from(cmd) else {
+            return XCTFail("Expected resetTelemetry")
+        }
+        XCTAssertEqual(decodedPane, paneID)
+
+        let badPane = try JSONDecoder().decode(IPCCommand.self, from: JSONSerialization.data(
+            withJSONObject: ["action": "reset_telemetry", "pane_id": "not-a-uuid"]))
+        XCTAssertNil(IPCCommandType.from(badPane))
+    }
+
     func testPaneReadRejectsUnboundedLineCount() throws {
         let json = """
         {"action":"pane_read","pane_id":"\(UUID().uuidString)","lines":10001}
