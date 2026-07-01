@@ -580,8 +580,14 @@ nonisolated final class IPCServer: @unchecked Sendable {
                 let responded = OnceLatch()
                 delegate.ipcServer(self, didReceiveCommand: commandType) { [weak self] response in
                     guard responded.claim() else { return }
-                    self?.sendResponse(response, to: clientFD)
-                    close(clientFD)
+                    // This completion runs on the main thread (immediately or
+                    // deferred by a wait/approval). A response larger than the
+                    // socket send buffer to a client that stops draining would
+                    // stall the write — so it never happens on main.
+                    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                        self?.sendResponse(response, to: clientFD)
+                        close(clientFD)
+                    }
                 }
             }
         }
@@ -616,6 +622,11 @@ nonisolated final class IPCServer: @unchecked Sendable {
         return nil
     }
 
+    /// A client that connects, sends a request, and stops draining its socket
+    /// gets this long for the response before we give up and close on it —
+    /// bounds how long a response write can pin a worker thread.
+    private static let responseWriteTimeout: DispatchTimeInterval = .seconds(10)
+
     private func sendResponse(_ response: IPCResponse, to clientFD: Int32) {
         let responseData: Data
         if let encoded = try? JSONEncoder().encode(response) {
@@ -623,6 +634,17 @@ nonisolated final class IPCServer: @unchecked Sendable {
         } else {
             responseData = Data("{\"ok\":false}".utf8)
         }
+
+        // The fd is blocking, and a blocking write() past the kernel send
+        // buffer stalls until the client drains — indefinitely, for a client
+        // that never does. Flip it non-blocking and wait for writability in
+        // poll() against a deadline instead, so the worst a wedged client
+        // costs is `responseWriteTimeout` on a background thread.
+        let flags = fcntl(clientFD, F_GETFL)
+        if flags >= 0 {
+            _ = fcntl(clientFD, F_SETFL, flags | O_NONBLOCK)
+        }
+        let deadline = DispatchTime.now() + Self.responseWriteTimeout
 
         var payload = responseData
         payload.append(UInt8(ascii: "\n"))
@@ -632,9 +654,19 @@ nonisolated final class IPCServer: @unchecked Sendable {
             var cursor = baseAddress
             while remaining > 0 {
                 let written = write(clientFD, cursor, remaining)
-                guard written > 0 else { return }
-                remaining -= written
-                cursor = cursor.advanced(by: written)
+                if written > 0 {
+                    remaining -= written
+                    cursor = cursor.advanced(by: written)
+                    continue
+                }
+                guard written < 0, errno == EAGAIN || errno == EINTR else { return }
+                let nowNanos = DispatchTime.now().uptimeNanoseconds
+                guard deadline.uptimeNanoseconds > nowNanos else { return }
+                let waitMillis = Int32(min((deadline.uptimeNanoseconds - nowNanos) / 1_000_000, 1_000))
+                var pfd = pollfd(fd: clientFD, events: Int16(POLLOUT), revents: 0)
+                let ready = poll(&pfd, 1, max(waitMillis, 1))
+                if ready < 0 && errno != EINTR { return }
+                if ready > 0 && (pfd.revents & Int16(POLLOUT | POLLHUP | POLLERR)) == 0 { return }
             }
         }
     }

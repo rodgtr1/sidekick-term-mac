@@ -44,15 +44,17 @@ enum TreeSitterHighlighter {
         guard let tree = parser.parse(source), let root = tree.rootNode else { return false }
 
         let cursor = query.execute(node: root, in: tree)
-        // Restrict the query to the dirty range's *byte* span (tree-sitter works in
-        // UTF-8 bytes, NSRange in UTF-16). Captures are only ever applied within
-        // `range` below, so this yields identical output to scanning the whole
-        // tree — but on a per-keystroke edit it walks the touched region instead of
-        // every capture in the file. A wider construct (e.g. a multi-line string)
-        // still matches because set_byte_range returns patterns intersecting it.
-        if let byteRange = Self.utf8ByteRange(of: range, in: source) {
-            cursor.setByteRange(range: byteRange)
-        }
+        // Restrict the query to the dirty range's byte span. SwiftTreeSitter
+        // parses the source as UTF-16LE, so the tree's byte offsets are 2× the
+        // NSRange units — setRange does that conversion (a UTF-8 conversion
+        // here under-shoots by half and silently drops highlights in the back
+        // half of the file). Captures are only ever applied within `range`
+        // below, so this yields identical output to scanning the whole tree —
+        // but on a per-keystroke edit it walks the touched region instead of
+        // every capture in the file. A wider construct (e.g. a multi-line
+        // string) still matches because set_byte_range returns patterns
+        // intersecting it.
+        cursor.setRange(range)
 
         // First-capture-wins per character, matching tree-sitter's convention
         // that earlier (more specific) query patterns take precedence — so a
@@ -73,19 +75,6 @@ enum TreeSitterHighlighter {
             }
         }
         return true
-    }
-
-    /// Converts a UTF-16 `NSRange` into the UTF-8 byte `Range<UInt32>` tree-sitter
-    /// expects. Returns nil if the range can't be mapped (then the caller skips
-    /// the restriction and queries the whole tree, as before).
-    private static func utf8ByteRange(of range: NSRange, in source: String) -> Range<UInt32>? {
-        guard let swiftRange = Range(range, in: source),
-              let lower = swiftRange.lowerBound.samePosition(in: source.utf8),
-              let upper = swiftRange.upperBound.samePosition(in: source.utf8) else { return nil }
-        let start = source.utf8.distance(from: source.utf8.startIndex, to: lower)
-        let end = source.utf8.distance(from: source.utf8.startIndex, to: upper)
-        guard start <= end else { return nil }
-        return UInt32(start)..<UInt32(end)
     }
 
     // MARK: - Capture → color mapping

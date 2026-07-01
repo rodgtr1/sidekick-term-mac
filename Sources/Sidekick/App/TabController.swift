@@ -162,6 +162,12 @@ final class TabController: NSObject {
 
         let tabToClose = tabs[index]
 
+        // Kill every pane's shell before the models are dropped; nothing else
+        // terminates them and orphaned shells outlive the tab otherwise.
+        for pane in tabToClose.panes {
+            pane.shutdown()
+        }
+
         // Remove and cleanup the split controller for this tab
         if let controller = tabSplitControllers[tabToClose.id] {
             controller.view.removeFromSuperview()
@@ -363,6 +369,8 @@ extension TabController: PaneSplitControllerDelegate {
 
     func paneSplitController(_ controller: PaneSplitController, didClosePane pane: PaneModel, at index: Int) {
         guard let tab = tabs.first(where: { tabSplitControllers[$0.id] === controller }) else { return }
+
+        pane.shutdown()
 
         if index < tab.panes.count, tab.panes[index].id == pane.id {
             tab.panes.remove(at: index)

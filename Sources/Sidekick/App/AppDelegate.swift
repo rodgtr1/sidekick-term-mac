@@ -284,10 +284,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func closePane() {
-        // Close the active pane
-        if let controller = mainWindowController {
-            controller.perform(NSSelectorFromString("closeCurrentPane"))
-        }
+        mainWindowController?.closeCurrentPane()
     }
 
     @objc private func save() {

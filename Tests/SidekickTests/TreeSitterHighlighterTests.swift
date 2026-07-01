@@ -36,6 +36,43 @@ final class TreeSitterHighlighterTests: XCTestCase {
         }
     }
 
+    /// Regression: the query cursor's byte window must be computed in the
+    /// tree's own byte space (UTF-16LE, 2× the NSRange units). A UTF-8
+    /// conversion under-shoots by half, so a full-document pass silently
+    /// dropped every capture in the back half of the file. Asserts a keyword
+    /// past the midpoint actually gets colored.
+    func testHighlightsReachTheBackHalfOfTheDocument() {
+        // Padding pushes a `func` keyword well past the halfway byte offset.
+        let padding = String(repeating: "let filler = 1\n", count: 40)
+        let source = padding + "func trailing() {}\n"
+        let scheme = SyntaxHighlighter.SyntaxColorScheme(
+            text: .white, background: .black, comment: .gray,
+            keyword: .purple, string: .green, number: .orange,
+            function: .blue, type: .yellow
+        )
+        let fullText = source as NSString
+        let textStorage = NSTextStorage(
+            string: source,
+            attributes: [.foregroundColor: scheme.text]
+        )
+        let fullRange = NSRange(location: 0, length: fullText.length)
+
+        textStorage.beginEditing()
+        let handled = TreeSitterHighlighter.highlight(
+            textStorage: textStorage,
+            fullText: fullText,
+            range: fullRange,
+            ext: "swift",
+            scheme: scheme
+        )
+        textStorage.endEditing()
+
+        XCTAssertTrue(handled, "Swift source should be handled by tree-sitter")
+        let keywordLocation = fullText.range(of: "func trailing").location
+        let color = textStorage.attribute(.foregroundColor, at: keywordLocation, effectiveRange: nil) as? NSColor
+        XCTAssertEqual(color, scheme.keyword, "keyword past the file midpoint must be colored")
+    }
+
     /// Confirms the embedded highlights query compiles against the linked Swift
     /// grammar (ABI match) and classifies real tokens — the runtime risk that
     /// `try? Query(...)` would otherwise swallow into a silent regex fallback.

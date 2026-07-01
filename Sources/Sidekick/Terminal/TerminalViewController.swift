@@ -232,6 +232,15 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var shellPID: pid_t {
         terminalView?.process?.shellPid ?? 0
     }
+
+    /// Kills the pane's shell (SIGTERM) and closes its PTY. SwiftTerm never
+    /// does this on dealloc — `LocalProcess`'s pending DispatchIO read keeps
+    /// itself, the master fd, and the child alive — so every pane/tab close
+    /// path must call this or the shell (and anything it runs, like a dev
+    /// server holding a port) survives invisibly until app quit.
+    func terminateProcess() {
+        terminalView?.process?.terminate()
+    }
     private var initialDirectory: String?
     private let paneID: UUID
     private let initialCommand: [String]?

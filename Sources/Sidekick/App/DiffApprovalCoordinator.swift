@@ -40,9 +40,31 @@ final class DiffApprovalCoordinator {
     /// Reset on relaunch, like the auto-approve menu toggle.
     private var sessionApprovals: [UUID?: SessionApprovals] = [:]
 
+    /// Retained observer tokens for window-reappearance notifications. Set on
+    /// the main actor; read once in the nonisolated deinit at end-of-life.
+    nonisolated(unsafe) private var reappearanceObservers: [NSObjectProtocol] = []
+
     init(host: DiffApprovalHost?, onEvent: @escaping (_ path: String, _ decision: String) -> Void) {
         self.host = host
         self.onEvent = onEvent
+
+        // Approvals queued while the window was miniaturized or the app hidden
+        // are held, not resolved (see presentNextIfIdle) — present them as soon
+        // as the review surface is back on screen.
+        let center = NotificationCenter.default
+        for name in [NSWindow.didDeminiaturizeNotification, NSApplication.didUnhideNotification] {
+            reappearanceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.presentNextIfIdle()
+                }
+            })
+        }
+    }
+
+    deinit {
+        for observer in reappearanceObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     /// Decides `path` against policy and either allows it silently or queues a
@@ -105,10 +127,22 @@ final class DiffApprovalCoordinator {
     private func presentNextIfIdle() {
         guard activePanel == nil, !queue.isEmpty else { return }
 
-        // No window to attach a sheet to: fail open rather than leave the hook
-        // blocked and the queue wedged.
-        guard let window = host?.automationWindow, window.isVisible else {
+        // No window at all to attach a sheet to: fail open rather than leave
+        // the hook blocked and the queue wedged. (Window close is handled by
+        // prepareForWindowClose, which drains explicitly.)
+        guard let window = host?.automationWindow else {
             drainQueue()
+            return
+        }
+
+        // The window exists but isn't on screen — miniaturized or app hidden
+        // (⌘H) both report isVisible == false. Those are ordinary "minimize
+        // while the agent works" gestures, not "Sidekick is unavailable":
+        // silently resolving here would approve edits nobody reviewed. Hold
+        // the queue, ask for attention, and the reappearance observers
+        // re-enter this method when the window is back.
+        guard window.isVisible else {
+            NSApp.requestUserAttention(.informationalRequest)
             return
         }
 
@@ -130,11 +164,12 @@ final class DiffApprovalCoordinator {
     }
 
     /// Resolves every queued approval when there is no window to review in
-    /// (app closing, or a diff arrived while the window was hidden). Most fail
-    /// OPEN — allowing the edit — to match the hook's contract that an
-    /// unavailable Sidekick lets edits through. The exception is `always_ask`
-    /// paths: that list exists to force a human decision, so without a window to
-    /// prompt in they fail CLOSED (reject) rather than slip through unreviewed.
+    /// (window closing or already gone — a merely miniaturized/hidden window
+    /// holds the queue instead, see presentNextIfIdle). Most fail OPEN —
+    /// allowing the edit — to match the hook's contract that an unavailable
+    /// Sidekick lets edits through. The exception is `always_ask` paths: that
+    /// list exists to force a human decision, so without a window to prompt in
+    /// they fail CLOSED (reject) rather than slip through unreviewed.
     private func drainQueue() {
         let pending = queue
         queue.removeAll()

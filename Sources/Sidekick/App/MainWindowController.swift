@@ -1362,7 +1362,7 @@ extension MainWindowController {
         }
     }
 
-    private func closeCurrentPane() {
+    func closeCurrentPane() {
         if currentPaneSplitController?.closeActivePane() != true {
             window?.performClose(nil)
         }

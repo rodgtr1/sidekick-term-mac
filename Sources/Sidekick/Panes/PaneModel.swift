@@ -190,6 +190,13 @@ class PaneModel: Identifiable, Hashable {
         return nil
     }
 
+    /// End-of-life teardown: kills the terminal pane's shell. Called from the
+    /// tab controller's close paths rather than deinit, which is nonisolated
+    /// and can't touch the main-actor view controller.
+    func shutdown() {
+        terminalViewController?.terminateProcess()
+    }
+
     func focus() {
         isFocused = true
 
