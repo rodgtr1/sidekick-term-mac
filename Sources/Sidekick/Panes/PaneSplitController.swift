@@ -123,8 +123,11 @@ class PaneSplitController: NSViewController {
         // and show the X on that opened pane instead.
         let terminalCount = panes.filter { $0.paneType == .terminal }.count
         for (pane, button) in paneCloseButtons {
+            // Every pane with a close button also has a container (both maps are
+            // populated together in wrapPaneInContainer), so the old
+            // `paneContainers[pane] == nil` guard was always false.
             let shouldShow = pane.paneType == .terminal ? terminalCount > 1 : true
-            button.isHidden = !shouldShow || paneContainers[pane] == nil
+            button.isHidden = !shouldShow
         }
     }
 
@@ -595,15 +598,12 @@ class ClickableContainerView: NSView {
         self.clickGestureRecognizer = clickRecognizer
     }
 
+    // Activation runs solely through the click gesture recognizer. It fires even
+    // when the click lands on the pane's content subview (which fills the
+    // container and would otherwise swallow mouseDown), so a separate mouseDown
+    // override only double-fired setActivePane without covering any new case.
     @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
-        Log.debug("🖱️ ClickableContainerView gesture recognizer triggered", category: "panes")
         onMouseDown?()
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        Log.debug("🖱️ ClickableContainerView mouseDown called", category: "panes")
-        onMouseDown?()
-        super.mouseDown(with: event)
     }
 }
 

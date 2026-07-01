@@ -99,9 +99,9 @@ public enum TranscriptParser {
             if let model = message["model"] as? String { usage.model = model }
             usage.inputTokens += int(usageObject["input_tokens"])
             usage.outputTokens += int(usageObject["output_tokens"])
-            usage.cacheReadTokens += int(usageObject["cache_read_input_tokens"])
-
             let cacheRead = int(usageObject["cache_read_input_tokens"])
+            usage.cacheReadTokens += cacheRead
+
             let cacheWrite: Int
             if let cacheCreation = usageObject["cache_creation"] as? [String: Any] {
                 let write5m = int(cacheCreation["ephemeral_5m_input_tokens"])

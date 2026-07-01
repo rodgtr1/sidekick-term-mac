@@ -301,7 +301,7 @@ class GitPanelViewController: NSViewController {
         ])
 
         // Commit area constraints
-        if let commitContainer = view.subviews.last {
+        if let commitContainer = commitContainer {
             NSLayoutConstraint.activate([
                 commitContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 commitContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),

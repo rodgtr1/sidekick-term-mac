@@ -36,7 +36,6 @@ class QuickOpenPanel: NSPanel {
 
         setupPanel()
         setupUI()
-        setupKeyboardHandling()
     }
 
     private func setupPanel() {
@@ -152,10 +151,6 @@ class QuickOpenPanel: NSPanel {
         // Setup table view
         tableView.dataSource = self
         tableView.delegate = self
-    }
-
-    private func setupKeyboardHandling() {
-        // Override key handling
     }
 
     override func keyDown(with event: NSEvent) {

@@ -231,6 +231,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     weak var delegate: TerminalViewControllerDelegate?
     private var terminalView: LocalProcessTerminalView!
     private var config: Config
+    /// The four terminal inset constraints paired with their sign, kept so
+    /// applyConfig can re-apply window.padding live instead of only at setup.
+    private var paddingConstraints: [(constraint: NSLayoutConstraint, sign: CGFloat)] = []
     private var cwdTimer: Timer?
     private var currentCWD: String = "~"
     private var isUpdatingCWD = false
@@ -605,14 +608,23 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         view.addSubview(terminalView)
 
-        // Apply padding from config
+        // Apply padding from config. Keep the constraints (with their edge sign)
+        // so applyConfig can update the inset when window.padding changes.
         let padding = CGFloat(config.window.padding)
-        NSLayoutConstraint.activate([
-            terminalView.topAnchor.constraint(equalTo: view.topAnchor, constant: padding),
-            terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: padding),
-            terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -padding),
-            terminalView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -padding)
-        ])
+        let top = terminalView.topAnchor.constraint(equalTo: view.topAnchor, constant: padding)
+        let leading = terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: padding)
+        let trailing = terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -padding)
+        let bottom = terminalView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -padding)
+        paddingConstraints = [(top, 1), (leading, 1), (trailing, -1), (bottom, -1)]
+        NSLayoutConstraint.activate([top, leading, trailing, bottom])
+    }
+
+    /// Re-applies `window.padding` to the terminal inset constraints.
+    private func applyPadding(_ config: Config) {
+        let padding = CGFloat(config.window.padding)
+        for entry in paddingConstraints {
+            entry.constraint.constant = entry.sign * padding
+        }
     }
 
     /// Injects `--permission-mode <mode>` into a Sidekick-launched `claude` worker
@@ -1174,44 +1186,62 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
     }
 
-    private func consumeCommandMarkSequences(from output: String) {
-        // OSC 133 marks begin with ESC. If this chunk has none and no partial
-        // sequence is buffered, there's nothing to match — skip the regex pass
-        // (the common case for ordinary command output).
-        if commandMarkBuffer.isEmpty, !output.utf8.contains(0x1B) { return }
-        commandMarkBuffer += output
+    /// Shared buffered-OSC matcher behind the OSC 133 command-mark and OSC 666
+    /// agent-status consumers, whose buffering/matching/slicing were identical.
+    /// Appends `output` to `buffer`, runs `regex` over the accumulation, calls
+    /// `handle` for each complete match (passing the match and the buffer string
+    /// it indexes into), then drops everything through the last match and bounds
+    /// the tail so a mark-less stream can't grow unbounded. A sequence split
+    /// across chunks stays buffered until it completes. Returns true when at
+    /// least one match was found (i.e. a sequence was consumed).
+    @discardableResult
+    private func consumeBufferedSequences(
+        from output: String,
+        into buffer: inout String,
+        regex: NSRegularExpression?,
+        handle: (_ match: NSTextCheckingResult, _ buffer: String) -> Void
+    ) -> Bool {
+        // Marks begin with ESC. If this chunk has none and nothing partial is
+        // buffered, there's nothing to match — skip the regex pass (the common
+        // case for ordinary output).
+        if buffer.isEmpty, !output.utf8.contains(0x1B) { return false }
+        buffer += output
 
-        guard let regex = Self.commandMarkRegex else {
-            Self.boundMarkBuffer(&commandMarkBuffer)
-            return
+        guard let regex else {
+            Self.boundMarkBuffer(&buffer)
+            return false
         }
 
-        let searchRange = NSRange(commandMarkBuffer.startIndex..<commandMarkBuffer.endIndex, in: commandMarkBuffer)
-        let matches = regex.matches(in: commandMarkBuffer, range: searchRange)
+        let searchRange = NSRange(buffer.startIndex..<buffer.endIndex, in: buffer)
+        let matches = regex.matches(in: buffer, range: searchRange)
         guard !matches.isEmpty else {
-            // No complete sequence yet — keep accumulating (a sequence may be
-            // split across chunks), but bound the tail so a mark-less stream
-            // can't grow without limit.
-            Self.boundMarkBuffer(&commandMarkBuffer)
-            return
+            Self.boundMarkBuffer(&buffer)
+            return false
         }
 
-        var consumedUpperBound = commandMarkBuffer.startIndex
+        var consumedUpperBound = buffer.startIndex
         for match in matches {
-            if let matchRange = Range(match.range, in: commandMarkBuffer) {
+            if let matchRange = Range(match.range, in: buffer) {
                 consumedUpperBound = matchRange.upperBound
             }
-            guard let kindRange = Range(match.range(at: 1), in: commandMarkBuffer) else { continue }
-            let kind = String(commandMarkBuffer[kindRange])
+            handle(match, buffer)
+        }
+        buffer = String(buffer[consumedUpperBound...])
+        Self.boundMarkBuffer(&buffer)
+        return true
+    }
+
+    private func consumeCommandMarkSequences(from output: String) {
+        consumeBufferedSequences(from: output, into: &commandMarkBuffer, regex: Self.commandMarkRegex) { match, buffer in
+            guard let kindRange = Range(match.range(at: 1), in: buffer) else { return }
+            let kind = String(buffer[kindRange])
             var parameter: String?
             if match.range(at: 2).location != NSNotFound,
-               let parameterRange = Range(match.range(at: 2), in: commandMarkBuffer) {
-                parameter = String(commandMarkBuffer[parameterRange])
+               let parameterRange = Range(match.range(at: 2), in: buffer) {
+                parameter = String(buffer[parameterRange])
             }
             handleCommandMark(kind: kind, parameter: parameter)
         }
-        commandMarkBuffer = String(commandMarkBuffer[consumedUpperBound...])
-        Self.boundMarkBuffer(&commandMarkBuffer)
     }
 
     private func handleCommandMark(kind: String, parameter: String?) {
@@ -1328,39 +1358,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func consumeAgentStatusSequences(from output: String) -> Bool {
-        // OSC 666 marks begin with ESC; skip the regex when this chunk has none
-        // and nothing partial is buffered. Returning false means "no status
-        // sequence consumed", which is correct here.
-        if agentStatusSequenceBuffer.isEmpty, !output.utf8.contains(0x1B) { return false }
-        agentStatusSequenceBuffer += output
-
-        guard let regex = Self.agentStatusRegex else {
-            Self.boundMarkBuffer(&agentStatusSequenceBuffer)
-            return false
-        }
-
-        let searchRange = NSRange(agentStatusSequenceBuffer.startIndex..<agentStatusSequenceBuffer.endIndex, in: agentStatusSequenceBuffer)
-        let matches = regex.matches(in: agentStatusSequenceBuffer, range: searchRange)
-        guard !matches.isEmpty else {
-            Self.boundMarkBuffer(&agentStatusSequenceBuffer)
-            return false
-        }
-
-        var consumedUpperBound = agentStatusSequenceBuffer.startIndex
-        for match in matches {
-            if let matchRange = Range(match.range, in: agentStatusSequenceBuffer) {
-                consumedUpperBound = matchRange.upperBound
-            }
-            guard let statusRange = Range(match.range(at: 1), in: agentStatusSequenceBuffer),
-                  let state = agentState(fromStatus: String(agentStatusSequenceBuffer[statusRange])) else {
-                continue
+        consumeBufferedSequences(from: output, into: &agentStatusSequenceBuffer, regex: Self.agentStatusRegex) { match, buffer in
+            guard let statusRange = Range(match.range(at: 1), in: buffer),
+                  let state = agentState(fromStatus: String(buffer[statusRange])) else {
+                return
             }
             applyExplicitAgentState(state)
         }
-
-        agentStatusSequenceBuffer = String(agentStatusSequenceBuffer[consumedUpperBound...])
-        Self.boundMarkBuffer(&agentStatusSequenceBuffer)
-        return true
     }
 
     private func agentState(fromStatus status: String) -> AgentState? {
@@ -1731,6 +1735,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         applyThemeColors()
         applyTerminalAppearance(newConfig)
+        applyPadding(newConfig)
 
         // Force terminal to refresh
         terminalView.setNeedsDisplay(terminalView.bounds)

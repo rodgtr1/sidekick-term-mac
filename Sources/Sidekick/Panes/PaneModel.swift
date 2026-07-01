@@ -53,9 +53,6 @@ class PaneModel: Identifiable, Hashable {
         self.terminalViewController = terminalVC
         self.view = terminalVC.view
         self.paneType = .terminal
-
-        // Set up observers for title updates
-        setupTitleObserver()
     }
 
     func createEditorViewController(for url: URL) {
@@ -149,11 +146,6 @@ class PaneModel: Identifiable, Hashable {
 
     func updateTitleForDiff(fileName: String) {
         title = "Diff: \(fileName)"
-    }
-
-    private func setupTitleObserver() {
-        // This could be enhanced to observe the terminal's title changes
-        // For now, we'll update the title manually
     }
 
     func updateTitle(directory: String, branch: String?) {

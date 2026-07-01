@@ -1,5 +1,4 @@
 import Cocoa
-import Combine
 
 protocol SearchPanelDelegate: AnyObject {
     func searchPanel(_ panel: SearchPanelViewController, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String)
@@ -30,7 +29,6 @@ class SearchPanelViewController: NSViewController {
         case grep(URL)
     }
 
-    private var cancellables = Set<AnyCancellable>()
     private var searchTask: Process?
     private var debounceWorkItem: DispatchWorkItem?
     private var searchTimeoutWorkItem: DispatchWorkItem?
