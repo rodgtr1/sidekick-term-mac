@@ -140,6 +140,15 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
     /// drag (motion with a button held) — the two are byte-identical otherwise.
     private var mouseButtonDown = false
 
+    /// Force-clears the button-held latch. The latch is normally cleared by the
+    /// release report passing through `send`, but a mouse-up that Sidekick
+    /// swallows (a click on a link) never produces one, so the physical mouse-up
+    /// handler calls this directly. Otherwise the latch stays stuck `true` and
+    /// later hover motion on the alternate screen is mis-forwarded as a drag.
+    func clearMouseButtonLatch() {
+        mouseButtonDown = false
+    }
+
     /// Bytes of a multibyte UTF-8 rune that arrived split across PTY reads,
     /// held until the rest shows up. SwiftTerm always gets the raw slice for
     /// display; this only affects the decoded `onOutput` detection stream.
@@ -417,6 +426,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
               // Hidden tabs share window coordinates with the visible one;
               // without this, an invisible terminal swallows the click.
               !terminalView.isHiddenOrHasHiddenAncestor else { return event }
+
+        // The physical button is now up, so clear the held-button latch directly.
+        // When we swallow this release below (a click on a link), SwiftTerm never
+        // forwards a release report to clear it via `send`, which would otherwise
+        // leave the latch stuck and mis-forward later hover motion as a drag (M9).
+        (terminalView as? AgentAwareTerminalView)?.clearMouseButtonLatch()
 
         let pointInView = terminalView.convert(event.locationInWindow, from: nil)
         guard terminalView.bounds.contains(pointInView) else { return event }
