@@ -377,6 +377,12 @@ class GitPanelViewController: NSViewController {
         let menu = NSMenu()
         menu.delegate = self
 
+        let openItem = NSMenuItem(title: "Open in Editor", action: #selector(contextMenuOpenInEditor), keyEquivalent: "")
+        openItem.target = self
+        menu.addItem(openItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let stageItem = NSMenuItem(title: "Stage", action: #selector(contextMenuStage), keyEquivalent: "")
         stageItem.target = self
         menu.addItem(stageItem)
@@ -458,6 +464,20 @@ class GitPanelViewController: NSViewController {
         alert.alertStyle = success ? .informational : .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    @objc private func contextMenuOpenInEditor() {
+        let row = tableView.clickedRow
+        guard row >= 0 && row < gitStatusModel.files.count else { return }
+        let file = gitStatusModel.files[row]
+        guard !file.isDirectory else { return }
+
+        let fullPath = gitStatusModel.repositoryPath + "/" + file.path
+        NotificationCenter.default.post(
+            name: .paneOpenFileRequested,
+            object: self,
+            userInfo: ["path": fullPath]
+        )
     }
 
     @objc private func contextMenuStage() {
@@ -695,7 +715,9 @@ extension GitPanelViewController: NSMenuDelegate {
 
         // Enable/disable menu items based on file state
         for item in menu.items {
-            if item.action == #selector(contextMenuStage) {
+            if item.action == #selector(contextMenuOpenInEditor) {
+                item.isEnabled = !file.isDirectory
+            } else if item.action == #selector(contextMenuStage) {
                 item.isEnabled = !file.isStaged
             } else if item.action == #selector(contextMenuUnstage) {
                 item.isEnabled = file.isStaged
