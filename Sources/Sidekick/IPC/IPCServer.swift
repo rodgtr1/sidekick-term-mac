@@ -507,6 +507,15 @@ nonisolated final class IPCServer: @unchecked Sendable {
             var noSigpipe: Int32 = 1
             setsockopt(clientFD, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, socklen_t(MemoryLayout<Int32>.size))
 
+            // A client that connects but never sends a full request line would
+            // otherwise pin this GCD global-pool worker in read() forever, with
+            // no cap on how many can accumulate. Bound the wait; readLine
+            // treats the timed-out read like a hang-up. `events` subscribers
+            // get this cleared again once their request is parsed — their
+            // drain read is *supposed* to idle indefinitely.
+            var receiveTimeout = timeval(tv_sec: 10, tv_usec: 0)
+            setsockopt(clientFD, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size))
+
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 self?.handleClient(clientFD: clientFD)
             }
@@ -569,6 +578,12 @@ nonisolated final class IPCServer: @unchecked Sendable {
                 close(clientFD)
                 return
             }
+            // Clear the accept loop's request-phase receive timeout: the drain
+            // loop below treats read() <= 0 as hang-up, so a timed-out read
+            // (EAGAIN after 10 idle seconds) would disconnect a healthy
+            // subscriber that is quietly waiting for events.
+            var noTimeout = timeval(tv_sec: 0, tv_usec: 0)
+            setsockopt(clientFD, SOL_SOCKET, SO_RCVTIMEO, &noTimeout, socklen_t(MemoryLayout<timeval>.size))
             let filter = Self.eventFilter(from: command)
             let reader = Thread { [weak self] in
                 EventBroadcaster.shared.addSubscriber(clientFD, filter: filter)

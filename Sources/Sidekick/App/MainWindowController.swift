@@ -1224,12 +1224,15 @@ extension MainWindowController {
     private func handleKeyDown(_ event: NSEvent) -> Bool {
         // When the GUI file editor has focus, let it own a few shortcuts that
         // otherwise route to panes/terminal: ⌘F (find bar), ⌘] / ⌘[ (indent /
-        // outdent). The terminal and nvim are not CodeTextViews, so they keep
-        // the default pane behavior.
+        // outdent), ⇧⌘G (find previous, otherwise the Git panel). The terminal
+        // and nvim are not CodeTextViews, so they keep the default pane behavior.
         if window?.firstResponder is CodeTextView {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags == .command,
                event.keyCode == 3 || event.keyCode == 30 || event.keyCode == 33 {
+                return false
+            }
+            if flags == [.command, .shift], event.keyCode == 5 {
                 return false
             }
         }
@@ -1246,6 +1249,29 @@ extension MainWindowController {
 
         performKeyboardCommand(command)
         return true
+    }
+
+    /// Keeps the keyboard toggle and the preferences setting in sync. Persists
+    /// through a fresh load rather than this window's snapshot so the
+    /// whole-file write can't revert external edits made since the last
+    /// ConfigWatcher reload (same read-modify-write as Preferences'
+    /// mutateConfig). When the on-disk file is broken, the toggle still
+    /// applies to this window but save() refuses, so the user's file isn't
+    /// clobbered with defaults.
+    private func toggleHiddenFiles() {
+        var fresh = Config.load()
+        if fresh.loadDidFail {
+            fresh = config
+            fresh.loadDidFail = true
+        }
+        if fresh.editor == nil {
+            fresh.editor = EditorConfig()
+        }
+        let show = !(fresh.editor?.showHiddenFiles ?? false)
+        fresh.editor?.showHiddenFiles = show
+        sidebarContainerView.setShowHiddenFiles(show)
+        config = fresh
+        fresh.save()
     }
 
     /// When the clipboard holds an image (and no plain text), write it to a
@@ -1307,14 +1333,7 @@ extension MainWindowController {
         case .findInTerminal:
             tabs[safe: activeTabIndex]?.activePane?.terminalViewController?.showFindBar()
         case .toggleHiddenFiles:
-            // Keep the keyboard toggle and the preferences setting in sync.
-            if config.editor == nil {
-                config.editor = EditorConfig()
-            }
-            let show = !(config.editor?.showHiddenFiles ?? false)
-            config.editor?.showHiddenFiles = show
-            sidebarContainerView.setShowHiddenFiles(show)
-            config.save()
+            toggleHiddenFiles()
         case .closeTab:
             closeTab(index: activeTabIndex)
         case .saveFile:

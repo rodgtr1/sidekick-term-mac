@@ -451,7 +451,10 @@ final class UncommittedChangesViewController: NSViewController {
 
         let (text, lineCount) = conflictAttributedText(content: content, conflict: conflict)
         let textView = makeDiffColumn(text: text)
+        // Seed from the logical line count; viewDidLayout corrects it to the
+        // real wrapped height once the width is known, same as diff sections.
         let textHeight = CGFloat(max(1, lineCount)) * Metrics.diffLineHeight + 14
+        let textHeightConstraint = textView.heightAnchor.constraint(equalToConstant: textHeight)
 
         block.addSubview(buttonRow)
         block.addSubview(textView)
@@ -466,8 +469,10 @@ final class UncommittedChangesViewController: NSViewController {
             textView.leadingAnchor.constraint(equalTo: block.leadingAnchor),
             textView.trailingAnchor.constraint(equalTo: block.trailingAnchor),
             textView.bottomAnchor.constraint(equalTo: block.bottomAnchor),
-            textView.heightAnchor.constraint(equalToConstant: textHeight)
+            textHeightConstraint
         ])
+
+        diffColumns.append(DiffColumn(textView: textView, heightConstraint: textHeightConstraint))
 
         return block
     }

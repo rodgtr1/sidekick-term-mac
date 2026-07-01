@@ -97,8 +97,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         appMenu.addItem(NSMenuItem.separator())
 
-        // Edit Config File (Command+,)
-        let editConfigItem = NSMenuItem(title: "Edit Config File...", action: #selector(AppDelegate.editConfigFile), keyEquivalent: ",")
+        // ⌘, is consumed by the key monitor as .preferences before menu
+        // dispatch, so this item advertises the binding that actually fires;
+        // "Edit Config File..." carries no shortcut rather than a dead one.
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(AppDelegate.showPreferences), keyEquivalent: ",")
+        settingsItem.target = self
+        appMenu.addItem(settingsItem)
+
+        let editConfigItem = NSMenuItem(title: "Edit Config File...", action: #selector(AppDelegate.editConfigFile), keyEquivalent: "")
         editConfigItem.target = self
         appMenu.addItem(editConfigItem)
 
@@ -298,6 +304,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func quickOpen() {
         mainWindowController?.showQuickOpen()
+    }
+
+    @objc private func showPreferences() {
+        mainWindowController?.showPreferences()
     }
 
     @objc private func editConfigFile() {
