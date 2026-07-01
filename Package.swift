@@ -20,14 +20,17 @@ let package = Package(
         // highlighter, starting with Swift). The grammar's `with-generated-files`
         // branch ships the generated parser.c so SwiftPM can build it.
         .package(url: "https://github.com/ChimeHQ/SwiftTreeSitter", from: "0.9.0"),
-        .package(url: "https://github.com/alex-pinkus/tree-sitter-swift", branch: "with-generated-files"),
+        // Pinned to the current `with-generated-files` HEAD for reproducible
+        // builds (the branch ships the generated parser.c). Bump deliberately.
+        .package(url: "https://github.com/alex-pinkus/tree-sitter-swift", revision: "31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5"),
         // Go, Rust, and TypeScript link cleanly — their manifests list scanner.c
         // unconditionally (Go has none). JS/JSX/TS/TSX are all highlighted via
         // the TSX grammar (a superset), so tree-sitter-javascript isn't needed.
         .package(url: "https://github.com/tree-sitter/tree-sitter-go", from: "0.25.0"),
         .package(url: "https://github.com/tree-sitter/tree-sitter-rust", from: "0.24.0"),
         .package(url: "https://github.com/tree-sitter/tree-sitter-typescript", from: "0.23.2"),
-        .package(url: "https://github.com/tree-sitter-grammars/tree-sitter-markdown", branch: "split_parser"),
+        // Pinned to the current `split_parser` HEAD for reproducible builds.
+        .package(url: "https://github.com/tree-sitter-grammars/tree-sitter-markdown", revision: "c3570720f7f7bbad22fe96603f106276618e0cf5"),
         // Python's official package compiles only parser.c (its manifest drops
         // scanner.c via a CWD-relative check). We depend on it for the large
         // parser.c (no repo bloat) and supply the small external scanner via the

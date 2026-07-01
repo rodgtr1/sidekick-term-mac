@@ -120,8 +120,14 @@ private final class TitlebarBackgroundView: NSView {
 
 class MainWindowController: NSWindowController {
     private static let sidebarWidthDefaultsKey = "sidebarWidth"
-    private var config: Config = Config.load()
+    // Cheap in-memory defaults just to satisfy the stored-property requirement;
+    // `convenience init()` immediately overwrites this with the real Config.load()
+    // result. (Initializing with Config.load() here would parse config.toml from
+    // disk twice at startup and throw the first read away.)
+    private var config: Config = Config()
     private var titlebarBackgroundView: TitlebarBackgroundView!
+    /// Retained so ⌘K reuses one panel instead of stacking duplicates.
+    private var keyboardShortcutsPanel: KeyboardShortcutsPanel?
     private var tabBarSpacerView: TitlebarBackgroundView!
     private var tabBarView: TabBarView!
     private var activityBarView: ActivityBarView!
@@ -803,10 +809,6 @@ extension MainWindowController: TabBarDelegate {
         closeTab(index: index)
     }
 
-    func tabBarDidRequestNewTab(_ tabBar: TabBarView) {
-        createNewTab()
-    }
-
     func tabBar(_ tabBar: TabBarView, didMoveTab fromIndex: Int, to toIndex: Int) {
         tabController.moveTab(from: fromIndex, to: toIndex)
     }
@@ -1404,9 +1406,15 @@ extension MainWindowController {
     }
 
     func showKeyboardShortcuts() {
-        // Show keyboard shortcuts help
-        // For now, this is a placeholder - could show a panel with shortcuts
-        Log.debug("⌨️ Keyboard shortcuts requested", category: "app")
+        if keyboardShortcutsPanel == nil {
+            keyboardShortcutsPanel = KeyboardShortcutsPanel(
+                contentRect: .zero,
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+        }
+        keyboardShortcutsPanel?.makeKeyAndOrderFront(nil)
     }
 
     private func updateSidebarLayout() {

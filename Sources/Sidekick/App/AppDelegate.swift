@@ -284,10 +284,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         mainWindowController?.createNewTab()
     }
 
-    @objc private func closeTab() {
-        mainWindowController?.closeCurrentTab()
-    }
-
     @objc private func closePane() {
         mainWindowController?.closeCurrentPane()
     }

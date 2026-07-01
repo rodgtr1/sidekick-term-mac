@@ -3,7 +3,6 @@ import Cocoa
 protocol TabBarDelegate: AnyObject {
     func tabBar(_ tabBar: TabBarView, didSelectTab index: Int)
     func tabBar(_ tabBar: TabBarView, didCloseTab index: Int)
-    func tabBarDidRequestNewTab(_ tabBar: TabBarView)
     func tabBar(_ tabBar: TabBarView, didMoveTab fromIndex: Int, to toIndex: Int)
     func tabBar(_ tabBar: TabBarView, didRenameTab index: Int, to title: String?)
 }
@@ -72,9 +71,6 @@ class TabBarView: NSView {
     private func setupView() {
         wantsLayer = true
         applyTheme()
-
-        // Add new tab button on the right
-        setupNewTabButton()
     }
 
     private func applyTheme() {
@@ -86,10 +82,6 @@ class TabBarView: NSView {
         // Tab bar is always opaque (no blur)
         layer?.backgroundColor = bgColor.cgColor
         layer?.isOpaque = true
-    }
-
-    private func setupNewTabButton() {
-        // This will be positioned dynamically based on tab count
     }
 
     /// Runs the working-tab "breathing" animation only while a tab is actually
@@ -142,8 +134,8 @@ class TabBarView: NSView {
         closeButtons.removeAll()
         activeIndicators.removeAll()
 
-        // Calculate tab width
-        let availableWidth = bounds.width - 40 // Leave space for new tab button
+        // Calculate tab width across the full bar (there is no new-tab button).
+        let availableWidth = bounds.width
         let tabCount = CGFloat(tabs.count)
         var tabWidth = tabCount > 0 ? availableWidth / tabCount : tabMinWidth
         tabWidth = max(tabMinWidth, min(tabMaxWidth, tabWidth))
@@ -209,15 +201,6 @@ class TabBarView: NSView {
         closeButton.action = #selector(closeButtonClicked(_:))
         closeButton.tag = index
         closeButton.contentTintColor = Theme.shared.current.secondaryText
-
-        // Hover effect for close button
-        let trackingArea = NSTrackingArea(
-            rect: closeButton.bounds,
-            options: [.activeInKeyWindow, .mouseEnteredAndExited],
-            owner: closeButton,
-            userInfo: nil
-        )
-        closeButton.addTrackingArea(trackingArea)
 
         addSubview(tabButton)
         addSubview(closeButton)

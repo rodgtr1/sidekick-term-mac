@@ -27,6 +27,10 @@ class KeyboardShortcutsPanel: NSPanel {
         title = "Keyboard Shortcuts"
         level = .floating
         isFloatingPanel = true
+        // The controller keeps a strong reference and reuses this instance, so
+        // closing must order it out rather than release it (a released-then-
+        // referenced window would crash on the next ⌘K).
+        isReleasedWhenClosed = false
         center()
     }
 
