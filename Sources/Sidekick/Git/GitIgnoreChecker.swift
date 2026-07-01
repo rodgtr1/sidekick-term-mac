@@ -30,7 +30,18 @@ class GitIgnoreChecker {
         defer { stateLock.unlock() }
         // Return false if not loaded yet - we'll refresh the UI when loading completes
         guard isLoaded else { return false }
-        return ignoredFiles.contains(relativePath)
+        if ignoredFiles.contains(relativePath) { return true }
+        // `git ls-files --directory` collapses a wholly-ignored directory into a
+        // single entry with a trailing slash (e.g. "node_modules/") rather than
+        // listing every file beneath it. So a path is ignored if it *is* such a
+        // directory, or lives under one — walk its ancestors to catch the latter.
+        if ignoredFiles.contains(relativePath + "/") { return true }
+        var prefix = ""
+        for component in relativePath.split(separator: "/").dropLast() {
+            prefix += component + "/"
+            if ignoredFiles.contains(prefix) { return true }
+        }
+        return false
     }
 
     private func startLoadingIgnoredFiles() {

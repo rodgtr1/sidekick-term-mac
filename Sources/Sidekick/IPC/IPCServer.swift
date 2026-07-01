@@ -348,6 +348,14 @@ nonisolated final class IPCServer: @unchecked Sendable {
     /// Sized to fit show_diff payloads (two ~4MB file bodies, JSON-escaped).
     private static let maxRequestBytes = 16 * 1024 * 1024
 
+    /// Caps concurrent `events --follow` subscribers. Each one owns a dedicated
+    /// Thread blocked in `read()` for its lifetime (kept off the shared GCD
+    /// global pool so it can't starve other `DispatchQueue.global` work); this
+    /// bounds how many such reader threads a leaking client can accumulate.
+    private static let maxEventSubscribers = 64
+    private let eventSubscriberLock = NSLock()
+    private var eventSubscriberCount = 0
+
     static let shared = IPCServer()
 
     private init() {
@@ -545,14 +553,33 @@ nonisolated final class IPCServer: @unchecked Sendable {
         }
 
         // `events` is a long-lived stream, not a request/response: hand the
-        // socket to the broadcaster and block this connection thread reading it
-        // so the client's hang-up unblocks promptly for cleanup. The reader is
-        // the sole owner of close() (see EventBroadcaster).
+        // socket to the broadcaster and block a thread reading it so the client's
+        // hang-up unblocks promptly for cleanup. The reader is the sole owner of
+        // close() (see EventBroadcaster).
+        //
+        // That read blocks for the whole subscription, so it must NOT run on this
+        // GCD global-pool worker — ~60 idle subscribers would pin the shared pool
+        // and starve every other DispatchQueue.global user (worktree completions,
+        // response writes, the accept loop's own handlers). Own it on a dedicated
+        // Thread off the pool, capped so a leaking client can't spawn threads
+        // without bound.
         if command.action == "events" {
-            EventBroadcaster.shared.addSubscriber(clientFD, filter: Self.eventFilter(from: command))
-            var drain = [UInt8](repeating: 0, count: 256)
-            while read(clientFD, &drain, drain.count) > 0 { /* clients don't send */ }
-            EventBroadcaster.shared.removeSubscriber(clientFD)
+            guard reserveEventSubscriberSlot() else {
+                sendResponse(IPCResponse(ok: false, error: "Too many event subscribers"), to: clientFD)
+                close(clientFD)
+                return
+            }
+            let filter = Self.eventFilter(from: command)
+            let reader = Thread { [weak self] in
+                EventBroadcaster.shared.addSubscriber(clientFD, filter: filter)
+                var drain = [UInt8](repeating: 0, count: 256)
+                while read(clientFD, &drain, drain.count) > 0 { /* clients don't send */ }
+                EventBroadcaster.shared.removeSubscriber(clientFD)
+                self?.releaseEventSubscriberSlot()
+            }
+            reader.name = "com.sidekick.ipc.events"
+            reader.stackSize = 128 * 1024
+            reader.start()
             return
         }
 
@@ -595,6 +622,23 @@ nonisolated final class IPCServer: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Claims one of the bounded `events` subscriber slots. Returns false when
+    /// the cap is already reached, so the caller rejects the subscription rather
+    /// than spawning an unbounded reader thread.
+    private func reserveEventSubscriberSlot() -> Bool {
+        eventSubscriberLock.lock(); defer { eventSubscriberLock.unlock() }
+        guard eventSubscriberCount < Self.maxEventSubscribers else { return false }
+        eventSubscriberCount += 1
+        return true
+    }
+
+    /// Releases a slot claimed by `reserveEventSubscriberSlot` once the reader
+    /// thread's drain loop ends (client hang-up).
+    private func releaseEventSubscriberSlot() {
+        eventSubscriberLock.lock(); defer { eventSubscriberLock.unlock() }
+        eventSubscriberCount -= 1
     }
 
     /// Builds an `EventFilter` from an `events` subscribe request. A pane id is

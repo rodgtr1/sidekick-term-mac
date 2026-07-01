@@ -9,6 +9,18 @@ final class UncommittedChangesViewController: NSViewController {
     private var scrollView: NSScrollView!
     private var stackView: NSStackView!
 
+    /// Each diff text view soft-wraps, so its height depends on the laid-out
+    /// width — unknown until Auto Layout runs. We seed each height constraint
+    /// from the logical line count, then correct it to the real wrapped height in
+    /// viewDidLayout (and on every resize). Without this, long/minified lines
+    /// wrap to extra visual rows the fixed height never accounted for, clipping
+    /// the bottom of the section.
+    private struct DiffColumn {
+        let textView: NSTextView
+        let heightConstraint: NSLayoutConstraint
+    }
+    private var diffColumns: [DiffColumn] = []
+
     private enum Metrics {
         static let horizontalPadding: CGFloat = 12
         static let sectionSpacing: CGFloat = 10
@@ -157,9 +169,28 @@ final class UncommittedChangesViewController: NSViewController {
     }
 
     private func clearStack() {
+        diffColumns.removeAll()
         stackView.arrangedSubviews.forEach { view in
             stackView.removeArrangedSubview(view)
             view.removeFromSuperview()
+        }
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        // Now that each diff text view has its real width, size its height to the
+        // wrapped layout so long/minified lines aren't clipped. The threshold
+        // makes this converge: once heights match the content, no constraint
+        // changes, so the layout pass this triggers is a no-op.
+        for column in diffColumns {
+            guard let layoutManager = column.textView.layoutManager,
+                  let container = column.textView.textContainer else { continue }
+            layoutManager.ensureLayout(for: container)
+            let used = layoutManager.usedRect(for: container).height
+            let target = ceil(used + column.textView.textContainerInset.height * 2)
+            if abs(column.heightConstraint.constant - target) > 0.5 {
+                column.heightConstraint.constant = target
+            }
         }
     }
 
@@ -186,9 +217,12 @@ final class UncommittedChangesViewController: NSViewController {
 
         // Size the diff to its full content height and let the outer scroll
         // view handle scrolling. Capping the height here would clip long diffs,
-        // since each text view has no scroller of its own.
+        // since each text view has no scroller of its own. This is only a seed:
+        // it ignores soft-wrapping, so viewDidLayout corrects it to the real
+        // laid-out height once the width is known.
         let lineCount = max(1, renderedDiff.string.filter { $0 == "\n" }.count + 1)
         let diffHeight = CGFloat(lineCount) * Metrics.diffLineHeight + 14
+        let diffHeightConstraint = diffView.heightAnchor.constraint(equalToConstant: diffHeight)
 
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: container.topAnchor),
@@ -200,8 +234,10 @@ final class UncommittedChangesViewController: NSViewController {
             diffView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             diffView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             diffView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            diffView.heightAnchor.constraint(equalToConstant: diffHeight)
+            diffHeightConstraint
         ])
+
+        diffColumns.append(DiffColumn(textView: diffView, heightConstraint: diffHeightConstraint))
 
         return container
     }

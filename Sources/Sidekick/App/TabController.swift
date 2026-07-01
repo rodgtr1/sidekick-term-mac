@@ -183,7 +183,11 @@ final class TabController: NSObject {
             activeTabIndex -= 1
         }
 
-        // Switch to the new active tab
+        // Switch to the new active tab. Closing the active tab drops the only
+        // tab whose isActive was true, so mark the survivor active — otherwise
+        // no tab is active and the agents dashboard loses its row highlight
+        // until the user switches tabs by hand.
+        tabs[activeTabIndex].isActive = true
         let newTab = tabs[activeTabIndex]
         if let newController = tabSplitControllers[newTab.id] {
             currentSplitController = newController

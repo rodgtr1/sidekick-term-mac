@@ -182,7 +182,12 @@ class MainWindowController: NSWindowController {
         // Make window movable by background
         window.isMovableByWindowBackground = true
 
-        window.center()
+        // Restore the frame saved under the autosave name; only center on the
+        // very first launch, when there's nothing to restore. (setFrameUsingName
+        // returns false when no saved frame exists.)
+        if !window.setFrameUsingName("MainWindow") {
+            window.center()
+        }
         window.makeKeyAndOrderFront(nil)
         Log.debug("✅ Window configured", category: "app")
 

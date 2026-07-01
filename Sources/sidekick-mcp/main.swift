@@ -22,7 +22,10 @@ func logLine(_ message: String) {
 
 // MARK: - IPC client (talks to the running Sidekick over its Unix socket)
 
-private let ipc = SidekickIPCClient()
+// Read-only after startup and touched from the background tool-call queue as
+// well as the main read loop. `SidekickIPCClient.send` opens a fresh connection
+// per call and holds only immutable state, so concurrent use is safe.
+private nonisolated(unsafe) let ipc = SidekickIPCClient()
 
 // MARK: - Tool catalog
 
@@ -59,9 +62,12 @@ private func object(_ properties: [String: Any], required: [String] = []) -> [St
     return schema
 }
 
-private let paneIDProperty: [String: Any] = ["type": "string", "description": "Opaque pane ID from pane_list / pane_current / pane_split."]
+private nonisolated(unsafe) let paneIDProperty: [String: Any] = ["type": "string", "description": "Opaque pane ID from pane_list / pane_current / pane_split."]
 
-private let tools: [Tool] = [
+// The tool catalog is built once and never mutated. It's read from both the
+// main read loop (tools/list) and the background tool-call queue, so the
+// unchecked opt-out over its non-Sendable closures is sound.
+private nonisolated(unsafe) let tools: [Tool] = [
     Tool(
         name: "sidekick_ping",
         description: "Check whether Sidekick is running and reachable.",
@@ -239,14 +245,21 @@ private let tools: [Tool] = [
     )
 ]
 
-private let toolsByName: [String: Tool] = Dictionary(uniqueKeysWithValues: tools.map { ($0.name, $0) })
+private nonisolated(unsafe) let toolsByName: [String: Tool] = Dictionary(uniqueKeysWithValues: tools.map { ($0.name, $0) })
 
 // MARK: - JSON-RPC plumbing over stdio
+
+// Tool calls run on a background queue (see the main loop), so responses can be
+// emitted from several threads at once. Serialize the writes so two JSON-RPC
+// messages never interleave on the stdout protocol channel.
+private let stdoutLock = NSLock()
 
 /// Writes one newline-delimited JSON-RPC message to stdout.
 private func emit(_ message: [String: Any]) {
     guard var data = try? JSONSerialization.data(withJSONObject: message) else { return }
     data.append(UInt8(ascii: "\n"))
+    stdoutLock.lock()
+    defer { stdoutLock.unlock() }
     FileHandle.standardOutput.write(data)
 }
 
@@ -277,7 +290,6 @@ private func handleInitialize(id: Any, params: [String: Any]) {
     ])
 }
 
-@MainActor
 private func handleToolsList(id: Any) {
     let listed = tools.map { tool in
         ["name": tool.name, "description": tool.description, "inputSchema": tool.inputSchema] as [String: Any]
@@ -285,7 +297,6 @@ private func handleToolsList(id: Any) {
     respond(id: id, result: ["tools": listed])
 }
 
-@MainActor
 private func handleToolsCall(id: Any, params: [String: Any]) {
     guard let name = params["name"] as? String, let tool = toolsByName[name] else {
         respondError(id: id, code: -32602, message: "Unknown tool: \(params["name"] as? String ?? "<none>")")
@@ -318,6 +329,22 @@ private func handleToolsCall(id: Any, params: [String: Any]) {
 
 // MARK: - Main loop
 
+/// Carries one JSON-RPC request across the concurrency boundary to a background
+/// tool-call executor. The payload is plain JSON, fully built before it's handed
+/// off and read by exactly one executor thread, so the unchecked-Sendable
+/// opt-out over the non-Sendable `Any` fields is sound.
+private struct PendingToolCall: @unchecked Sendable {
+    let id: Any
+    let params: [String: Any]
+}
+
+/// Tool calls run here, off the read loop. Concurrent so independent waits
+/// (e.g. wait_agent_status on two panes) proceed in parallel; a single MCP
+/// client only ever has a handful in flight, so thread growth is bounded in
+/// practice.
+private let toolCallQueue = DispatchQueue(label: "com.sidekick.mcp.tool-calls",
+                                          qos: .userInitiated, attributes: .concurrent)
+
 // Survive a broken pipe on either channel: writing to stdout after the MCP
 // client disconnects, or the IPC socket closing mid-write, would otherwise
 // deliver SIGPIPE and kill this long-lived server. Ignoring it turns both into
@@ -349,7 +376,16 @@ while let line = readLine(strippingNewline: true) {
     case "tools/list":
         if let id { handleToolsList(id: id) }
     case "tools/call":
-        if let id { handleToolsCall(id: id, params: params) }
+        // A verb like wait_agent_status can block for its full timeout (up to
+        // an hour) inside a synchronous ipc.send. Run it off the read loop so
+        // ping, tools/list, and cancellation notifications stay responsive —
+        // MCP clients health-check with those and would otherwise declare the
+        // server dead. Responses carry their id, so finishing out of order is
+        // fine per JSON-RPC.
+        if let id {
+            let call = PendingToolCall(id: id, params: params)
+            toolCallQueue.async { handleToolsCall(id: call.id, params: call.params) }
+        }
     default:
         if let id { respondError(id: id, code: -32601, message: "Method not found: \(method ?? "<none>")") }
     }

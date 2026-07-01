@@ -4,11 +4,12 @@ import Foundation
 /// queue) when its contents change. The parent directory is watched, not the
 /// file itself, so atomic saves (write-temp-then-rename, used by most
 /// editors) are detected too.
-// `nonisolated` + `@unchecked Sendable`: the watcher lives on its own
-// DispatchSource / debounce queues (utility), never the main actor. Its mutable
-// state is touched only from those serialized contexts plus start()/stop() at
-// setup/teardown — the same hand-audited concurrency contract the IPC layer
-// uses. The only hop back to the UI is `onChange`, a main-actor callback.
+// `nonisolated` + `@unchecked Sendable`: the watcher lives on its own private
+// serial `queue`, never the main actor. Its mutable state (`debounceWork`,
+// `lastModificationDate`) is touched only from that queue — both the
+// DispatchSource event handler and the debounce work run on it, so the accesses
+// are genuinely serialized — plus start()/stop() at setup/teardown. The only
+// hop back to the UI is `onChange`, a main-actor callback.
 nonisolated final class ConfigWatcher: @unchecked Sendable {
     var onChange: (@MainActor () -> Void)?
 
@@ -16,6 +17,11 @@ nonisolated final class ConfigWatcher: @unchecked Sendable {
     private var directoryFD: Int32 = -1
     private var debounceWork: DispatchWorkItem?
     private var lastModificationDate: Date?
+    // Serial: the DispatchSource delivers events here and the debounce work runs
+    // here, so `debounceWork`/`lastModificationDate` are never touched from two
+    // threads at once (the global concurrent queue used before could overlap an
+    // event handler with a still-running debounce item — a real data race).
+    private let queue = DispatchQueue(label: "com.sidekick.config-watcher", qos: .utility)
 
     private let configPath = NSString(string: "~/.config/sidekick/config.toml").expandingTildeInPath
     // The path actually watched/stat'd. When config.toml is a symlink (e.g. a
@@ -53,7 +59,7 @@ nonisolated final class ConfigWatcher: @unchecked Sendable {
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: directoryFD,
             eventMask: [.write],
-            queue: DispatchQueue.global(qos: .utility)
+            queue: queue
         )
         source.setEventHandler { [weak self] in
             self?.scheduleReloadCheck()
@@ -89,7 +95,7 @@ nonisolated final class ConfigWatcher: @unchecked Sendable {
             }
         }
         debounceWork = work
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.3, execute: work)
+        queue.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
     private func modificationDate() -> Date? {

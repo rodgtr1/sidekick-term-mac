@@ -47,8 +47,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // Ensure window is visible and in front
         if let window = mainWindowController?.window {
             Log.debug("✅ Window exists: \(window)", category: "app")
+            // Don't re-center here: MainWindowController already restored the
+            // saved frame (or centered on first launch), and center() would
+            // discard it, recentering the window on every relaunch.
             window.makeKeyAndOrderFront(nil)
-            window.center()
             window.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
             Log.debug("✅ Window visibility calls completed", category: "app")
