@@ -234,7 +234,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// The four terminal inset constraints paired with their sign, kept so
     /// applyConfig can re-apply window.padding live instead of only at setup.
     private var paddingConstraints: [(constraint: NSLayoutConstraint, sign: CGFloat)] = []
-    private var cwdTimer: Timer?
+    // nonisolated(unsafe) only so deinit's off-main branch can hand the timer
+    // to the main queue for invalidation; every other access is MainActor.
+    nonisolated(unsafe) private var cwdTimer: Timer?
     private var currentCWD: String = "~"
     private var isUpdatingCWD = false
 
@@ -262,8 +264,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     // Once the session reports state via OSC 666 (Claude/Codex hooks), those
     // reports are authoritative and the text heuristics stand down.
     private var hasExplicitAgentStatus = false
-    private var agentDoneTimer: Timer?
-    private var blockedPollingTimer: Timer?
+    // nonisolated(unsafe) for deinit's off-main branch, as with cwdTimer.
+    nonisolated(unsafe) private var agentDoneTimer: Timer?
+    nonisolated(unsafe) private var blockedPollingTimer: Timer?
     private var suppressedPromptMarkers: Set<String> = []
     private var pendingDetectionOutput = ""
     private var detectionFlushScheduled = false
@@ -534,8 +537,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         super.viewDidAppear()
         // Resume CWD polling for a tab that was hidden (no-op once shell
         // integration is detected — OSC 7 then pushes the cwd and the timer
-        // stays off for good).
-        if !hasShellIntegration, cwdTimer == nil, shellPID > 0 {
+        // stays off for good). Gate on the process still running rather than a
+        // bare shellPID: SwiftTerm never clears shellPid after exit, so without
+        // this a hide/show would restart a 1Hz poll against a dead PID.
+        if !hasShellIntegration, cwdTimer == nil, terminalView?.process?.running == true {
             startCWDTracking()
         }
         // Focus terminal after view appears
@@ -681,10 +686,18 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             )
         }
 
-        // Publish the initial title/CWD once the process is up
+        // Publish the initial title/CWD once the process is up. If OSC 7 already
+        // reported a real directory within this window (fast shell integration),
+        // it owns currentCWD now — don't stomp it back to the start directory.
+        // The title publish itself stays unconditional: this is the only
+        // initialization path, since the OSC 7 handler only publishes on a cwd
+        // *change* and the shell usually starts right where the pane did.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.currentCWD = startDirectory
-            self?.updateTitle()
+            guard let self else { return }
+            if !self.hasShellIntegration {
+                self.currentCWD = startDirectory
+            }
+            self.updateTitle()
         }
     }
 
@@ -1819,11 +1832,33 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     deinit {
-        MainActor.assumeIsolated {
-            cwdTimer?.invalidate()
-            agentDoneTimer?.invalidate()
-            blockedPollingTimer?.invalidate()
-            TerminalEventCoordinator.shared.unregister(self)
+        // The timers are main-run-loop scheduled and the event-monitor teardown
+        // is main-thread-only. deinit is nonisolated: assumeIsolated is only safe
+        // while the final release lands on the main thread. If a future off-main
+        // strong capture ever deallocates us elsewhere, hop the cleanup to main
+        // (self is gone by then, so prune the coordinator's now-nil entry).
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                cwdTimer?.invalidate()
+                agentDoneTimer?.invalidate()
+                blockedPollingTimer?.invalidate()
+                TerminalEventCoordinator.shared.unregister(self)
+            }
+        } else {
+            // A future off-main last-release can't run the MainActor teardown
+            // here, so hand the timers to the main queue and invalidate them
+            // there. They must not just be abandoned: repeating timers are
+            // retained by the run loop indefinitely, so each leaked one would
+            // fire no-ops at 1Hz for the app's lifetime. The event monitor is
+            // pruned the same way (self is gone by then, so its weak entry in
+            // the coordinator reads nil).
+            let timers = [cwdTimer, agentDoneTimer, blockedPollingTimer]
+            DispatchQueue.main.async {
+                for timer in timers {
+                    timer?.invalidate()
+                }
+                TerminalEventCoordinator.shared.pruneDeallocated()
+            }
         }
     }
 }

@@ -128,14 +128,27 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
     /// client (`sidekick_wait_event`) must not have its wait satisfied by a
     /// state that predates the subscription.
     func addSubscriber(_ fd: Int32, filter: EventFilter = EventFilter(), includeBacklog: Bool = true) {
+        // Register, snapshot the backlog, and deliver hello+backlog all while
+        // holding `writeLock`. A concurrent `emit` that sees this fd in
+        // `subscribers` must take `writeLock` to write, so its live event queues
+        // strictly after the backlog here — otherwise it could win the lock
+        // between the snapshot and delivery and land a newer state ahead of the
+        // stale backlog value, regressing the subscriber's view of a pane.
+        writeLock.lock()
+        defer { writeLock.unlock() }
+
         lock.lock()
         subscribers[fd] = filter
         let backlog = includeBacklog ? sortedSnapshotLocked() : []
         lock.unlock()
 
-        send(SidekickEvent(type: "hello"), to: fd)
+        if let hello = framedLine(for: SidekickEvent(type: "hello")) {
+            sendLocked(line: hello, to: fd)
+        }
         for event in backlog where filter.matches(event) {
-            send(event, to: fd)
+            if let line = framedLine(for: event) {
+                sendLocked(line: line, to: fd)
+            }
         }
     }
 
@@ -162,9 +175,7 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
             lock.lock(); lastStateByPane[pane] = event; lock.unlock()
         }
 
-        guard let data = try? JSONEncoder().encode(event) else { return }
-        var line = data
-        line.append(UInt8(ascii: "\n"))
+        guard let line = framedLine(for: event) else { return }
 
         lock.lock()
         let targets = subscribers.compactMap { $0.value.matches(event) ? $0.key : nil }
@@ -188,11 +199,13 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
 
     // MARK: - Writing
 
-    private func send(_ event: SidekickEvent, to fd: Int32) {
-        guard let data = try? JSONEncoder().encode(event) else { return }
+    /// Serializes an event to one newline-framed JSONL line, or nil if encoding
+    /// fails.
+    private func framedLine(for event: SidekickEvent) -> Data? {
+        guard let data = try? JSONEncoder().encode(event) else { return nil }
         var line = data
         line.append(UInt8(ascii: "\n"))
-        send(line: line, to: fd)
+        return line
     }
 
     /// Writes one already-framed line. If the socket isn't immediately writable
@@ -201,6 +214,13 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
     private func send(line: Data, to fd: Int32) {
         writeLock.lock()
         defer { writeLock.unlock() }
+        sendLocked(line: line, to: fd)
+    }
+
+    /// Body of `send(line:)`, factored out so callers already holding `writeLock`
+    /// (e.g. `addSubscriber`) can write without re-entering the non-recursive
+    /// lock. The caller MUST hold `writeLock`.
+    private func sendLocked(line: Data, to fd: Int32) {
         // Re-verify membership under `lock` while holding `writeLock`:
         // `removeSubscriber` clears the entry and closes the fd in the same
         // writeLock-guarded section, so an fd still present here is guaranteed

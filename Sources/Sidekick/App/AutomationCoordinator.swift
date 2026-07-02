@@ -16,7 +16,8 @@ protocol AutomationHost: DiffApprovalHost {
     var telemetryRates: [String: TelemetryRate] { get }
 
     func automationSplitController(forTab tabID: UUID) -> PaneSplitController?
-    func automationCreateNewTab(workingDirectory: String?)
+    /// Returns false when the tab cap refused the tab.
+    func automationCreateNewTab(workingDirectory: String?) -> Bool
     func automationOpenFile(_ url: URL)
     func automationSetActiveTabAgentState(_ state: AgentState)
 }
@@ -304,8 +305,11 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             completion(IPCResponse(ok: true))
 
         case .newTab(let cwd):
-            host?.automationCreateNewTab(workingDirectory: cwd)
-            completion(IPCResponse(ok: true))
+            if host?.automationCreateNewTab(workingDirectory: cwd) == true {
+                completion(IPCResponse(ok: true))
+            } else {
+                completion(IPCResponse(ok: false, error: "Tab limit (\(Limits.maxTabs)) reached; close a tab first"))
+            }
 
         case .showDiff(let paneID, let path, let old, let new):
             if old.isEmpty && new.isEmpty {
@@ -366,7 +370,14 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
                 DispatchQueue.main.async {
                     switch result {
                     case .success(let worktreePath):
-                        self?.completeSplit(paneID: paneID, direction: direction, cwd: worktreePath, command: command, focus: focus, completion: completion)
+                        // If the coordinator deallocated (window closed mid-
+                        // checkout), still answer the client — an optional-chained
+                        // no-op here would leave it blocked forever and leak its fd.
+                        guard let self else {
+                            completion(IPCResponse(ok: false, error: "Window closed before split completed"))
+                            return
+                        }
+                        self.completeSplit(paneID: paneID, direction: direction, cwd: worktreePath, command: command, focus: focus, completion: completion)
                     case .failure(let error):
                         completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
                     }

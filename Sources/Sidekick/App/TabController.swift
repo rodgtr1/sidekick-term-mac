@@ -70,7 +70,8 @@ final class TabController: NSObject {
         }
     }
 
-    func createNewTab(workingDirectory: String? = nil, command: [String]? = nil) {
+    @discardableResult
+    func createNewTab(workingDirectory: String? = nil, command: [String]? = nil) -> Bool {
         let startDirectory = workingDirectory ?? currentWorkingDirectoryForNewTerminal()
 
         let tab = TabModel()
@@ -78,14 +79,30 @@ final class TabController: NSObject {
             firstPane.createTerminalViewController(config: config, initialDirectory: startDirectory, command: command)
         }
 
-        installTab(tab)
+        return installTab(tab)
     }
 
     /// Shared plumbing for adding a fully-built tab: detaches the current tab,
     /// appends and activates the new one, and installs its split controller
     /// into the content view. Used by new-tab, session restore, and single-pane
     /// (diff/changes) tabs so they can't drift apart.
-    func installTab(_ tab: TabModel) {
+    ///
+    /// Returns false when the tab cap refuses the tab, so callers can surface
+    /// the failure (IPC must not report ok on a tab that never opened).
+    @discardableResult
+    func installTab(_ tab: TabModel) -> Bool {
+        // Enforce the tab cap on every live creation path, not just restore.
+        // The tab's panes may already have spawned shells, so tear them down
+        // rather than leak them (mirrors closeTab's shutdown).
+        guard tabs.count < Limits.maxTabs else {
+            Log.error("⚠️ Tab limit (\(Limits.maxTabs)) reached; not opening another tab", category: "app")
+            NSSound.beep()
+            for pane in tab.panes {
+                pane.shutdown()
+            }
+            return false
+        }
+
         if let currentController = currentSplitController {
             detachController(currentController)
         }
@@ -106,6 +123,7 @@ final class TabController: NSObject {
         paneSplitController.rebuildSplitView(for: tab)
 
         host?.reloadTabBar()
+        return true
     }
 
     /// The directory a new terminal should start in: the active pane's working
@@ -307,7 +325,18 @@ final class TabController: NSObject {
             restoreTab(from: tabState)
         }
 
-        let targetIndex = min(max(0, session.activeTabIndex), tabs.count - 1)
+        // activeTabIndex was saved against the full tab list, but editor-only
+        // tabs serialize to empty panes and are filtered out above — which
+        // shifts every later index down. Map the saved index onto the restored
+        // (filtered) list so we activate the tab the user actually left active.
+        let restorableActiveIndex: Int
+        if session.tabs.indices.contains(session.activeTabIndex),
+           !session.tabs[session.activeTabIndex].panes.isEmpty {
+            restorableActiveIndex = session.tabs[..<session.activeTabIndex].filter { !$0.panes.isEmpty }.count
+        } else {
+            restorableActiveIndex = 0
+        }
+        let targetIndex = min(max(0, restorableActiveIndex), tabs.count - 1)
         if targetIndex != activeTabIndex {
             switchToTab(index: targetIndex)
         }
@@ -390,6 +419,11 @@ extension TabController: PaneSplitControllerDelegate {
 
         tab.updateTitleFromActivePane()
         tab.updateAgentStateFromPanes()
+        // Re-aggregate dirty state now that the pane is gone: the
+        // notification-based aggregation can't fire for a closed pane (it's
+        // already out of tab.panes), so closing the only modified editor
+        // would otherwise leave the dirty dot lit forever.
+        tab.isDirty = tab.panes.contains { $0.editorViewController?.isModified == true }
         host?.reloadTabBar()
     }
 }

@@ -612,15 +612,21 @@ class MainWindowController: NSWindowController {
     }
 
     @objc private func paneDirtyStateChanged(_ notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let isDirty = userInfo["isDirty"] as? Bool,
-              let pane = notification.object as? PaneModel else { return }
+        guard let pane = notification.object as? PaneModel else { return }
 
-        // Find the tab containing this pane and update its dirty state
+        // Find the tab containing this pane and aggregate dirty state across all
+        // its panes — a single pane going clean must not clear the tab's dot
+        // while a sibling editor is still modified. The notification only serves
+        // as the trigger. (Mirrors saveCurrentFile's aggregation.)
         for tab in tabs {
             if tab.panes.contains(where: { $0.id == pane.id }) {
-                tab.isDirty = isDirty
-                updateTabBar()
+                let isTabDirty = tab.panes.contains { $0.editorViewController?.isModified == true }
+                // textDidChange fires this on every keystroke; only rebuild the
+                // tab bar when the aggregate actually flips.
+                if tab.isDirty != isTabDirty {
+                    tab.isDirty = isTabDirty
+                    updateTabBar()
+                }
                 break
             }
         }
@@ -768,8 +774,10 @@ class MainWindowController: NSWindowController {
     }
 
     /// Forwards to the tab controller. Public entry point used by the menu,
-    /// command palette, keyboard router, and AppDelegate.
-    func createNewTab(workingDirectory: String? = nil, command: [String]? = nil) {
+    /// command palette, keyboard router, and AppDelegate. Returns false when
+    /// the tab cap refused the tab.
+    @discardableResult
+    func createNewTab(workingDirectory: String? = nil, command: [String]? = nil) -> Bool {
         tabController.createNewTab(workingDirectory: workingDirectory, command: command)
     }
 
@@ -1065,7 +1073,7 @@ extension MainWindowController: SidebarContainerDelegate {
         tab.activePaneIndex = 0
         tab.updateTitleFromActivePane()
 
-        tabController.installTab(tab)
+        guard tabController.installTab(tab) else { return }
         syncSidebarToActiveTab()
     }
 
@@ -1566,7 +1574,7 @@ extension MainWindowController: AutomationHost {
         tabController.splitController(forTab: tabID)
     }
 
-    func automationCreateNewTab(workingDirectory: String?) {
+    func automationCreateNewTab(workingDirectory: String?) -> Bool {
         createNewTab(workingDirectory: workingDirectory)
     }
 

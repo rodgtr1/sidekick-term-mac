@@ -211,11 +211,15 @@ class PaneSplitController: NSViewController {
             initialDirectory: currentDirectory,
             command: command
         )
-        panes.append(newPane)
-        delegate?.paneSplitController(self, didAddPane: newPane, at: panes.count - 1)
 
+        // The model isn't mutated and didAddPane isn't fired until the pane is
+        // actually inserted into the view hierarchy below. A bail before then
+        // would otherwise leave a pane (with a live shell) in the model but
+        // absent from any split view — a ghost pane. On every failure path the
+        // freshly spawned shell must be shut down.
         guard let newPaneView = newPane.view else {
             Log.error("⚠️ New pane has no view!", category: "panes")
+            newPane.shutdown()
             return nil
         }
 
@@ -238,6 +242,8 @@ class PaneSplitController: NSViewController {
             // Find the index of the active pane's container in parent
             guard let containerIndex = parentSplit.arrangedSubviews.firstIndex(of: activePaneContainer) else {
                 Log.error("⚠️ Cannot find container index", category: "panes")
+                paneContainers.removeValue(forKey: newPane)
+                newPane.shutdown()
                 return nil
             }
 
@@ -279,6 +285,8 @@ class PaneSplitController: NSViewController {
 
             guard let containerIndex = parentSplit.arrangedSubviews.firstIndex(of: activePaneContainer) else {
                 Log.error("⚠️ Cannot find container index", category: "panes")
+                paneContainers.removeValue(forKey: newPane)
+                newPane.shutdown()
                 return nil
             }
 
@@ -295,6 +303,12 @@ class PaneSplitController: NSViewController {
                 SplitLayoutManager.distributeEvenly(in: split)
             }
         }
+
+        // Now that the pane is in the view hierarchy, commit it to the model and
+        // notify the delegate — past every early-return guard, so there's no
+        // window where the model holds a pane the view tree doesn't.
+        panes.append(newPane)
+        delegate?.paneSplitController(self, didAddPane: newPane, at: panes.count - 1)
 
         if focus {
             setActivePane(index: panes.count - 1)
@@ -639,12 +653,33 @@ extension PaneSplitController: NSSplitViewDelegate {
         return true // Allow all panes to resize
     }
 
+    /// Minimum width/height for a single pane.
+    static let minPaneSize: CGFloat = 100
+
+    /// The per-pane reservation, scaled down when the split is too narrow to
+    /// give every pane the full minimum. Without the scaling, min (leading ×
+    /// 100) can exceed max (total − trailing × 100) for any split narrower
+    /// than paneCount × 100pt, and NSSplitView's behavior on an inverted
+    /// min/max range is undefined.
+    private func paneReservation(in splitView: NSSplitView) -> CGFloat {
+        let totalSize = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
+        let paneCount = max(1, splitView.arrangedSubviews.count)
+        return min(Self.minPaneSize, totalSize / CGFloat(paneCount))
+    }
+
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        return max(proposedMinimumPosition, 100) // Minimum 100pt width/height
+        // Reserve minPaneSize for every pane on the leading side of this divider,
+        // not just one — otherwise dragging a later divider left can squeeze the
+        // earlier panes below the minimum.
+        let leadingPanes = CGFloat(dividerIndex + 1)
+        return max(proposedMinimumPosition, leadingPanes * paneReservation(in: splitView))
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         let totalSize = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
-        return min(proposedMaximumPosition, totalSize - 100) // Keep at least 100pt for other pane
+        // Reserve minPaneSize for every pane on the trailing side of this divider.
+        // With 3+ panes, reserving for only one lets divider 0 crush the rest.
+        let trailingPanes = CGFloat(splitView.arrangedSubviews.count - (dividerIndex + 1))
+        return min(proposedMaximumPosition, totalSize - trailingPanes * paneReservation(in: splitView))
     }
 }

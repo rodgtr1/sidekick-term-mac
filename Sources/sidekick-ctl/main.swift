@@ -82,15 +82,23 @@ struct SidekickCtl {
         }
     }
 
+    /// Expands a leading ~ before the path reaches server-side validation,
+    /// which only accepts absolute paths — a quoted `'~/proj'` would otherwise
+    /// fail with a misleading error.
+    private static func expandTilde(_ path: String) -> String {
+        NSString(string: path).expandingTildeInPath
+    }
+
     private static func makeRequest(_ args: [String]) throws -> [String: Any] {
         switch args[0] {
         case "ping":
             return ["action": "ping"]
         case "new-tab":
-            return ["action": "new_tab", "cwd": args.count > 1 ? args[1] : FileManager.default.currentDirectoryPath]
+            let cwd = args.count > 1 ? expandTilde(args[1]) : FileManager.default.currentDirectoryPath
+            return ["action": "new_tab", "cwd": cwd]
         case "open-diff":
             guard args.count == 2 else { throw CLIError("open-diff requires a file path") }
-            return ["action": "show_diff", "path": args[1], "old": "", "new": ""]
+            return ["action": "show_diff", "path": expandTilde(args[1]), "old": "", "new": ""]
         case "agent-ready": return ["action": "agent_ready"]
         case "agent-busy": return ["action": "agent_busy"]
         case "agent-done": return ["action": "agent_done"]
@@ -120,7 +128,7 @@ struct SidekickCtl {
                 case "--cwd":
                     index += 1
                     guard index < args.count else { throw CLIError("--cwd requires a directory") }
-                    request["cwd"] = NSString(string: args[index]).expandingTildeInPath
+                    request["cwd"] = expandTilde(args[index])
                 case "--force":
                     request["force"] = true
                 default:
@@ -137,7 +145,7 @@ struct SidekickCtl {
                 case "--cwd":
                     index += 1
                     guard index < args.count else { throw CLIError("--cwd requires a directory") }
-                    request["cwd"] = NSString(string: args[index]).expandingTildeInPath
+                    request["cwd"] = expandTilde(args[index])
                 default:
                     throw CLIError("Unknown worktree prune option: \(args[index])")
                 }
@@ -178,7 +186,7 @@ struct SidekickCtl {
                 case "--cwd":
                     index += 1
                     guard index < args.count else { throw CLIError("--cwd requires a directory") }
-                    request["cwd"] = NSString(string: args[index]).expandingTildeInPath
+                    request["cwd"] = expandTilde(args[index])
                 case "--worktree":
                     index += 1
                     guard index < args.count else { throw CLIError("--worktree requires a branch name") }

@@ -464,20 +464,33 @@ class FileTreeViewController: NSViewController {
     }
 
     fileprivate func scheduleRefreshFromFileEvent() {
-        let now = Date()
-        if let lastRefreshFromFileEvent,
-           now.timeIntervalSince(lastRefreshFromFileEvent) < 2.0 {
-            return
+        // A refresh is already scheduled and will cover this event; it always
+        // fires no later than the trailing deadline we'd compute here, so keep
+        // it. (Cancel-and-reschedule would push a burst's first paint from
+        // 0.75s out to the 2s window end — FSEvents' delivery latency
+        // guarantees bursts arrive as multiple callbacks.)
+        guard refreshWorkItem == nil else { return }
+
+        // Leading edge: refresh 0.75s after the first event. An event that
+        // lands inside the 2s throttle window after a refresh gets a single
+        // trailing refresh when the window elapses, so a file created just
+        // after a refresh still appears without waiting for another event.
+        var delay = 0.75
+        if let last = lastRefreshFromFileEvent {
+            let elapsed = Date().timeIntervalSince(last)
+            if elapsed < 2.0 {
+                delay = 2.0 - elapsed
+            }
         }
-        lastRefreshFromFileEvent = now
-        refreshWorkItem?.cancel()
 
         let workItem = DispatchWorkItem { [weak self] in
+            self?.refreshWorkItem = nil
+            self?.lastRefreshFromFileEvent = Date()
             self?.refresh()
         }
 
         refreshWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private func shouldWatchPath(_ path: String) -> Bool {

@@ -128,115 +128,130 @@ nonisolated enum IPCCommandType {
     case reportTelemetry(paneID: UUID, usage: TranscriptUsage)
     case resetTelemetry(paneID: UUID)
 
+    /// Outcome of parsing an `IPCCommand`, distinguishing "unknown command"
+    /// from "known command, invalid arguments" straight from the switch in
+    /// `parse` — no separate action list to keep in sync. (`events` never
+    /// reaches `parse`; the server routes it to the event stream first.)
+    enum ParseResult {
+        case command(IPCCommandType)
+        case invalidArguments
+        case unknownAction
+    }
+
     static func from(_ command: IPCCommand) -> IPCCommandType? {
+        guard case .command(let commandType) = parse(command) else { return nil }
+        return commandType
+    }
+
+    static func parse(_ command: IPCCommand) -> ParseResult {
         switch command.action {
         case "ping":
-            return .ping
+            return .command(.ping)
         case "new_tab":
-            return .newTab(cwd: command.cwd.flatMap(Self.validatedDirectory))
+            return .command(.newTab(cwd: command.cwd.flatMap(Self.validatedDirectory)))
         case "show_diff":
             guard let path = command.path,
                   let old = command.old,
                   let new = command.new,
-                  let validPath = Self.validatedDiffPath(path) else { return nil }
+                  let validPath = Self.validatedDiffPath(path) else { return .invalidArguments }
             // pane_id is optional: it scopes "approve & remember" grants to the
             // pane the edit hook ran in. Absent (or unparseable) → unscoped.
-            return .showDiff(paneID: command.paneID.flatMap(UUID.init(uuidString:)),
-                             path: validPath, old: old, new: new)
+            return .command(.showDiff(paneID: command.paneID.flatMap(UUID.init(uuidString:)),
+                                      path: validPath, old: old, new: new))
         case "agent_ready":
-            return .agentReady
+            return .command(.agentReady)
         case "agent_busy":
-            return .agentBusy
+            return .command(.agentBusy)
         case "agent_done":
-            return .agentDone
+            return .command(.agentDone)
         case "agent_idle":
-            return .agentIdle
+            return .command(.agentIdle)
         case "pane_list":
-            return .paneList
+            return .command(.paneList)
         case "pane_current":
             if let rawPaneID = command.paneID {
-                guard let paneID = UUID(uuidString: rawPaneID) else { return nil }
-                return .paneCurrent(paneID: paneID)
+                guard let paneID = UUID(uuidString: rawPaneID) else { return .invalidArguments }
+                return .command(.paneCurrent(paneID: paneID))
             }
-            return .paneCurrent(paneID: nil)
+            return .command(.paneCurrent(paneID: nil))
         case "pane_split":
             guard let paneID = uuid(command.paneID),
-                  let direction = splitDirection(command.direction) else { return nil }
+                  let direction = splitDirection(command.direction) else { return .invalidArguments }
             let cwd: String?
             if let requestedCWD = command.cwd {
-                guard let validCWD = validatedDirectory(requestedCWD) else { return nil }
+                guard let validCWD = validatedDirectory(requestedCWD) else { return .invalidArguments }
                 cwd = validCWD
             } else {
                 cwd = nil
             }
             if let argv = command.command, argv.isEmpty || argv.count > 256 || argv.contains(where: { $0.count > 32_768 }) {
-                return nil
+                return .invalidArguments
             }
             let worktree: String?
             if let requestedBranch = command.worktree {
-                guard let validBranch = validatedBranchName(requestedBranch) else { return nil }
+                guard let validBranch = validatedBranchName(requestedBranch) else { return .invalidArguments }
                 worktree = validBranch
             } else {
                 worktree = nil
             }
-            return .paneSplit(
+            return .command(.paneSplit(
                 paneID: paneID,
                 direction: direction,
                 cwd: cwd,
                 command: command.command,
                 focus: command.focus ?? true,
                 worktree: worktree
-            )
+            ))
         case "pane_focus":
-            guard let paneID = uuid(command.paneID) else { return nil }
-            return .paneFocus(paneID: paneID)
+            guard let paneID = uuid(command.paneID) else { return .invalidArguments }
+            return .command(.paneFocus(paneID: paneID))
         case "pane_close":
-            guard let paneID = uuid(command.paneID) else { return nil }
-            return .paneClose(paneID: paneID)
+            guard let paneID = uuid(command.paneID) else { return .invalidArguments }
+            return .command(.paneClose(paneID: paneID))
         case "pane_send_text":
-            guard let paneID = uuid(command.paneID), let text = command.text, text.count <= 1_000_000 else { return nil }
-            return .paneSendText(paneID: paneID, text: text)
+            guard let paneID = uuid(command.paneID), let text = command.text, text.count <= 1_000_000 else { return .invalidArguments }
+            return .command(.paneSendText(paneID: paneID, text: text))
         case "pane_send_key":
-            guard let paneID = uuid(command.paneID), let key = command.key, !key.isEmpty else { return nil }
-            return .paneSendKey(paneID: paneID, key: key)
+            guard let paneID = uuid(command.paneID), let key = command.key, !key.isEmpty else { return .invalidArguments }
+            return .command(.paneSendKey(paneID: paneID, key: key))
         case "pane_read":
-            guard let paneID = uuid(command.paneID) else { return nil }
+            guard let paneID = uuid(command.paneID) else { return .invalidArguments }
             let source = command.source ?? "visible"
             let format = command.format ?? "text"
             guard source == "visible" || source == "recent",
                   format == "text" || format == "json",
-                  command.lines.map({ (1...10_000).contains($0) }) ?? true else { return nil }
-            return .paneRead(paneID: paneID, source: source, lines: command.lines, json: format == "json")
+                  command.lines.map({ (1...10_000).contains($0) }) ?? true else { return .invalidArguments }
+            return .command(.paneRead(paneID: paneID, source: source, lines: command.lines, json: format == "json"))
         case "wait_agent_status":
             guard let paneID = uuid(command.paneID),
                   let rawStatus = command.status,
                   let status = AgentState(rawValue: rawStatus),
-                  let timeout = validTimeout(command.timeoutMS) else { return nil }
-            return .waitAgentStatus(paneID: paneID, status: status, timeoutMS: timeout)
+                  let timeout = validTimeout(command.timeoutMS) else { return .invalidArguments }
+            return .command(.waitAgentStatus(paneID: paneID, status: status, timeoutMS: timeout))
         case "wait_output":
             guard let paneID = uuid(command.paneID),
                   let match = command.match, !match.isEmpty, match.count <= 16_384,
-                  let timeout = validTimeout(command.timeoutMS) else { return nil }
-            return .waitOutput(paneID: paneID, match: match, timeoutMS: timeout)
+                  let timeout = validTimeout(command.timeoutMS) else { return .invalidArguments }
+            return .command(.waitOutput(paneID: paneID, match: match, timeoutMS: timeout))
         case "worktree_remove":
             guard let rawBranch = command.worktree,
                   let branch = validatedBranchName(rawBranch),
-                  let cwd = optionalDirectory(command.cwd) else { return nil }
-            return .worktreeRemove(branch: branch, cwd: cwd, force: command.force ?? false)
+                  let cwd = optionalDirectory(command.cwd) else { return .invalidArguments }
+            return .command(.worktreeRemove(branch: branch, cwd: cwd, force: command.force ?? false))
         case "worktree_prune":
-            guard let cwd = optionalDirectory(command.cwd) else { return nil }
-            return .worktreePrune(cwd: cwd)
+            guard let cwd = optionalDirectory(command.cwd) else { return .invalidArguments }
+            return .command(.worktreePrune(cwd: cwd))
         case "report_telemetry":
             guard let paneID = uuid(command.paneID),
                   let json = command.telemetry,
                   let data = json.data(using: .utf8),
-                  let usage = try? JSONDecoder().decode(TranscriptUsage.self, from: data) else { return nil }
-            return .reportTelemetry(paneID: paneID, usage: usage)
+                  let usage = try? JSONDecoder().decode(TranscriptUsage.self, from: data) else { return .invalidArguments }
+            return .command(.reportTelemetry(paneID: paneID, usage: usage))
         case "reset_telemetry":
-            guard let paneID = uuid(command.paneID) else { return nil }
-            return .resetTelemetry(paneID: paneID)
+            guard let paneID = uuid(command.paneID) else { return .invalidArguments }
+            return .command(.resetTelemetry(paneID: paneID))
         default:
-            return nil
+            return .unknownAction
         }
     }
 
@@ -390,9 +405,13 @@ nonisolated final class IPCServer: @unchecked Sendable {
         defer { stateLock.unlock() }
         guard isRunning else { return }
         isRunning = false
-        // Closing the listening socket makes the blocked accept() return -1,
-        // which lets the accept loop observe isRunning == false and exit.
+        // Wake the accept loop deterministically: close() alone is not
+        // guaranteed to unblock a thread already parked in accept() on this fd,
+        // so shutdown() first, then close(). The loop then sees the -1 return
+        // and observes isRunning == false to exit. (EventBroadcaster.drop uses
+        // the same shutdown-to-unblock idiom.)
         if serverFD >= 0 {
+            shutdown(serverFD, SHUT_RDWR)
             close(serverFD)
             serverFD = -1
         }
@@ -539,8 +558,22 @@ nonisolated final class IPCServer: @unchecked Sendable {
         // Read a single newline-terminated request. The client may keep its
         // write side open while waiting for the response, so reading to EOF
         // would deadlock.
-        guard let requestData = readLine(from: clientFD) else {
+        let requestData: Data
+        switch readLine(from: clientFD) {
+        case .line(let data):
+            requestData = data
+        case .eof:
             Log.debug("IPCServer: Failed to read command")
+            close(clientFD)
+            return
+        case .tooLarge:
+            // The client is likely still blocked in write() with the rest of
+            // the oversized request; if we reply and close now, that write
+            // fails with EPIPE before the client ever reads, and the error is
+            // lost. Discard the remainder first so the client's write
+            // completes and it can actually receive the response.
+            drainRequestRemainder(from: clientFD)
+            sendResponse(IPCResponse(ok: false, error: "Request exceeds maximum size of \(Self.maxRequestBytes) bytes"), to: clientFD)
             close(clientFD)
             return
         }
@@ -602,9 +635,23 @@ nonisolated final class IPCServer: @unchecked Sendable {
             return
         }
 
-        guard let commandType = IPCCommandType.from(command) else {
-            Log.debug("IPCServer: Unknown or invalid command: \(command.action)")
-            sendResponse(IPCResponse(ok: false, error: "Unknown or invalid command: \(command.action)"), to: clientFD)
+        let commandType: IPCCommandType
+        switch IPCCommandType.parse(command) {
+        case .command(let parsed):
+            commandType = parsed
+        case .invalidArguments:
+            // A recognized action that failed validation (e.g. a bad --cwd) is
+            // an argument error, not an unknown command — report it as such so
+            // the caller can tell a typo'd verb from a bad path.
+            let error = "Invalid arguments for command: \(command.action)"
+            Log.debug("IPCServer: \(error)")
+            sendResponse(IPCResponse(ok: false, error: error), to: clientFD)
+            close(clientFD)
+            return
+        case .unknownAction:
+            let error = "Unknown command: \(command.action)"
+            Log.debug("IPCServer: \(error)")
+            sendResponse(IPCResponse(ok: false, error: error), to: clientFD)
             close(clientFD)
             return
         }
@@ -670,7 +717,15 @@ nonisolated final class IPCServer: @unchecked Sendable {
         return EventFilter(paneID: paneID, type: type)
     }
 
-    private func readLine(from clientFD: Int32) -> Data? {
+    /// Outcome of reading a single request line, so the caller can answer an
+    /// oversized request distinctly instead of closing the socket silently.
+    private enum ReadResult {
+        case line(Data)
+        case eof
+        case tooLarge
+    }
+
+    private func readLine(from clientFD: Int32) -> ReadResult {
         var request = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
 
@@ -679,14 +734,43 @@ nonisolated final class IPCServer: @unchecked Sendable {
             if bytesRead <= 0 {
                 // EOF or error: accept what we have if the client closed
                 // its write side instead of sending a trailing newline.
-                return request.isEmpty ? nil : request
+                return request.isEmpty ? .eof : .line(request)
             }
             request.append(contentsOf: buffer[0..<bytesRead])
             if buffer[0..<bytesRead].contains(UInt8(ascii: "\n")) {
-                return request
+                return .line(request)
             }
         }
-        return nil
+        // Ran past the cap without a terminating newline: tell the client so it
+        // doesn't just see a bare EOF with no error.
+        return .tooLarge
+    }
+
+    /// How long `drainRequestRemainder` will keep discarding an oversized
+    /// request before giving up — bounds how long a client that streams
+    /// forever (or wedges mid-write) can pin a worker thread.
+    private static let requestDrainTimeout: TimeInterval = 10
+
+    /// Discards the rest of an oversized request until its terminating
+    /// newline or EOF, so a client still blocked in write() can finish and
+    /// then read the error response we send before closing.
+    private func drainRequestRemainder(from clientFD: Int32) {
+        let deadline = Date().addingTimeInterval(Self.requestDrainTimeout)
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { return }
+            var receiveTimeout = timeval(
+                tv_sec: Int(remaining),
+                tv_usec: Int32((remaining - floor(remaining)) * 1_000_000)
+            )
+            setsockopt(clientFD, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size))
+
+            let bytesRead = read(clientFD, &buffer, buffer.count)
+            if bytesRead < 0 && errno == EINTR { continue }
+            if bytesRead <= 0 { return } // EOF, error, or receive timeout
+            if buffer[0..<bytesRead].contains(UInt8(ascii: "\n")) { return }
+        }
     }
 
     /// A client that connects, sends a request, and stops draining its socket

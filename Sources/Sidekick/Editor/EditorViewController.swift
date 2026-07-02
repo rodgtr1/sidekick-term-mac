@@ -331,21 +331,30 @@ class EditorViewController: NSViewController {
             guard let self = self,
                   let textView = self.textView else { return }
 
-            let content = textView.string
-            let lines = content.components(separatedBy: .newlines)
+            guard line > 0 else { return }
 
-            guard line > 0 && line <= lines.count else { return }
-
-            // Calculate the character offset for the target line
-            var characterOffset = 0
-            for i in 0..<(line - 1) {
-                if i < lines.count {
-                    characterOffset += lines[i].count + 1 // +1 for newline
-                }
+            // Walk lines in UTF-16 units so the offset matches what NSTextView
+            // consumes; String.count (grapheme clusters) drifts on emoji/CJK and
+            // would land the caret on the wrong line.
+            let content = textView.string as NSString
+            var location = 0
+            var currentLine = 1
+            while currentLine < line && location < content.length {
+                let lineRange = content.lineRange(for: NSRange(location: location, length: 0))
+                location = NSMaxRange(lineRange)
+                currentLine += 1
             }
+            // The walk can run off the end and still satisfy currentLine ==
+            // line: on a file without a trailing newline, line lastLine+1
+            // "exists" as location == length. A real line starts where
+            // lineRange says it does — for a phantom line past the end,
+            // lineRange snaps back to the start of the actual last line.
+            guard currentLine == line,
+                  content.lineRange(for: NSRange(location: location, length: 0)).location == location
+            else { return }
 
             // Set the selection to the beginning of the target line
-            let range = NSRange(location: characterOffset, length: 0)
+            let range = NSRange(location: location, length: 0)
             textView.setSelectedRange(range)
 
             // Scroll to make the line visible

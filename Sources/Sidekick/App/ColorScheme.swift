@@ -1,5 +1,4 @@
 import Cocoa
-import SwiftTerm
 
 // MARK: - App Theme (chrome roles)
 //
@@ -36,22 +35,4 @@ enum AppTheme {
     // Borders and dividers
     static var border: NSColor { p.surface2 }
     static var divider: NSColor { p.surface1 }
-}
-
-// MARK: - SwiftTerm Color hex helper
-
-extension SwiftTerm.Color {
-    convenience init(hex: String) {
-        var hexString = hex
-        if hexString.hasPrefix("#") {
-            hexString = String(hexString.dropFirst())
-        }
-
-        let hexInt = Int(hexString, radix: 16) ?? 0
-        let red = UInt16((hexInt >> 16) & 0xFF) * 257
-        let green = UInt16((hexInt >> 8) & 0xFF) * 257
-        let blue = UInt16(hexInt & 0xFF) * 257
-
-        self.init(red: red, green: green, blue: blue)
-    }
 }

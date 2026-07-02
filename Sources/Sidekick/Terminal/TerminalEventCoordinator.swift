@@ -45,7 +45,19 @@ final class TerminalEventCoordinator {
     }
 
     func unregister(_ controller: TerminalViewController) {
-        panes.removeAll { $0.controller == nil || $0.controller === controller }
+        removePanes { $0.controller == nil || $0.controller === controller }
+    }
+
+    /// Self-free variant of `unregister` for use from a deinit that has hopped to
+    /// the main thread and can no longer reference the controller: a deallocating
+    /// controller's weak entry already reads nil, so pruning nil entries removes
+    /// it and tears down the monitor once the last pane is gone.
+    func pruneDeallocated() {
+        removePanes { $0.controller == nil }
+    }
+
+    private func removePanes(where shouldRemove: (WeakPane) -> Bool) {
+        panes.removeAll(where: shouldRemove)
         if panes.isEmpty, let monitor {
             NSEvent.removeMonitor(monitor)
             self.monitor = nil
