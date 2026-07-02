@@ -9,39 +9,6 @@ protocol TerminalViewControllerDelegate: AnyObject {
     func terminalRequestsOpenFile(_ terminal: TerminalViewController, path: String, line: Int?)
 }
 
-/// Result of the last finished shell command, reported via OSC 133 marks
-/// from the shell integration script.
-struct TerminalCommandStatus {
-    let exitCode: Int
-    let duration: TimeInterval?
-
-    var succeeded: Bool { exitCode == 0 }
-
-    var summary: String {
-        let outcome = succeeded ? "✓ exit 0" : "✗ exit \(exitCode)"
-        guard let duration = duration else { return outcome }
-        if duration >= 60 {
-            let minutes = Int(duration) / 60
-            let seconds = Int(duration) % 60
-            return "\(outcome) · \(minutes)m \(seconds)s"
-        }
-        return String(format: "%@ · %.1fs", outcome, duration)
-    }
-}
-
-/// A finished shell command captured from OSC 133 marks: the command line
-/// (carried base64-encoded in the `C` mark by the shell integration), its exit
-/// code and duration (from the `D` mark), and the ANSI-stripped output printed
-/// between the two marks. Output framing is approximate at the ~100ms
-/// detection-coalescing boundary, which is fine for agent legibility.
-struct TerminalCommandRecord {
-    let command: String
-    let exitCode: Int
-    let duration: TimeInterval?
-    let output: String
-    let finishedAt: Date
-}
-
 /// Classifies the raw byte sequences the terminal sends upstream to the child
 /// process, so we can tell genuine keystrokes from terminal-generated reports
 /// (focus / mouse) and, within mouse reports, pointer motion from button clicks.
@@ -226,8 +193,6 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
 }
 
 class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate {
-    private static let agentStatusTermprop = "vte.ext.sidekick.agent"
-
     weak var delegate: TerminalViewControllerDelegate?
     private var terminalView: LocalProcessTerminalView!
     private var config: Config
@@ -258,16 +223,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var initialDirectory: String?
     private let paneID: UUID
     private let initialCommand: [String]?
-    private var recentOutput = ""
-    private var agentStatusSequenceBuffer = ""
-    private var lastDetectedAgentState: AgentState = .idle
-    // Once the session reports state via OSC 666 (Claude/Codex hooks), those
-    // reports are authoritative and the text heuristics stand down.
-    private var hasExplicitAgentStatus = false
-    // nonisolated(unsafe) for deinit's off-main branch, as with cwdTimer.
-    nonisolated(unsafe) private var agentDoneTimer: Timer?
-    nonisolated(unsafe) private var blockedPollingTimer: Timer?
-    private var suppressedPromptMarkers: Set<String> = []
+    /// The agent-state machine (explicit OSC 666 reports, text heuristics,
+    /// quiet-period done detection, blocked-state polling), extracted so its
+    /// interacting state is testable. Wired to this pane in `viewDidLoad`.
+    private let agentStateDetector = AgentStateDetector()
+    /// Buffered OSC 133/666 sequence extraction from the output stream.
+    private var shellIntegrationParser = ShellIntegrationParser()
     private var pendingDetectionOutput = ""
     private var detectionFlushScheduled = false
     private var automationOutput = ""
@@ -276,17 +237,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var alternateScrollAccumulator: CGFloat = 0
 
     // Dev-server detection
+    private var serverBannerDetector = ServerBannerDetector()
     private var serverBannerView: NSView?
     private var serverBannerDismissWork: DispatchWorkItem?
     private var detectedServerURL: URL?
-    private var lastOfferedServerURL: URL?
-
-    private static let serverURLRegex: NSRegularExpression? = try? NSRegularExpression(
-        pattern: "https?://(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)(?::\\d{2,5})?(?:/[A-Za-z0-9_\\-./?#=&%]*)?"
-    )
-    private static let listeningPortRegex: NSRegularExpression? = try? NSRegularExpression(
-        pattern: "(?i)listening on (?:port )?(?:[a-z.*]*:)?(\\d{2,5})\\b"
-    )
 
     // True once the shell has produced any output (prompt drawn). Gates
     // `sendOnShellReady` so a startup command waits for the prompt, not a timer.
@@ -295,46 +249,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     // Shell integration (OSC 7 + OSC 133) state
     private var hasShellIntegration = false
-    private var commandMarkBuffer = ""
-    private var commandStartDate: Date?
     private var promptMarkRows: [Int] = []
     private static let maxPromptMarks = 500
 
     // Per-command record capture (OSC 133 C..D windows), surfaced by
     // `sidekick-ctl pane read --json` for agent-legible command history.
-    private struct InFlightCommand {
-        let command: String
-        let startDate: Date
-    }
-    private var inFlightCommand: InFlightCommand?
-    /// Output captured for the in-flight command. Kept as a standalone property
-    /// rather than inside `InFlightCommand` so appending doesn't copy the whole
-    /// (up to `maxCommandOutputChars`) struct in and out of the Optional on
-    /// every output chunk.
-    private var inFlightOutput = ""
-    private var commandRecords: [TerminalCommandRecord] = []
-    private static let maxCommandRecords = 100
-    /// Raw output captured per command is bounded so a runaway log tail can't
-    /// grow this pane's memory without limit; the tail is what agents read.
-    private static let maxCommandOutputChars = 256_000
-
-    private static let commandMarkRegex: NSRegularExpression? =
-        try? NSRegularExpression(pattern: "\u{001B}\\]133;([A-Za-z])(?:;([^\u{001B}\u{0007}]*))?(?:\u{001B}\\\\|\u{0007})")
-
-    private static let agentStatusRegex: NSRegularExpression? = {
-        let escapedTermprop = NSRegularExpression.escapedPattern(for: agentStatusTermprop)
-        let pattern = "\u{001B}\\]666;\(escapedTermprop)=([A-Za-z_-]+)(?:\u{001B}\\\\|\u{0007})"
-        return try? NSRegularExpression(pattern: pattern)
-    }()
-
-    private static let ansiEscapeRegex: NSRegularExpression? =
-        try? NSRegularExpression(pattern: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]")
-
-    /// OSC sequences (ESC ] … BEL/ST) — cwd reports, title sets, and our own
-    /// 7/133/666 marks. Stripped from command records so the captured output
-    /// is the command's actual text, not control chatter.
-    private static let oscEscapeRegex: NSRegularExpression? =
-        try? NSRegularExpression(pattern: "\u{001B}\\][^\u{0007}\u{001B}]*(?:\u{0007}|\u{001B}\\\\)")
+    private var commandRecorder = CommandRecorder()
 
     init(
         config: Config,
@@ -360,6 +280,15 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // The detector already delivers state changes async on the main queue
+        // and deduped, so the delegate is called directly here.
+        agentStateDetector.onStateChange = { [weak self] state in
+            guard let self else { return }
+            self.delegate?.terminalDidDetectAgentState(self, state: state)
+        }
+        agentStateDetector.readVisibleScreen = { [weak self] in
+            self?.readVisibleScreenText() ?? ""
+        }
         setupTerminal()
         startConfiguredProcess()
         startCWDTracking()
@@ -818,9 +747,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         if initialCommand != nil {
             // A directly launched worker has no parent shell to return to.
             // Keep the finished pane actionable for waiters and the dashboard.
-            notifyDetectedAgentState(.done)
+            agentStateDetector.markWorkerFinished()
         } else {
-            resetAgentState()
+            agentStateDetector.reset()
         }
     }
 
@@ -883,23 +812,6 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
     }
 
-    /// Appends `chunk` to a rolling buffer, keeping roughly the last `cap`
-    /// characters. The old `buffer = String(buffer.suffix(cap))` reallocated and
-    /// copied the whole buffer on *every* output chunk once it reached `cap`.
-    /// Here the grapheme-aware trim runs only after the buffer grows a quarter
-    /// past `cap`, so under noisy throughput (builds, log tails) it amortizes to
-    /// one trim per slack-of-growth instead of one per chunk.
-    private static func appendBounded(_ chunk: String, to buffer: inout String, cap: Int) {
-        buffer += chunk
-        // utf8.count is O(1) on Swift's native UTF-8 storage; Character `count`
-        // is O(n) grapheme-breaking and ran on every chunk. The bound is
-        // approximate ("roughly the last cap chars"), so bytes-vs-graphemes here
-        // is fine — the occasional suffix() trim still keeps memory bounded.
-        if buffer.utf8.count > cap + cap / 4 {
-            buffer = String(buffer.suffix(cap))
-        }
-    }
-
     private func queueAgentDetection(_ output: String) {
         // Coalesce high-throughput output into ~10Hz detection passes so the
         // regex scanning doesn't run once per output chunk.
@@ -942,7 +854,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func appendAutomationOutput(_ output: String) {
-        Self.appendBounded(output, to: &automationOutput, cap: 64_000)
+        TerminalText.appendBounded(output, to: &automationOutput, cap: 64_000)
 
         // First output means the shell is up and has drawn its prompt — flush any
         // command queued via sendOnShellReady().
@@ -953,52 +865,31 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
 
         if !outputMatchers.isEmpty {
-            feedOutputMatchers(strippedChunk: stripANSIEscapes(output))
+            feedOutputMatchers(strippedChunk: TerminalText.stripANSIEscapes(output))
         }
 
         // While a command is running (between OSC 133 C and D), accumulate its
         // output for the command-record history. ANSI is stripped at finalize.
-        if inFlightCommand != nil {
-            Self.appendBounded(output, to: &inFlightOutput, cap: Self.maxCommandOutputChars)
-        }
+        commandRecorder.appendOutput(output)
     }
 
     private func detectAgentState(from output: String) {
-        consumeCommandMarkSequences(from: output)
+        for mark in shellIntegrationParser.consumeCommandMarks(from: output) {
+            handleCommandMark(kind: mark.kind, parameter: mark.parameter)
+        }
         detectDevServer(in: output)
 
-        if consumeAgentStatusSequences(from: output) {
+        // An explicit OSC 666 report (even an unknown token) supersedes the
+        // text heuristics for this chunk.
+        let statuses = shellIntegrationParser.consumeAgentStatuses(from: output)
+        if !statuses.isEmpty {
+            for status in statuses {
+                agentStateDetector.handleStatusToken(status)
+            }
             return
         }
 
-        // Once any OSC 666 has arrived this pane is hook-authoritative: the
-        // agent reports busy/ready/done/idle itself, so the text heuristics
-        // below stand down entirely. Running them alongside the hooks only
-        // fabricates transitions the agent never reported — the root of the
-        // "stuck on Working" / Working↔NeedsInput-flicker races. Heuristics
-        // remain for un-hooked sessions (a plain shell, or an agent whose
-        // integration isn't installed), and resume if the agent process exits
-        // (resetAgentState clears hasExplicitAgentStatus).
-        if hasExplicitAgentStatus { return }
-
-        Self.appendBounded(output, to: &recentOutput, cap: 8_000)
-
-        let normalizedRecentOutput = normalizeTerminalOutput(recentOutput)
-        let normalizedCurrentOutput = normalizeTerminalOutput(output)
-        let actionablePromptMarkers = agentPromptMarkers(in: normalizedRecentOutput)
-            .subtracting(suppressedPromptMarkers)
-
-        if !actionablePromptMarkers.isEmpty {
-            agentDoneTimer?.invalidate()
-            agentDoneTimer = nil
-            notifyDetectedAgentState(.ready)
-        } else if Self.containsAgentWorkingCue(normalizedCurrentOutput),
-                  lastDetectedAgentState != .ready {
-            notifyDetectedAgentState(.working)
-            scheduleDoneAfterQuietPeriod()
-        } else if lastDetectedAgentState == .working {
-            scheduleDoneAfterQuietPeriod()
-        }
+        agentStateDetector.processHeuristics(chunk: output)
     }
 
     // MARK: - Cmd+click file opening
@@ -1057,46 +948,8 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     // MARK: - Dev-server detection
 
     private func detectDevServer(in output: String) {
-        // Cheap pre-check before the ANSI strip + two regex passes, which otherwise
-        // ran on every ~10Hz flush for the life of the pane. Both matchers require
-        // one of these literals (serverURLRegex needs "http", listeningPortRegex
-        // needs "listening on"), so a chunk without either can't match.
-        guard output.range(of: "http", options: .caseInsensitive) != nil
-            || output.range(of: "listening on", options: .caseInsensitive) != nil else { return }
-
-        // Strip ANSI codes but keep case (URLs paths are case-sensitive).
-        var text = output
-        if let ansiRegex = Self.ansiEscapeRegex {
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            text = ansiRegex.stringByReplacingMatches(in: text, range: range, withTemplate: "")
-        }
-
-        var url: URL?
-        if let regex = Self.serverURLRegex {
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            if let match = regex.firstMatch(in: text, range: range),
-               let matchRange = Range(match.range, in: text) {
-                url = URL(string: normalizeLocalURLString(String(text[matchRange])))
-            }
-        }
-        if url == nil, let regex = Self.listeningPortRegex {
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            if let match = regex.firstMatch(in: text, range: range),
-               let portRange = Range(match.range(at: 1), in: text),
-               let port = Int(text[portRange]), port >= 80 {
-                url = URL(string: "http://localhost:\(port)/")
-            }
-        }
-
-        guard let serverURL = url, serverURL != lastOfferedServerURL else { return }
-        lastOfferedServerURL = serverURL
+        guard let serverURL = serverBannerDetector.detectServerURL(in: output) else { return }
         showServerBanner(for: serverURL)
-    }
-
-    private func normalizeLocalURLString(_ raw: String) -> String {
-        raw
-            .replacingOccurrences(of: "0.0.0.0", with: "localhost")
-            .replacingOccurrences(of: "127.0.0.1", with: "localhost")
     }
 
     private func showServerBanner(for url: URL) {
@@ -1181,123 +1034,6 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     // MARK: - Shell integration (OSC 133 command marks)
 
-    /// ESC (0x1B), the OSC introducer (`ESC ]`), and the two OSC terminators
-    /// (BEL and ST = `ESC \`). Both the command-mark (OSC 133) and agent-status
-    /// (OSC 666) regexes begin with the introducer, so its presence gates every
-    /// match — see `trimMarkBuffer` / `consumeBufferedSequences`.
-    private static let escByte: Character = "\u{001B}"
-    private static let oscIntroducer = "\u{001B}]"
-    private static let belTerminator = "\u{0007}"
-    private static let stTerminator = "\u{001B}\\"
-
-    /// Final safety cap on a retained partial. Sized well above the longest
-    /// plausible OSC 133/666 sequence (a base64 command line) so we never slice
-    /// a sequence mid-flight — the bug the old pre-match `suffix(2_000)` caused.
-    /// utf8.count is O(1).
-    private static let maxMarkBufferChars = 64_000
-
-    /// Trims an in-progress mark buffer to just the bytes that could still be
-    /// the start of an OSC 133/666 sequence split across chunks. A live partial
-    /// always begins with the OSC introducer `ESC ]`; anything before the last
-    /// *un-terminated* introducer is already matched, a completed non-mark OSC
-    /// (title/cwd report), or an aborted sequence — none can extend into a
-    /// future match, so it's dropped. This is what keeps a mark-less but
-    /// ESC-heavy stream (a vim session emits CSI constantly and marks never)
-    /// from pinning the buffer near `maxMarkBufferChars` and forcing a full
-    /// regex rescan on every 100ms flush.
-    private static func trimMarkBuffer(_ buffer: inout String) {
-        if let introducer = buffer.range(of: oscIntroducer, options: .backwards) {
-            let tail = buffer[introducer.lowerBound...]
-            // No terminator after the introducer → a live partial we must keep.
-            // A lone trailing ESC is the *start* of an ST terminator, not a
-            // complete one, so it correctly reads as still-live here.
-            if tail.range(of: belTerminator) == nil, tail.range(of: stTerminator) == nil {
-                if introducer.lowerBound != buffer.startIndex {
-                    buffer = String(tail)
-                }
-                capMarkBuffer(&buffer)
-                return
-            }
-        }
-        // No live partial introducer. Keep only a trailing lone ESC, which may
-        // be the first byte of an introducer split across the chunk boundary.
-        buffer = buffer.last == escByte ? String(escByte) : ""
-    }
-
-    private static func capMarkBuffer(_ buffer: inout String) {
-        if buffer.utf8.count > Self.maxMarkBufferChars {
-            buffer = String(buffer.suffix(Self.maxMarkBufferChars))
-        }
-    }
-
-    /// Shared buffered-OSC matcher behind the OSC 133 command-mark and OSC 666
-    /// agent-status consumers, whose buffering/matching/slicing were identical.
-    /// Appends `output` to `buffer`, runs `regex` over the accumulation, calls
-    /// `handle` for each complete match (passing the match and the buffer string
-    /// it indexes into), then drops everything through the last match and trims
-    /// the tail to a live partial (if any). A sequence split across chunks stays
-    /// buffered until it completes. Returns true when at least one match was
-    /// found (i.e. a sequence was consumed).
-    @discardableResult
-    private func consumeBufferedSequences(
-        from output: String,
-        into buffer: inout String,
-        regex: NSRegularExpression?,
-        handle: (_ match: NSTextCheckingResult, _ buffer: String) -> Void
-    ) -> Bool {
-        // A mark is `ESC ] 133/666 …`. With nothing buffered, if this chunk has
-        // no OSC introducer — nor a trailing ESC that could begin one on the
-        // next chunk — there's nothing to match, so skip the append and both
-        // regex passes. This is the common case for ordinary output and, unlike
-        // a bare-ESC check, also for ESC-heavy TUIs (vim) that emit CSI but no
-        // OSC marks.
-        if buffer.isEmpty,
-           output.range(of: Self.oscIntroducer) == nil,
-           output.last != Self.escByte {
-            return false
-        }
-        buffer += output
-
-        // The introducer may now sit at the seam between the retained partial
-        // and this chunk, so re-check the accumulation. A plain substring scan
-        // is far cheaper than the regex when no mark is present.
-        guard let regex, buffer.range(of: Self.oscIntroducer) != nil else {
-            Self.trimMarkBuffer(&buffer)
-            return false
-        }
-
-        let searchRange = NSRange(buffer.startIndex..<buffer.endIndex, in: buffer)
-        let matches = regex.matches(in: buffer, range: searchRange)
-        guard !matches.isEmpty else {
-            Self.trimMarkBuffer(&buffer)
-            return false
-        }
-
-        var consumedUpperBound = buffer.startIndex
-        for match in matches {
-            if let matchRange = Range(match.range, in: buffer) {
-                consumedUpperBound = matchRange.upperBound
-            }
-            handle(match, buffer)
-        }
-        buffer = String(buffer[consumedUpperBound...])
-        Self.trimMarkBuffer(&buffer)
-        return true
-    }
-
-    private func consumeCommandMarkSequences(from output: String) {
-        consumeBufferedSequences(from: output, into: &commandMarkBuffer, regex: Self.commandMarkRegex) { match, buffer in
-            guard let kindRange = Range(match.range(at: 1), in: buffer) else { return }
-            let kind = String(buffer[kindRange])
-            var parameter: String?
-            if match.range(at: 2).location != NSNotFound,
-               let parameterRange = Range(match.range(at: 2), in: buffer) {
-                parameter = String(buffer[parameterRange])
-            }
-            handleCommandMark(kind: kind, parameter: parameter)
-        }
-    }
-
     private func handleCommandMark(kind: String, parameter: String?) {
         markShellIntegrationDetected()
 
@@ -1314,64 +1050,25 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             // Command started — clear the previous command's status and begin
             // capturing a new record. The shell integration carries the command
             // line base64-encoded in the C parameter (`133;C;<base64>`).
-            let started = Date()
-            commandStartDate = started
-            inFlightCommand = InFlightCommand(command: Self.decodeCommandParameter(parameter), startDate: started)
-            inFlightOutput = ""
+            commandRecorder.commandStarted(command: ShellIntegrationParser.decodeCommandParameter(parameter))
             delegate?.terminalDidUpdateCommandStatus(self, status: nil)
         case "D":
             let exitCode = parameter.flatMap { Int($0) } ?? 0
-            let duration = commandStartDate.map { Date().timeIntervalSince($0) }
-            commandStartDate = nil
-            finalizeCommandRecord(exitCode: exitCode, duration: duration)
-            delegate?.terminalDidUpdateCommandStatus(
-                self,
-                status: TerminalCommandStatus(exitCode: exitCode, duration: duration)
-            )
+            let status = commandRecorder.commandFinished(exitCode: exitCode)
+            delegate?.terminalDidUpdateCommandStatus(self, status: status)
             // The foreground command exited and the shell is back at its
             // prompt — whatever agent was running here (Ctrl+C'd, quit, or
             // crashed) is gone, so drop the tab from the agents panel.
-            resetAgentState()
+            agentStateDetector.reset()
         default:
             break
-        }
-    }
-
-    /// Decodes the base64 command line carried in the OSC 133 `C` parameter.
-    /// Returns "" when absent (a shell whose integration predates this, or a
-    /// command with no captured line) so a record is still produced.
-    private static func decodeCommandParameter(_ parameter: String?) -> String {
-        guard let parameter, !parameter.isEmpty,
-              let data = Data(base64Encoded: parameter),
-              let text = String(data: data, encoding: .utf8) else { return "" }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func finalizeCommandRecord(exitCode: Int, duration: TimeInterval?) {
-        guard let inFlight = inFlightCommand else { return }
-        inFlightCommand = nil
-        let rawOutput = inFlightOutput
-        inFlightOutput = ""
-
-        let cleanOutput = stripANSIEscapes(stripOSCSequences(rawOutput))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        commandRecords.append(TerminalCommandRecord(
-            command: inFlight.command,
-            exitCode: exitCode,
-            duration: duration,
-            output: cleanOutput,
-            finishedAt: Date()
-        ))
-        if commandRecords.count > Self.maxCommandRecords {
-            commandRecords.removeFirst(commandRecords.count - Self.maxCommandRecords)
         }
     }
 
     /// The most recently finished commands (oldest first), capped to `limit`
     /// when given. Surfaced over IPC for `sidekick-ctl pane read --json`.
     func recentCommandRecords(limit: Int? = nil) -> [TerminalCommandRecord] {
-        guard let limit, limit > 0 else { return commandRecords }
-        return Array(commandRecords.suffix(limit))
+        commandRecorder.recentRecords(limit: limit)
     }
 
     /// The cursor's absolute row in the scrollback buffer, derived from
@@ -1411,210 +1108,8 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         terminalView.scrollDown(lines: target - currentTop)
     }
 
-    private func consumeAgentStatusSequences(from output: String) -> Bool {
-        consumeBufferedSequences(from: output, into: &agentStatusSequenceBuffer, regex: Self.agentStatusRegex) { match, buffer in
-            guard let statusRange = Range(match.range(at: 1), in: buffer),
-                  let state = agentState(fromStatus: String(buffer[statusRange])) else {
-                return
-            }
-            applyExplicitAgentState(state)
-        }
-    }
-
-    private func agentState(fromStatus status: String) -> AgentState? {
-        switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "busy", "working", "running":
-            return .working
-        case "ready", "prompt", "waiting", "needs-user", "needs_user":
-            return .ready
-        case "done", "finished", "complete":
-            return .done
-        case "idle", "clear", "reset":
-            return .idle
-        default:
-            return nil
-        }
-    }
-
-    /// Returns agent tracking to a clean slate (state idle, heuristics
-    /// re-armed) once the agent process is known to be gone.
-    ///
-    /// Runs unconditionally — never short-circuits on `lastDetectedAgentState ==
-    /// .idle`. A hooked agent often reports `idle` (OSC 666) as its last status
-    /// before exiting; guarding on idle would skip `hasExplicitAgentStatus =
-    /// false` and latch the pane in hook-authoritative mode, so the text
-    /// heuristics never resume for a later un-hooked process here. Every line
-    /// below is idempotent, and `notifyDetectedAgentState` self-dedups, so the
-    /// redundant-idle case this guard once handled is covered without the latch.
-    private func resetAgentState() {
-        hasExplicitAgentStatus = false
-        recentOutput = ""
-        agentDoneTimer?.invalidate()
-        agentDoneTimer = nil
-        stopBlockedPolling()
-        notifyDetectedAgentState(.idle)
-    }
-
-    private func applyExplicitAgentState(_ state: AgentState) {
-        hasExplicitAgentStatus = true
-        recentOutput = ""
-        agentDoneTimer?.invalidate()
-        agentDoneTimer = nil
-        notifyDetectedAgentState(state)
-    }
-
-    private func normalizeTerminalOutput(_ output: String) -> String {
-        stripANSIEscapes(output).lowercased()
-    }
-
-    private func stripANSIEscapes(_ output: String) -> String {
-        guard let regex = Self.ansiEscapeRegex else { return output }
-        let range = NSRange(output.startIndex..<output.endIndex, in: output)
-        return regex.stringByReplacingMatches(in: output, range: range, withTemplate: "")
-    }
-
-    private func stripOSCSequences(_ output: String) -> String {
-        guard let regex = Self.oscEscapeRegex else { return output }
-        let range = NSRange(output.startIndex..<output.endIndex, in: output)
-        return regex.stringByReplacingMatches(in: output, range: range, withTemplate: "")
-    }
-
-    private func agentPromptMarkers(in output: String) -> Set<String> {
-        // Claude Code — specific dialog/prompt phrases only.
-        // "esc to cancel" alone is intentionally excluded: it appears in the
-        // normal running-spinner footer ("Running... (esc to cancel)") and
-        // causes constant Working↔NeedsInput flicker when the poller reads it.
-        // "tab to add additional instructions" is also excluded: it is the
-        // normal input footer Claude renders after Stop, not a request that is
-        // blocking an active run.
-        let markers = [
-            "do you want to proceed?",
-            "do you want to continue?",
-            "don't ask again",
-            // Codex
-            "allow command?",
-            "press enter to confirm or esc to cancel",
-            "enter to submit answer",
-            "enter to submit all"
-        ]
-        var matched = Set(markers.filter { output.contains($0) })
-        // Modern Claude Code inline permission prompt: "Do you want to <verb>…?"
-        // above a numbered menu ("1. Yes  2. …  3. No"). Require BOTH halves so
-        // the broad "do you want to" stem can't trip on ordinary prose. (Hooked
-        // sessions get this authoritatively via PermissionRequest; this is the
-        // fallback for un-integrated ones.)
-        if output.contains("do you want to") && output.contains("1. yes") {
-            matched.insert("interactive permission prompt")
-        }
-        return matched
-    }
-
-    /// Heuristic "agent is working" signal for sessions WITHOUT the status hook
-    /// installed (hooked sessions never reach here — see `detectAgentState`).
-    /// Anchored to the spinner ellipsis the agents render ("Thinking…",
-    /// "Working…", "running...") and the "esc to interrupt" footer, so the bare
-    /// words don't flip state when they appear in ordinary command output. For
-    /// reliable state, install the agent hooks.
-    static func containsAgentWorkingCue(_ output: String) -> Bool {
-        let lower = output.lowercased()
-        if lower.contains("esc to interrupt") { return true }
-        for cue in ["running", "thinking", "working", "generating"] {
-            if lower.contains("\(cue)...") || lower.contains("\(cue)…") { return true }
-        }
-        return false
-    }
-
     private func handleTerminalInput() {
-        // Hook-equipped agents report every transition over OSC 666, so input
-        // must never move agent state: Working comes from UserPromptSubmit /
-        // PreToolUse, Ready from Notification, Done from Stop. Guessing from
-        // keystrokes is what stranded finished agents on "Working" once their
-        // pane was focused. (Focus/mouse reports are already filtered upstream,
-        // but real keystrokes are silenced here too — the next hook is
-        // authoritative and effectively instant.)
-        if hasExplicitAgentStatus { return }
-
-        recentOutput = ""
-        agentDoneTimer?.invalidate()
-        agentDoneTimer = nil
-
-        if lastDetectedAgentState == .ready || lastDetectedAgentState == .done {
-            notifyDetectedAgentState(.working)
-            scheduleDoneAfterQuietPeriod()
-        }
-    }
-
-    private func scheduleDoneAfterQuietPeriod() {
-        agentDoneTimer?.invalidate()
-        agentDoneTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self = self, self.lastDetectedAgentState == .working else { return }
-                self.notifyDetectedAgentState(.done)
-            }
-        }
-    }
-
-    private func notifyDetectedAgentState(_ state: AgentState) {
-        guard state != lastDetectedAgentState else { return }
-        let previousState = lastDetectedAgentState
-        lastDetectedAgentState = state
-
-        // Blocked-polling scrapes the visible screen for permission dialogs —
-        // a heuristic only needed when no hook reports .ready. Hook-authoritative
-        // panes get .ready from the Notification hook, so skip the scraping.
-        if state == .working && !hasExplicitAgentStatus {
-            startBlockedPolling(suppressingVisiblePrompt: previousState == .ready)
-        } else {
-            stopBlockedPolling()
-        }
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.terminalDidDetectAgentState(self, state: state)
-        }
-    }
-
-    // MARK: - Blocked-state polling
-
-    // Polls the visible screen content while the agent is working so we can
-    // detect permission dialogs even when no new PTY data arrives after the UI
-    // renders (the OSC hook fires before the dialog, then data stops flowing).
-    private func startBlockedPolling(suppressingVisiblePrompt: Bool) {
-        stopBlockedPolling()
-        if suppressingVisiblePrompt {
-            let screen = normalizeTerminalOutput(readVisibleScreenText())
-            suppressedPromptMarkers = agentPromptMarkers(in: screen)
-        }
-        blockedPollingTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pollForBlockedState() }
-        }
-    }
-
-    private func stopBlockedPolling() {
-        blockedPollingTimer?.invalidate()
-        blockedPollingTimer = nil
-        suppressedPromptMarkers.removeAll()
-    }
-
-    private func pollForBlockedState() {
-        guard lastDetectedAgentState == .working else {
-            stopBlockedPolling()
-            return
-        }
-        let screen = readVisibleScreenText()
-        let normalized = normalizeTerminalOutput(screen)
-        let visibleMarkers = agentPromptMarkers(in: normalized)
-
-        // When a user answers a permission dialog, its text can remain in the
-        // terminal for another redraw. Ignore those same markers until they
-        // disappear; otherwise polling changes ready -> working -> ready using
-        // stale cells from the dialog that was just answered.
-        suppressedPromptMarkers.formIntersection(visibleMarkers)
-        if !visibleMarkers.subtracting(suppressedPromptMarkers).isEmpty {
-            agentDoneTimer?.invalidate()
-            agentDoneTimer = nil
-            notifyDetectedAgentState(.ready)
-        }
+        agentStateDetector.handleUserInput()
     }
 
     private func readVisibleScreenText() -> String {
@@ -1685,7 +1180,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     func recentOutputText(lineLimit: Int? = nil) -> String {
-        let text = stripANSIEscapes(automationOutput)
+        let text = TerminalText.stripANSIEscapes(automationOutput)
         guard let lineLimit, lineLimit > 0 else { return text }
         return text.split(separator: "\n", omittingEmptySubsequences: false)
             .suffix(lineLimit)
@@ -1751,7 +1246,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// True when shell integration is active and a command (e.g. nvim) is
     /// running in the foreground — image paste should not fire in this state.
     var isCommandRunning: Bool {
-        hasShellIntegration && commandStartDate != nil
+        hasShellIntegration && commandRecorder.isCommandInFlight
     }
 
     // MARK: - Scrollback search
@@ -1840,23 +1335,20 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         if Thread.isMainThread {
             MainActor.assumeIsolated {
                 cwdTimer?.invalidate()
-                agentDoneTimer?.invalidate()
-                blockedPollingTimer?.invalidate()
                 TerminalEventCoordinator.shared.unregister(self)
             }
         } else {
             // A future off-main last-release can't run the MainActor teardown
-            // here, so hand the timers to the main queue and invalidate them
-            // there. They must not just be abandoned: repeating timers are
-            // retained by the run loop indefinitely, so each leaked one would
+            // here, so hand the timer to the main queue and invalidate it
+            // there. It must not just be abandoned: repeating timers are
+            // retained by the run loop indefinitely, so a leaked one would
             // fire no-ops at 1Hz for the app's lifetime. The event monitor is
             // pruned the same way (self is gone by then, so its weak entry in
-            // the coordinator reads nil).
-            let timers = [cwdTimer, agentDoneTimer, blockedPollingTimer]
+            // the coordinator reads nil). The agent-state detector's timers are
+            // its own deinit's responsibility.
+            let timer = cwdTimer
             DispatchQueue.main.async {
-                for timer in timers {
-                    timer?.invalidate()
-                }
+                timer?.invalidate()
                 TerminalEventCoordinator.shared.pruneDeallocated()
             }
         }
