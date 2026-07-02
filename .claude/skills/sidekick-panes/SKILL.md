@@ -111,6 +111,19 @@ sidekick-ctl pane run "$WORKER_PANE" "additional context"
 
 Supported named keys include `enter`, `tab`, `esc`, `backspace`, `ctrl-c`, `ctrl-d`, and arrow directions.
 
+## Complete the handoff
+
+Coordination is pull-based: a worker finishes by printing a summary in its own pane and has no channel to notify the orchestrator. It will never "send the result back".
+
+So when the user's request includes acting on the worker's output — review it, verify it, merge it, report on it — dispatching the task is not the end of the job. Do not end the turn after sending the prompt. Block until the worker goes idle, then read its pane and perform the follow-up in the same turn:
+
+```sh
+sidekick-ctl wait agent-status "$WORKER_PANE" done --timeout 600000
+sidekick-ctl pane read "$WORKER_PANE" --source recent --lines 200
+```
+
+If the wait times out, read the pane to check progress and wait again; end the turn early only if the worker is stuck or waiting on input only the user can provide, and say so explicitly.
+
 ## Manage layout
 
 ```sh
