@@ -10,55 +10,74 @@ import Foundation
 /// isn't in the built-in Claude rate card.
 public enum PiTranscriptParser {
     public static func aggregate<S: StringProtocol>(jsonl: S) -> TranscriptUsage {
+        var acc = Accumulator()
+        for rawLine in jsonl.split(separator: "\n", omittingEmptySubsequences: true) {
+            ingest(Data(rawLine.utf8), into: &acc)
+        }
+        return acc.finalized()
+    }
+
+    /// Aggregates the session file at `path`, or nil if it can't be read.
+    /// Streams the file (see `TranscriptLineReader`) so a large Pi session
+    /// doesn't load whole into memory on every Stop hook (P5).
+    public static func aggregate(contentsOfFile path: String) -> TranscriptUsage? {
+        var acc = Accumulator()
+        guard TranscriptLineReader.forEachLine(inFileAt: path, { ingest($0, into: &acc) })
+        else { return nil }
+        return acc.finalized()
+    }
+
+    /// Running state: the base usage plus Pi's self-reported cost, which is only
+    /// surfaced when at least one turn carried a `cost` block.
+    private struct Accumulator {
         var usage = TranscriptUsage()
         var totalCost = 0.0
         var sawCost = false
 
-        for rawLine in jsonl.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(rawLine.utf8)) as? [String: Any],
-                  object["type"] as? String == "message",
-                  let message = object["message"] as? [String: Any],
-                  let role = message["role"] as? String
-            else { continue }
-
-            // Pi gives tool results their own `toolResult` role, so every
-            // `user` message is a genuine prompt (content may be a string or an
-            // array of blocks).
-            if role == "user" {
-                usage.userPrompts += 1
-                continue
-            }
-
-            guard role == "assistant",
-                  let turn = message["usage"] as? [String: Any] else { continue }
-
-            usage.assistantResponses += 1
-            if let model = message["model"] as? String { usage.model = model }
-            let turnInput = int(turn["input"])               // fresh input (excludes cacheRead)
-            let turnCacheRead = int(turn["cacheRead"])
-            let turnCacheWrite = int(turn["cacheWrite"])
-            usage.inputTokens += turnInput
-            usage.outputTokens += int(turn["output"])
-            usage.cacheReadTokens += turnCacheRead
-            usage.cacheCreation5mTokens += turnCacheWrite
-
-            // Context occupancy = this turn's full input footprint (last wins).
-            usage.contextTokens = turnInput + turnCacheRead + turnCacheWrite
-
-            if let cost = turn["cost"] as? [String: Any], let total = double(cost["total"]) {
-                totalCost += total
-                sawCost = true
-            }
+        func finalized() -> TranscriptUsage {
+            var result = usage
+            if sawCost { result.reportedCostUSD = totalCost }
+            return result
         }
-
-        if sawCost { usage.reportedCostUSD = totalCost }
-        return usage
     }
 
-    /// Aggregates the session file at `path`, or nil if it can't be read.
-    public static func aggregate(contentsOfFile path: String) -> TranscriptUsage? {
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        return aggregate(jsonl: text)
+    /// Folds one JSONL line's bytes into `acc`. Shared by the string and
+    /// streaming entry points so they can't diverge.
+    private static func ingest(_ lineData: Data, into acc: inout Accumulator) {
+        guard let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+              object["type"] as? String == "message",
+              let message = object["message"] as? [String: Any],
+              let role = message["role"] as? String
+        else { return }
+
+        // Pi gives tool results their own `toolResult` role, so every
+        // `user` message is a genuine prompt (content may be a string or an
+        // array of blocks).
+        if role == "user" {
+            acc.usage.userPrompts += 1
+            return
+        }
+
+        guard role == "assistant",
+              let turn = message["usage"] as? [String: Any] else { return }
+
+        acc.usage.assistantResponses += 1
+        if let model = message["model"] as? String { acc.usage.model = model }
+        let turnInput = int(turn["input"])               // fresh input (excludes cacheRead)
+        let turnCacheRead = int(turn["cacheRead"])
+        let turnCacheWrite = int(turn["cacheWrite"])
+        acc.usage.inputTokens += turnInput
+        acc.usage.outputTokens += int(turn["output"])
+        acc.usage.cacheReadTokens += turnCacheRead
+        acc.usage.cacheCreation5mTokens += turnCacheWrite
+
+        // Context occupancy = this turn's full input footprint (last wins).
+        acc.usage.contextTokens = turnInput + turnCacheRead + turnCacheWrite
+
+        if let cost = turn["cost"] as? [String: Any], let total = double(cost["total"]) {
+            acc.totalCost += total
+            acc.sawCost = true
+        }
     }
 
     // Round via doubleValue so float-encoded integers (e.g. `1.5e6`, `12345.0`,

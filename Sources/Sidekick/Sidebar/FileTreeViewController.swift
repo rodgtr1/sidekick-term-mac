@@ -124,7 +124,7 @@ class FileTreeViewController: NSViewController {
     func loadFileTree(for path: String, force: Bool = false) {
         Log.debug("🌳 loadFileTree called with path: \(path)", category: "sidebar")
 
-        let workspace = WorkspaceResolver.context(for: path)
+        let workspace = WorkspaceResolver.cachedContext(for: path)
         let displayPath = workspace.displayRoot
         Log.debug("🌳 displayPath: \(displayPath), gitRoot: \(workspace.repositoryRoot ?? "none")", category: "sidebar")
         let pathChanged = displayPath != currentPath

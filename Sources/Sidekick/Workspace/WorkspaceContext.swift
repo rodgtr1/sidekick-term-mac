@@ -69,6 +69,16 @@ nonisolated enum WorkspaceResolver {
     private static let cacheLock = NSLock()
     private static let cacheTTL: TimeInterval = 3
 
+    /// `context(for:)` using the memoized repo-root lookup — for the main-thread
+    /// UI sites (file tree, git panel) that rebuild a context on every tab
+    /// switch or row click and would otherwise fork `git rev-parse` each time.
+    static func cachedContext(for path: String) -> WorkspaceContext {
+        WorkspaceContext(
+            workingDirectory: path,
+            repositoryRoot: cachedGitRoot(from: path)
+        )
+    }
+
     /// `gitRoot(from:)` against the shared runner, memoized for `cacheTTL` so a
     /// burst of identical lookups on the main thread spawns at most one `git`.
     static func cachedGitRoot(from path: String) -> String? {

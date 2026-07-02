@@ -24,7 +24,14 @@ class QuickOpenPanel: NSPanel {
 
     private var fileResults: [FileResult] = []
     private var currentWorkingDirectory: String = FileManager.default.currentDirectoryPath
-    private let maxResults = 50
+    private nonisolated static let maxResults = 50
+
+    /// Upper bound on candidate paths scored per keystroke on the `find`
+    /// fallback. `fd` pre-filters and caps server-side (`fdCandidateCap`), but
+    /// plain `find` returns the whole tree — without a bound a large repo would
+    /// score tens of thousands of paths on every keystroke (P2). Generous enough
+    /// that ordinary repos are covered in full.
+    private nonisolated static let candidateScanCap = 20_000
 
     override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask, backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
         super.init(
@@ -218,6 +225,9 @@ class QuickOpenPanel: NSPanel {
     }
 
     private func performFileSearch(_ searchText: String) {
+        // Read once on the main actor; the background scorer needs it too.
+        let root = currentWorkingDirectory
+
         // Use fd for fast file finding, fall back to find
         let task = Process()
 
@@ -273,9 +283,12 @@ class QuickOpenPanel: NSPanel {
             DispatchQueue.global(qos: .userInitiated).async { [weak self, task] in
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 task.waitUntilExit()
+                // Score off the main thread: on the `find` fallback this walked
+                // and scored the whole tree on the main queue every keystroke.
+                let results = Self.scoredResults(from: data, searchText: searchText, root: root)
                 DispatchQueue.main.async {
                     guard let self = self, self.findTask === task else { return }
-                    self.parseFileResults(data, searchText: searchText)
+                    self.applyResults(results)
                 }
             }
         } catch {
@@ -302,29 +315,33 @@ class QuickOpenPanel: NSPanel {
 
     /// Path relative to `root`, tolerant of a trailing slash on `root`. Returns
     /// the original path when it isn't under `root`.
-    static func relativePath(of fullPath: String, under root: String) -> String {
+    nonisolated static func relativePath(of fullPath: String, under root: String) -> String {
         guard fullPath.hasPrefix(root) else { return fullPath }
         return String(fullPath.dropFirst(root.count).drop(while: { $0 == "/" }))
     }
 
-    private func parseFileResults(_ data: Data, searchText: String) {
-        guard let output = String(data: data, encoding: .utf8) else {
-            fileResults = []
-            tableView.reloadData()
-            return
-        }
+    /// Scores candidate paths and returns the top `maxResults`. Pure and
+    /// nonisolated so it can run on a background queue (P2).
+    private nonisolated static func scoredResults(
+        from data: Data,
+        searchText: String,
+        root: String
+    ) -> [FileResult] {
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
 
-        let lines = output.components(separatedBy: .newlines)
         var results: [FileResult] = []
+        var scanned = 0
 
-        for line in lines {
+        for line in output.components(separatedBy: .newlines) {
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedLine.isEmpty else { continue }
+            if scanned >= candidateScanCap { break }
+            scanned += 1
 
             let url = URL(fileURLWithPath: trimmedLine)
             let fileName = url.lastPathComponent
             let directory = url.deletingLastPathComponent().lastPathComponent
-            let relativePath = Self.relativePath(of: trimmedLine, under: currentWorkingDirectory)
+            let relativePath = relativePath(of: trimmedLine, under: root)
 
             // Score the filename and the relative path; take the better, with a
             // directory-only match discounted so filename hits still rank on top.
@@ -335,20 +352,21 @@ class QuickOpenPanel: NSPanel {
             let score = max(nameScore, pathScore / 2)
             guard score > 0 else { continue }
 
-            let result = FileResult(
+            results.append(FileResult(
                 path: trimmedLine,
                 relativePath: relativePath,
                 fileName: fileName,
                 score: score,
                 directory: directory
-            )
-
-            results.append(result)
+            ))
         }
 
         // Sort by score (higher is better) and limit results
-        fileResults = results.sorted { $0.score > $1.score }.prefix(maxResults).map { $0 }
+        return results.sorted { $0.score > $1.score }.prefix(maxResults).map { $0 }
+    }
 
+    private func applyResults(_ results: [FileResult]) {
+        fileResults = results
         tableView.reloadData()
 
         // Auto-select first result
@@ -357,7 +375,7 @@ class QuickOpenPanel: NSPanel {
         }
     }
 
-    private func calculateFuzzyScore(fileName: String, searchText: String) -> Int {
+    private nonisolated static func calculateFuzzyScore(fileName: String, searchText: String) -> Int {
         let lowerFileName = fileName.lowercased()
         let lowerSearchText = searchText.lowercased()
 

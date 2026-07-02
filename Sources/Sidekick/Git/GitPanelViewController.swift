@@ -10,7 +10,6 @@ class GitPanelViewController: NSViewController {
     private var gitStatusModel: GitStatusModel!
     // Populated on the main actor; cleared in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
-    private let gitService = GitService()
 
     weak var delegate: GitPanelDelegate?
 
@@ -688,7 +687,10 @@ extension GitPanelViewController: NSTableViewDelegate {
         guard row >= 0 && row < gitStatusModel.files.count else { return }
         let file = gitStatusModel.files[row]
         let fullPath = gitStatusModel.repositoryPath + "/" + file.path
-        let repositoryPath = gitService.repositoryRoot(from: fullPath) ?? gitStatusModel.repositoryPath
+        // Cached lookup: a row click shouldn't fork a synchronous `git
+        // rev-parse` on the main thread (P1). The file lives under the panel's
+        // repo, so the root is stable across a burst of clicks.
+        let repositoryPath = WorkspaceResolver.cachedGitRoot(from: fullPath) ?? gitStatusModel.repositoryPath
 
         delegate?.gitPanel(
             self,

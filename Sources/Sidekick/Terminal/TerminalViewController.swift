@@ -270,7 +270,6 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var automationOutput = ""
 
     private var findBar: TerminalFindBar?
-    private var scrollEventMonitor: Any?
     private var alternateScrollAccumulator: CGFloat = 0
 
     // Dev-server detection
@@ -361,7 +360,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         setupTerminal()
         startConfiguredProcess()
         startCWDTracking()
-        setupAlternateScreenScrolling()
+        TerminalEventCoordinator.shared.register(self)
 
         NotificationCenter.default.addObserver(
             self,
@@ -382,47 +381,17 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
-    /// SwiftTerm's scrollWheel only ever scrolls the scrollback buffer, which
-    /// breaks full-screen (alternate-buffer) apps:
-    ///  - alternate-screen apps WITH mouse reporting want the wheel as xterm
-    ///    button 4/5 so they can scroll their own viewport;
-    ///  - alternate-screen apps WITHOUT mouse reporting (vim, less) have no
-    ///    scrollback, so wheel events should become arrow keys.
-    /// On the NORMAL screen we always scroll our own scrollback — even when the
-    /// app (e.g. Claude Code) keeps mouse reporting on for clicks — so scrolling
-    /// over an inline prompt can't silently pick an option. Plain shells fall
-    /// through to normal scrollback scrolling too.
-    private func setupAlternateScreenScrolling() {
-        scrollEventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.scrollWheel, .leftMouseUp, .leftMouseDragged]
-        ) { [weak self] event in
-            guard let self = self else { return event }
-            switch event.type {
-            case .leftMouseDragged:
-                self.sawLeftMouseDrag = true
-                return event
-            case .leftMouseUp:
-                return self.handleTerminalMouseUp(event)
-            default:
-                return self.handleScrollWheelEvent(event)
-            }
-        }
-    }
-
-    /// Tracks whether the in-flight left-button gesture involved a drag — a
-    /// drag is a text selection and must never be treated as a link click.
-    private var sawLeftMouseDrag = false
-
     /// Owns link/file activation over the terminal. ⌘+click opens file paths
     /// in the built-in editor and URLs in the external browser. When the release
     /// lands on a link/file the event is swallowed so SwiftTerm's own handler
     /// can't ALSO open it — that handler opens links in the *external* browser
     /// (NSWorkspace.open) and fired even on stray clicks that SwiftTerm
     /// resolved to a URL, which is what made links open seemingly on hover.
-    private func handleTerminalMouseUp(_ event: NSEvent) -> NSEvent? {
-        let wasDrag = sawLeftMouseDrag
-        sawLeftMouseDrag = false
-
+    ///
+    /// `wasDrag` is threaded in from `TerminalEventCoordinator` (a drag is a
+    /// selection, never a link click). Returns nil to swallow the release, or the
+    /// event to let SwiftTerm handle it. Self-filters to releases over this pane.
+    func handleTerminalMouseUp(_ event: NSEvent, wasDrag: Bool) -> NSEvent? {
         guard let window = view.window,
               event.window === window,
               let terminalView = terminalView,
@@ -486,7 +455,18 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         return url
     }
 
-    private func handleScrollWheelEvent(_ event: NSEvent) -> NSEvent? {
+    /// SwiftTerm's scrollWheel only ever scrolls the scrollback buffer, which
+    /// breaks full-screen (alternate-buffer) apps:
+    ///  - alternate-screen apps WITH mouse reporting want the wheel as xterm
+    ///    button 4/5 so they can scroll their own viewport;
+    ///  - alternate-screen apps WITHOUT mouse reporting (vim, less) have no
+    ///    scrollback, so wheel events should become arrow keys.
+    /// On the NORMAL screen we always scroll our own scrollback — even when the
+    /// app (e.g. Claude Code) keeps mouse reporting on for clicks — so scrolling
+    /// over an inline prompt can't silently pick an option. Plain shells fall
+    /// through to normal scrollback scrolling too. Dispatched from
+    /// `TerminalEventCoordinator`; self-filters to scrolls over this pane.
+    func handleScrollWheelEvent(_ event: NSEvent) -> NSEvent? {
         guard let window = view.window,
               event.window === window,
               let terminalView = terminalView,
@@ -1175,12 +1155,50 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     // MARK: - Shell integration (OSC 133 command marks)
 
-    /// Caps an in-progress mark buffer that hasn't yielded a complete sequence
-    /// yet. Sized well above the longest plausible OSC 133/666 sequence (a
-    /// base64 command line) so we never slice a sequence mid-flight — the bug
-    /// the old pre-match `suffix(2_000)` caused. utf8.count is O(1).
+    /// ESC (0x1B), the OSC introducer (`ESC ]`), and the two OSC terminators
+    /// (BEL and ST = `ESC \`). Both the command-mark (OSC 133) and agent-status
+    /// (OSC 666) regexes begin with the introducer, so its presence gates every
+    /// match — see `trimMarkBuffer` / `consumeBufferedSequences`.
+    private static let escByte: Character = "\u{001B}"
+    private static let oscIntroducer = "\u{001B}]"
+    private static let belTerminator = "\u{0007}"
+    private static let stTerminator = "\u{001B}\\"
+
+    /// Final safety cap on a retained partial. Sized well above the longest
+    /// plausible OSC 133/666 sequence (a base64 command line) so we never slice
+    /// a sequence mid-flight — the bug the old pre-match `suffix(2_000)` caused.
+    /// utf8.count is O(1).
     private static let maxMarkBufferChars = 64_000
-    private static func boundMarkBuffer(_ buffer: inout String) {
+
+    /// Trims an in-progress mark buffer to just the bytes that could still be
+    /// the start of an OSC 133/666 sequence split across chunks. A live partial
+    /// always begins with the OSC introducer `ESC ]`; anything before the last
+    /// *un-terminated* introducer is already matched, a completed non-mark OSC
+    /// (title/cwd report), or an aborted sequence — none can extend into a
+    /// future match, so it's dropped. This is what keeps a mark-less but
+    /// ESC-heavy stream (a vim session emits CSI constantly and marks never)
+    /// from pinning the buffer near `maxMarkBufferChars` and forcing a full
+    /// regex rescan on every 100ms flush.
+    private static func trimMarkBuffer(_ buffer: inout String) {
+        if let introducer = buffer.range(of: oscIntroducer, options: .backwards) {
+            let tail = buffer[introducer.lowerBound...]
+            // No terminator after the introducer → a live partial we must keep.
+            // A lone trailing ESC is the *start* of an ST terminator, not a
+            // complete one, so it correctly reads as still-live here.
+            if tail.range(of: belTerminator) == nil, tail.range(of: stTerminator) == nil {
+                if introducer.lowerBound != buffer.startIndex {
+                    buffer = String(tail)
+                }
+                capMarkBuffer(&buffer)
+                return
+            }
+        }
+        // No live partial introducer. Keep only a trailing lone ESC, which may
+        // be the first byte of an introducer split across the chunk boundary.
+        buffer = buffer.last == escByte ? String(escByte) : ""
+    }
+
+    private static func capMarkBuffer(_ buffer: inout String) {
         if buffer.utf8.count > Self.maxMarkBufferChars {
             buffer = String(buffer.suffix(Self.maxMarkBufferChars))
         }
@@ -1190,10 +1208,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// agent-status consumers, whose buffering/matching/slicing were identical.
     /// Appends `output` to `buffer`, runs `regex` over the accumulation, calls
     /// `handle` for each complete match (passing the match and the buffer string
-    /// it indexes into), then drops everything through the last match and bounds
-    /// the tail so a mark-less stream can't grow unbounded. A sequence split
-    /// across chunks stays buffered until it completes. Returns true when at
-    /// least one match was found (i.e. a sequence was consumed).
+    /// it indexes into), then drops everything through the last match and trims
+    /// the tail to a live partial (if any). A sequence split across chunks stays
+    /// buffered until it completes. Returns true when at least one match was
+    /// found (i.e. a sequence was consumed).
     @discardableResult
     private func consumeBufferedSequences(
         from output: String,
@@ -1201,21 +1219,31 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         regex: NSRegularExpression?,
         handle: (_ match: NSTextCheckingResult, _ buffer: String) -> Void
     ) -> Bool {
-        // Marks begin with ESC. If this chunk has none and nothing partial is
-        // buffered, there's nothing to match — skip the regex pass (the common
-        // case for ordinary output).
-        if buffer.isEmpty, !output.utf8.contains(0x1B) { return false }
+        // A mark is `ESC ] 133/666 …`. With nothing buffered, if this chunk has
+        // no OSC introducer — nor a trailing ESC that could begin one on the
+        // next chunk — there's nothing to match, so skip the append and both
+        // regex passes. This is the common case for ordinary output and, unlike
+        // a bare-ESC check, also for ESC-heavy TUIs (vim) that emit CSI but no
+        // OSC marks.
+        if buffer.isEmpty,
+           output.range(of: Self.oscIntroducer) == nil,
+           output.last != Self.escByte {
+            return false
+        }
         buffer += output
 
-        guard let regex else {
-            Self.boundMarkBuffer(&buffer)
+        // The introducer may now sit at the seam between the retained partial
+        // and this chunk, so re-check the accumulation. A plain substring scan
+        // is far cheaper than the regex when no mark is present.
+        guard let regex, buffer.range(of: Self.oscIntroducer) != nil else {
+            Self.trimMarkBuffer(&buffer)
             return false
         }
 
         let searchRange = NSRange(buffer.startIndex..<buffer.endIndex, in: buffer)
         let matches = regex.matches(in: buffer, range: searchRange)
         guard !matches.isEmpty else {
-            Self.boundMarkBuffer(&buffer)
+            Self.trimMarkBuffer(&buffer)
             return false
         }
 
@@ -1227,7 +1255,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             handle(match, buffer)
         }
         buffer = String(buffer[consumedUpperBound...])
-        Self.boundMarkBuffer(&buffer)
+        Self.trimMarkBuffer(&buffer)
         return true
     }
 
@@ -1782,9 +1810,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             cwdTimer?.invalidate()
             agentDoneTimer?.invalidate()
             blockedPollingTimer?.invalidate()
-            if let scrollEventMonitor {
-                NSEvent.removeMonitor(scrollEventMonitor)
-            }
+            TerminalEventCoordinator.shared.unregister(self)
         }
     }
 }

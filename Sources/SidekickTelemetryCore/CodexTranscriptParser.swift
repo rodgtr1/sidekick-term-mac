@@ -11,65 +11,84 @@ import Foundation
 ///    are already inside `output_tokens`. Codex doesn't bill cache writes.
 public enum CodexTranscriptParser {
     public static func aggregate<S: StringProtocol>(jsonl: S) -> TranscriptUsage {
+        var acc = Accumulator()
+        for rawLine in jsonl.split(separator: "\n", omittingEmptySubsequences: true) {
+            ingest(Data(rawLine.utf8), into: &acc)
+        }
+        return acc.finalized()
+    }
+
+    /// Aggregates the rollout file at `path`, or nil if it can't be read.
+    /// Streams the file (see `TranscriptLineReader`) so a large Codex rollout
+    /// doesn't load whole into memory on every Stop hook (P5).
+    public static func aggregate(contentsOfFile path: String) -> TranscriptUsage? {
+        var acc = Accumulator()
+        guard TranscriptLineReader.forEachLine(inFileAt: path, { ingest($0, into: &acc) })
+        else { return nil }
+        return acc.finalized()
+    }
+
+    /// Running state: counts and model accrue as lines are read, while the
+    /// cumulative and per-turn token blocks are last-wins and resolved at the end.
+    private struct Accumulator {
         var usage = TranscriptUsage()
         var latestTotal: [String: Any]?
         var latestTurn: [String: Any]?
 
-        for rawLine in jsonl.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(rawLine.utf8)) as? [String: Any]
-            else { continue }
-
-            let type = object["type"] as? String
-            let payload = object["payload"] as? [String: Any]
-
-            // The model can change mid-session; keep the most recent.
-            if type == "turn_context", let model = payload?["model"] as? String {
-                usage.model = model
+        func finalized() -> TranscriptUsage {
+            var result = usage
+            if let total = latestTotal {
+                let input = int(total["input_tokens"])
+                let cached = int(total["cached_input_tokens"])
+                result.inputTokens = max(0, input - cached)   // fresh (uncached) input
+                result.cacheReadTokens = cached
+                result.outputTokens = int(total["output_tokens"])
             }
-
-            guard type == "event_msg", let payload else { continue }
-            switch payload["type"] as? String {
-            case "user_message":
-                usage.userPrompts += 1
-            case "token_count":
-                usage.assistantResponses += 1
-                if let info = payload["info"] as? [String: Any] {
-                    if let total = info["total_token_usage"] as? [String: Any] {
-                        latestTotal = total   // cumulative — last wins
-                    }
-                    // Per-turn usage drives context occupancy (last wins).
-                    if let last = info["last_token_usage"] as? [String: Any] {
-                        latestTurn = last
-                    }
-                }
-            default:
-                break
+            // Context occupancy = the last turn's input (Codex's `input_tokens`
+            // already folds in `cached_input_tokens`), i.e. the prompt size sent
+            // for the most recent turn. Falls back to the cumulative total when
+            // only that's present (older rollouts had no `last_token_usage`).
+            if let last = latestTurn {
+                result.contextTokens = int(last["input_tokens"])
+            } else if let total = latestTotal {
+                result.contextTokens = int(total["input_tokens"])
             }
+            return result
         }
-
-        if let total = latestTotal {
-            let input = int(total["input_tokens"])
-            let cached = int(total["cached_input_tokens"])
-            usage.inputTokens = max(0, input - cached)   // fresh (uncached) input
-            usage.cacheReadTokens = cached
-            usage.outputTokens = int(total["output_tokens"])
-        }
-        // Context occupancy = the last turn's input (Codex's `input_tokens`
-        // already folds in `cached_input_tokens`), i.e. the prompt size sent
-        // for the most recent turn. Falls back to the cumulative total when only
-        // that's present (older rollouts had no `last_token_usage`).
-        if let last = latestTurn {
-            usage.contextTokens = int(last["input_tokens"])
-        } else if let total = latestTotal {
-            usage.contextTokens = int(total["input_tokens"])
-        }
-        return usage
     }
 
-    /// Aggregates the rollout file at `path`, or nil if it can't be read.
-    public static func aggregate(contentsOfFile path: String) -> TranscriptUsage? {
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        return aggregate(jsonl: text)
+    /// Folds one JSONL line's bytes into `acc`. Shared by the string and
+    /// streaming entry points so they can't diverge.
+    private static func ingest(_ lineData: Data, into acc: inout Accumulator) {
+        guard let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
+        else { return }
+
+        let type = object["type"] as? String
+        let payload = object["payload"] as? [String: Any]
+
+        // The model can change mid-session; keep the most recent.
+        if type == "turn_context", let model = payload?["model"] as? String {
+            acc.usage.model = model
+        }
+
+        guard type == "event_msg", let payload else { return }
+        switch payload["type"] as? String {
+        case "user_message":
+            acc.usage.userPrompts += 1
+        case "token_count":
+            acc.usage.assistantResponses += 1
+            if let info = payload["info"] as? [String: Any] {
+                if let total = info["total_token_usage"] as? [String: Any] {
+                    acc.latestTotal = total   // cumulative — last wins
+                }
+                // Per-turn usage drives context occupancy (last wins).
+                if let last = info["last_token_usage"] as? [String: Any] {
+                    acc.latestTurn = last
+                }
+            }
+        default:
+            break
+        }
     }
 
     // Round via doubleValue so float-encoded integers don't truncate; token

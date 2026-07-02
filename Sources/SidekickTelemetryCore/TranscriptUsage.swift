@@ -78,55 +78,65 @@ public enum TranscriptParser {
     public static func aggregate<S: StringProtocol>(jsonl: S) -> TranscriptUsage {
         var usage = TranscriptUsage()
         for rawLine in jsonl.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(rawLine.utf8)) as? [String: Any]
-            else { continue }
-
-            let type = object["type"] as? String
-            let message = object["message"] as? [String: Any]
-
-            // A typed prompt: a user line whose content is a plain string. Array
-            // content is a tool-result turn, which we don't count as a prompt.
-            if type == "user", message?["content"] is String {
-                usage.userPrompts += 1
-                continue
-            }
-
-            guard type == "assistant",
-                  let message,
-                  let usageObject = message["usage"] as? [String: Any] else { continue }
-
-            usage.assistantResponses += 1
-            if let model = message["model"] as? String { usage.model = model }
-            usage.inputTokens += int(usageObject["input_tokens"])
-            usage.outputTokens += int(usageObject["output_tokens"])
-            let cacheRead = int(usageObject["cache_read_input_tokens"])
-            usage.cacheReadTokens += cacheRead
-
-            let cacheWrite: Int
-            if let cacheCreation = usageObject["cache_creation"] as? [String: Any] {
-                let write5m = int(cacheCreation["ephemeral_5m_input_tokens"])
-                let write1h = int(cacheCreation["ephemeral_1h_input_tokens"])
-                usage.cacheCreation5mTokens += write5m
-                usage.cacheCreation1hTokens += write1h
-                cacheWrite = write5m + write1h
-            } else {
-                // Older transcripts only carry the flat total; bill it as 5-min.
-                cacheWrite = int(usageObject["cache_creation_input_tokens"])
-                usage.cacheCreation5mTokens += cacheWrite
-            }
-
-            // Context occupancy is this turn's full input footprint (it already
-            // includes the whole prior conversation Claude re-sends each turn),
-            // so the last assistant turn wins — not a sum across the session.
-            usage.contextTokens = int(usageObject["input_tokens"]) + cacheRead + cacheWrite
+            ingest(Data(rawLine.utf8), into: &usage)
         }
         return usage
     }
 
     /// Aggregates the transcript file at `path`, or nil if it can't be read.
+    /// Streams the file (see `TranscriptLineReader`) so a hundreds-of-MB
+    /// transcript doesn't load whole into memory on every Stop hook (P5).
     public static func aggregate(contentsOfFile path: String) -> TranscriptUsage? {
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        return aggregate(jsonl: text)
+        var usage = TranscriptUsage()
+        guard TranscriptLineReader.forEachLine(inFileAt: path, { ingest($0, into: &usage) })
+        else { return nil }
+        return usage
+    }
+
+    /// Folds one JSONL line's bytes into `usage`. Shared by the string and
+    /// streaming entry points so they can't diverge.
+    private static func ingest(_ lineData: Data, into usage: inout TranscriptUsage) {
+        guard let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
+        else { return }
+
+        let type = object["type"] as? String
+        let message = object["message"] as? [String: Any]
+
+        // A typed prompt: a user line whose content is a plain string. Array
+        // content is a tool-result turn, which we don't count as a prompt.
+        if type == "user", message?["content"] is String {
+            usage.userPrompts += 1
+            return
+        }
+
+        guard type == "assistant",
+              let message,
+              let usageObject = message["usage"] as? [String: Any] else { return }
+
+        usage.assistantResponses += 1
+        if let model = message["model"] as? String { usage.model = model }
+        usage.inputTokens += int(usageObject["input_tokens"])
+        usage.outputTokens += int(usageObject["output_tokens"])
+        let cacheRead = int(usageObject["cache_read_input_tokens"])
+        usage.cacheReadTokens += cacheRead
+
+        let cacheWrite: Int
+        if let cacheCreation = usageObject["cache_creation"] as? [String: Any] {
+            let write5m = int(cacheCreation["ephemeral_5m_input_tokens"])
+            let write1h = int(cacheCreation["ephemeral_1h_input_tokens"])
+            usage.cacheCreation5mTokens += write5m
+            usage.cacheCreation1hTokens += write1h
+            cacheWrite = write5m + write1h
+        } else {
+            // Older transcripts only carry the flat total; bill it as 5-min.
+            cacheWrite = int(usageObject["cache_creation_input_tokens"])
+            usage.cacheCreation5mTokens += cacheWrite
+        }
+
+        // Context occupancy is this turn's full input footprint (it already
+        // includes the whole prior conversation Claude re-sends each turn),
+        // so the last assistant turn wins — not a sum across the session.
+        usage.contextTokens = int(usageObject["input_tokens"]) + cacheRead + cacheWrite
     }
 
     /// JSON numbers decode as `NSNumber`; coerce to `Int` via doubleValue so a

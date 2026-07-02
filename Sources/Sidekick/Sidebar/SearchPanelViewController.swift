@@ -256,24 +256,30 @@ class SearchPanelViewController: NSViewController {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 task.waitUntilExit()
 
+                // ripgrep and grep both use status 1 for a successful search
+                // with no matches. Higher statuses indicate an actual failure.
+                let failed = task.terminationStatus > 1 && data.isEmpty
+
+                // Parse (and cap) off the main thread: a broad search yields tens
+                // of thousands of JSON lines, and decoding + grouping them on the
+                // main thread froze the UI. Both backends now stop at `maxResults`.
+                let matches: [SearchMatch]? = failed ? nil : {
+                    switch backend {
+                    case .ripgrep: return Self.parseRipgrepResults(data, searchText: searchText)
+                    case .grep: return Self.parseGrepResults(data, searchText: searchText)
+                    }
+                }()
+
                 DispatchQueue.main.async {
                     guard let self = self, self.searchTask === task else { return }
                     self.searchTimeoutWorkItem?.cancel()
                     self.searchTimeoutWorkItem = nil
 
-                    // ripgrep and grep both use status 1 for a successful search
-                    // with no matches. Higher statuses indicate an actual failure.
-                    if task.terminationStatus > 1 && data.isEmpty {
+                    guard let matches else {
                         self.statusLabel.stringValue = "Search failed"
                         return
                     }
-
-                    switch backend {
-                    case .ripgrep:
-                        self.parseRipgrepResults(data)
-                    case .grep:
-                        self.parseGrepResults(data, searchText: searchText)
-                    }
+                    self.updateSearchResults(matches)
                 }
             }
         } catch {
@@ -309,17 +315,18 @@ class SearchPanelViewController: NSViewController {
         return standardizedPath == homePath || standardizedPath == "/"
     }
 
-    private func parseRipgrepResults(_ data: Data) {
-        guard let output = String(data: data, encoding: .utf8) else {
-            statusLabel.stringValue = "No results"
-            return
-        }
+    /// Upper bound on matches surfaced to the UI. Parsing stops here so a broad
+    /// search doesn't decode/group unbounded output on the main thread (P2).
+    private nonisolated static let maxResults = 1000
+
+    private nonisolated static func parseRipgrepResults(_ data: Data, searchText: String) -> [SearchMatch] {
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
 
         var matches: [SearchMatch] = []
-        let lines = output.components(separatedBy: .newlines)
 
-        for line in lines {
+        for line in output.components(separatedBy: .newlines) {
             guard !line.isEmpty else { continue }
+            if matches.count >= maxResults { break }
 
             // Parse JSON line from ripgrep
             if let jsonData = line.data(using: .utf8),
@@ -342,45 +349,44 @@ class SearchPanelViewController: NSViewController {
                     line: lineNumber,
                     column: column,
                     text: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                    matchedText: searchField.stringValue
+                    matchedText: searchText
                 )
 
                 matches.append(match)
             }
         }
 
-        updateSearchResults(matches)
+        return matches
     }
 
-    private func parseGrepResults(_ data: Data, searchText: String) {
-        guard let output = String(data: data, encoding: .utf8) else {
-            statusLabel.stringValue = "No results"
-            return
-        }
+    private nonisolated static func parseGrepResults(_ data: Data, searchText: String) -> [SearchMatch] {
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
 
-        let lines = output.components(separatedBy: .newlines)
-        let matches = lines.compactMap { line -> SearchMatch? in
-            guard !line.isEmpty else { return nil }
+        var matches: [SearchMatch] = []
+
+        for line in output.components(separatedBy: .newlines) {
+            guard !line.isEmpty else { continue }
+            if matches.count >= maxResults { break }
 
             let parts = line.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
             guard parts.count == 3,
-                  let lineNumber = Int(parts[1]) else { return nil }
+                  let lineNumber = Int(parts[1]) else { continue }
 
             let filePath = String(parts[0])
             let text = String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines)
             let fileName = URL(fileURLWithPath: filePath).lastPathComponent
 
-            return SearchMatch(
+            matches.append(SearchMatch(
                 filePath: filePath,
                 fileName: fileName,
                 line: lineNumber,
                 column: 0,
                 text: text,
                 matchedText: searchText
-            )
+            ))
         }
 
-        updateSearchResults(Array(matches.prefix(1000)))
+        return matches
     }
 
     private func updateSearchResults(_ matches: [SearchMatch]) {
