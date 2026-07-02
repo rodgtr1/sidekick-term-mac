@@ -38,6 +38,13 @@ struct SidekickCtl {
             return
         }
 
+        // `wait event` consumes the event stream until the first match rather
+        // than making a single request/response — handled on the streaming path.
+        if args.prefix(2).elementsEqual(["wait", "event"]) {
+            runWaitEvent(Array(args.dropFirst(2)), client: client)
+            return
+        }
+
         do {
             let request = try makeRequest(args)
             guard let response = client.send(request) else {
@@ -253,6 +260,56 @@ struct SidekickCtl {
         return request
     }
 
+    /// `wait event`: blocks until the next event (optionally narrowed by pane
+    /// and type) and prints it as one JSON line — the CLI twin of the MCP
+    /// sidekick_wait_event tool. Subscribes without the backlog replay, so only
+    /// events emitted after the call starts can satisfy the wait. Exits 1 on
+    /// timeout, matching the other `wait` verbs.
+    private static func runWaitEvent(_ options: [String], client: SidekickIPCClient) {
+        var request: [String: Any] = ["action": "events", "backlog": false]
+        var timeoutMS = 30_000
+        var index = 0
+        while index < options.count {
+            switch options[index] {
+            case "--pane":
+                index += 1
+                guard index < options.count else { fail("--pane requires a pane id") }
+                request["pane_id"] = options[index]
+            case "--type":
+                index += 1
+                guard index < options.count else { fail("--type requires an event type") }
+                request["type"] = options[index]
+            case "--timeout":
+                index += 1
+                guard index < options.count, let timeout = Int(options[index]) else {
+                    fail("--timeout requires milliseconds")
+                }
+                timeoutMS = timeout
+            default:
+                fail("Unknown wait event option: \(options[index])")
+            }
+            index += 1
+        }
+
+        var matched: Data?
+        let outcome = client.waitForLine(request, timeoutMS: timeoutMS) { line in
+            // The hello connection marker always arrives first; everything
+            // after it is a live event the server already filtered.
+            guard let event = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+                  (event["type"] as? String) != "hello" else { return false }
+            matched = line
+            return true
+        }
+        switch outcome {
+        case .matched:
+            if let matched { FileHandle.standardOutput.write(matched) }
+        case .timedOut:
+            exit(1)
+        case .disconnected:
+            fail("Sidekick is not responding")
+        }
+    }
+
     private static func shouldPrintJSON(_ args: [String]) -> Bool {
         args.first == "pane" && args.count > 1 && ["list", "current", "split", "focus"].contains(args[1])
     }
@@ -275,6 +332,9 @@ struct SidekickCtl {
           pane read <pane-id> [--source visible|recent] [--lines count] [--json]
           wait agent-status <pane-id> <idle|working|ready|done> [--timeout ms]
           wait output <pane-id> <text> [--timeout ms]
+          wait event [--pane id] [--type agent_state|command|diff|telemetry] [--timeout ms]
+                              block until the next matching event and print it as JSON;
+                              exits 1 on timeout. Current state is not replayed.
           worktree remove <branch> [--cwd dir] [--force]   tear down a --worktree split
           worktree prune [--cwd dir]                       drop stale worktree entries
           events [--follow] [--pane id] [--type agent_state|command|diff]
