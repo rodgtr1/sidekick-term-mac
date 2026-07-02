@@ -408,17 +408,20 @@ enum AgentIntegrationInstaller {
 
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         for (event, state) in statusHooks + claudeOnlyStatusHooks {
-            addClaudeHook(to: &hooks, event: event, command: "\(statusBinary.path) \(state)")
+            addClaudeHook(
+                to: &hooks, event: event,
+                command: "\(shellQuotedIfNeeded(statusBinary.path)) \(state)"
+            )
         }
         // Telemetry (Claude-first): a second Stop hook reports per-pane token
         // usage to the dashboard. Best-effort — registered only when the helper
         // is bundled; it dedups against the status Stop hook by binary name.
         if let telemetryBinary = helperURL(named: "sidekick-telemetry") {
-            addClaudeHook(to: &hooks, event: "Stop", command: telemetryBinary.path)
+            addClaudeHook(to: &hooks, event: "Stop", command: shellQuotedIfNeeded(telemetryBinary.path))
             // SessionStart (startup, /clear, resume) re-reports or resets the
             // pane's telemetry so the context meter doesn't keep showing the
             // previous session until the new one finishes a turn.
-            addClaudeHook(to: &hooks, event: "SessionStart", command: telemetryBinary.path)
+            addClaudeHook(to: &hooks, event: "SessionStart", command: shellQuotedIfNeeded(telemetryBinary.path))
         }
         // The sidekick-hook PreToolUse diff popup duplicated Claude Code's own
         // approval prompt (the hook never emitted a permission decision, so the
@@ -448,12 +451,16 @@ enum AgentIntegrationInstaller {
         matcher: String? = nil
     ) {
         var groups = hooks[event] as? [[String: Any]] ?? []
-        let signature = command.components(separatedBy: "/").last ?? command
+        // Compare with shell quotes stripped so a quoted command (bundle path
+        // with a space) still dedups against an unquoted install and vice versa.
+        let unquoted = command.replacingOccurrences(of: "'", with: "")
+        let signature = unquoted.components(separatedBy: "/").last ?? unquoted
 
         for group in groups {
             for hook in group["hooks"] as? [[String: Any]] ?? [] {
                 guard let existing = hook["command"] as? String else { continue }
-                if existing == command || existing.hasSuffix(signature) {
+                if existing == command
+                    || existing.replacingOccurrences(of: "'", with: "").hasSuffix(signature) {
                     return
                 }
             }
@@ -507,11 +514,12 @@ enum AgentIntegrationInstaller {
         config = ensureCodexHooksEnabled(in: config)
 
         for (event, state) in statusHooks + codexOnlyStatusHooks {
+            let command = "\(shellQuotedIfNeeded(statusBinary.path)) \(state)"
             let signature = "sidekick-agent-status \(state)"
-            if config.contains(signature) && config.contains("[[hooks.\(event)]]") {
+            if (config.contains(signature) || config.contains(command))
+                && config.contains("[[hooks.\(event)]]") {
                 continue
             }
-            let command = "\(statusBinary.path) \(state)"
             config = config.trimmingTrailingNewlines() + """
 
 
@@ -527,8 +535,9 @@ enum AgentIntegrationInstaller {
         // rollout schema (hence the "codex" argument). Best-effort, dedup by the
         // helper name + flavor.
         if let telemetryBinary = helperURL(named: "sidekick-telemetry"),
-           !config.contains("sidekick-telemetry codex") {
-            let command = "\(telemetryBinary.path) codex"
+           !config.contains("sidekick-telemetry codex"),
+           !config.contains("sidekick-telemetry' codex") {
+            let command = "\(shellQuotedIfNeeded(telemetryBinary.path)) codex"
             config = config.trimmingTrailingNewlines() + """
 
 
@@ -594,6 +603,19 @@ enum AgentIntegrationInstaller {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
+    }
+
+    /// Hook commands run through a shell, so a helper path containing a space
+    /// (or other metacharacter) must be single-quoted to survive word
+    /// splitting. Plain paths pass through unchanged so existing installs
+    /// still dedup by exact command match. Internal for tests.
+    static func shellQuotedIfNeeded(_ path: String) -> String {
+        let plain = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                + "0123456789/._+-@%:,="
+        )
+        guard path.unicodeScalars.contains(where: { !plain.contains($0) }) else { return path }
+        return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func installPi() throws {

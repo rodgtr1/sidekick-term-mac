@@ -890,7 +890,20 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private func queueAgentDetection(_ output: String) {
         // Coalesce high-throughput output into ~10Hz detection passes so the
         // regex scanning doesn't run once per output chunk.
-        Self.appendBounded(output, to: &pendingDetectionOutput, cap: 16_000)
+        pendingDetectionOutput += output
+
+        // Under an output flood (>16KB inside one 100ms window) the buffer used
+        // to be suffix()-trimmed, dropping its prefix unseen — and any OSC
+        // 133/666 mark in that prefix with it (missed command records, missed
+        // agent-state transitions). Flush through detection early instead:
+        // memory stays just as bounded and the mark consumers see every byte.
+        // Any already-scheduled flush finds an empty buffer and no-ops.
+        if pendingDetectionOutput.utf8.count > 16_000 {
+            let chunk = pendingDetectionOutput
+            pendingDetectionOutput = ""
+            detectAgentState(from: chunk)
+            return
+        }
 
         guard !detectionFlushScheduled else { return }
         detectionFlushScheduled = true

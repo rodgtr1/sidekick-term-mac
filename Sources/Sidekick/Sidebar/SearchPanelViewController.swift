@@ -341,7 +341,10 @@ class SearchPanelViewController: NSViewController {
                let text = lines["text"] as? String {
 
                 let fileName = URL(fileURLWithPath: filePath).lastPathComponent
-                let column = data["absolute_offset"] as? Int ?? 0
+                // Column within the line comes from the submatch offset;
+                // absolute_offset is the match's byte offset into the file.
+                let submatches = data["submatches"] as? [[String: Any]]
+                let column = submatches?.first?["start"] as? Int ?? 0
 
                 let match = SearchMatch(
                     filePath: filePath,

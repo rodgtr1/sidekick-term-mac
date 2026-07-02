@@ -74,6 +74,51 @@ final class AgentIntegrationInstallerTests: XCTestCase {
         XCTAssertEqual(hookCommands(hooks, event: "PreToolUse").first, "/usr/local/bin/some-other-hook")
     }
 
+    func testShellQuotedIfNeededLeavesPlainPathsAlone() {
+        XCTAssertEqual(
+            AgentIntegrationInstaller.shellQuotedIfNeeded("/Applications/Sidekick.app/Contents/MacOS/sidekick-agent-status"),
+            "/Applications/Sidekick.app/Contents/MacOS/sidekick-agent-status"
+        )
+    }
+
+    func testShellQuotedIfNeededQuotesPathWithSpace() {
+        XCTAssertEqual(
+            AgentIntegrationInstaller.shellQuotedIfNeeded("/Applications/My Apps/Sidekick.app/Contents/MacOS/sidekick-agent-status"),
+            "'/Applications/My Apps/Sidekick.app/Contents/MacOS/sidekick-agent-status'"
+        )
+    }
+
+    func testShellQuotedIfNeededEscapesEmbeddedSingleQuote() {
+        XCTAssertEqual(
+            AgentIntegrationInstaller.shellQuotedIfNeeded("/Users/o'brien/Apps/sidekick-agent-status"),
+            "'/Users/o'\\''brien/Apps/sidekick-agent-status'"
+        )
+    }
+
+    func testAddClaudeHookDedupsQuotedAgainstUnquotedInstall() {
+        // Upgrading from an unquoted install to a quoted one (bundle moved to
+        // a path with a space) must not double-register the hook.
+        var hooks: [String: Any] = [
+            "Stop": [["hooks": [["type": "command", "command": "/Users/x/.local/bin/sidekick-agent-status done"]]]]
+        ]
+        AgentIntegrationInstaller.addClaudeHook(
+            to: &hooks,
+            event: "Stop",
+            command: "'/Applications/My Apps/Sidekick.app/Contents/MacOS/sidekick-agent-status' done"
+        )
+
+        XCTAssertEqual(hookCommands(hooks, event: "Stop").count, 1)
+    }
+
+    func testAddClaudeHookSkipsExactQuotedDuplicate() {
+        var hooks: [String: Any] = [:]
+        let quoted = "'/Applications/My Apps/Sidekick.app/Contents/MacOS/sidekick-agent-status' done"
+        AgentIntegrationInstaller.addClaudeHook(to: &hooks, event: "Stop", command: quoted)
+        AgentIntegrationInstaller.addClaudeHook(to: &hooks, event: "Stop", command: quoted)
+
+        XCTAssertEqual(hookCommands(hooks, event: "Stop").count, 1)
+    }
+
     func testRemoveClaudeHookStripsDeadPermissionRequestHook() {
         // A previous version registered a "PermissionRequest" ready hook, an
         // event Claude Code never fires. Reinstalling must remove it.

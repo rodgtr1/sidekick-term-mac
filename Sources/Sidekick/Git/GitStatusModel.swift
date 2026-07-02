@@ -79,6 +79,15 @@ nonisolated struct GitFileItem: Sendable {
     }
 }
 
+/// What the FSEvents context actually retains (via its retain/release
+/// callbacks) — never the model itself. The weak reference means a callback
+/// racing a last-release on another thread reads nil instead of a dangling
+/// model pointer.
+private final class GitStatusWatcherBox {
+    weak var model: GitStatusModel?
+    init(_ model: GitStatusModel) { self.model = model }
+}
+
 class GitStatusModel: ObservableObject {
     @Published var files: [GitFileItem] = []
     @Published var currentBranch: String = ""
@@ -237,27 +246,42 @@ class GitStatusModel: ObservableObject {
         // already runs on the main actor — assert that to reach the model.
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info = info else { return }
-            let model = Unmanaged<GitStatusModel>.fromOpaque(info).takeUnretainedValue()
-            MainActor.assumeIsolated { model.scheduleDebouncedRefresh() }
+            let box = Unmanaged<GitStatusWatcherBox>.fromOpaque(info).takeUnretainedValue()
+            MainActor.assumeIsolated { box.model?.scheduleDebouncedRefresh() }
         }
 
+        // The context retains a weak box, not the model: FSEventStreamCreate
+        // takes its own +1 via the retain callback and drops it when the stream
+        // is deallocated after Invalidate, so a callback already in flight can
+        // never see freed memory even if our last release happens off-main.
+        let box = GitStatusWatcherBox(self)
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
-            retain: nil,
-            release: nil,
+            info: Unmanaged.passUnretained(box).toOpaque(),
+            retain: { info in
+                guard let info = info else { return nil }
+                _ = Unmanaged<GitStatusWatcherBox>.fromOpaque(info).retain()
+                return info
+            },
+            release: { info in
+                guard let info = info else { return }
+                Unmanaged<GitStatusWatcherBox>.fromOpaque(info).release()
+            },
             copyDescription: nil
         )
 
-        guard let stream = FSEventStreamCreate(
-            nil,
-            callback,
-            &context,
-            [repositoryRoot] as CFArray,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-            0.5,
-            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
-        ) else {
+        let created = withExtendedLifetime(box) {
+            FSEventStreamCreate(
+                nil,
+                callback,
+                &context,
+                [repositoryRoot] as CFArray,
+                FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+                0.5,
+                FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
+            )
+        }
+        guard let stream = created else {
             Log.error("GitStatusModel: Failed to create FSEvents stream for \(repositoryRoot)", category: "git")
             return
         }

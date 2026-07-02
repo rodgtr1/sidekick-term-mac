@@ -1,9 +1,18 @@
 import Cocoa
 import CoreServices
 
+/// What the FSEvents context actually retains (via its retain/release
+/// callbacks) — never the controller itself. The weak reference means a
+/// callback racing a last-release on another thread reads nil instead of a
+/// dangling controller pointer.
+private final class FileTreeWatcherBox {
+    weak var controller: FileTreeViewController?
+    init(_ controller: FileTreeViewController) { self.controller = controller }
+}
+
 private let fileTreeEventCallback: FSEventStreamCallback = { _, clientInfo, numEvents, eventPaths, eventFlags, _ in
     guard let clientInfo = clientInfo else { return }
-    let controller = Unmanaged<FileTreeViewController>.fromOpaque(clientInfo).takeUnretainedValue()
+    let box = Unmanaged<FileTreeWatcherBox>.fromOpaque(clientInfo).takeUnretainedValue()
 
     // Paths are CFStrings (we pass kFSEventStreamCreateFlagUseCFTypes). Copy the
     // paths and flags out of the C buffers before hopping actors.
@@ -13,7 +22,7 @@ private let fileTreeEventCallback: FSEventStreamCallback = { _, clientInfo, numE
     // The stream is dispatched to the main queue, so the callback already runs on
     // the main actor — assert that to reach the controller's main-actor state.
     MainActor.assumeIsolated {
-        controller.handleFileSystemEvents(paths: paths, flags: flags)
+        box.controller?.handleFileSystemEvents(paths: paths, flags: flags)
     }
 }
 
@@ -312,11 +321,23 @@ class FileTreeViewController: NSViewController {
 
         guard shouldWatchPath(path) else { return }
 
+        // The context retains a weak box, not the controller: FSEventStreamCreate
+        // takes its own +1 via the retain callback and drops it when the stream
+        // is deallocated after Invalidate, so a callback already in flight can
+        // never see freed memory even if our last release happens off-main.
+        let box = FileTreeWatcherBox(self)
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
-            retain: nil,
-            release: nil,
+            info: Unmanaged.passUnretained(box).toOpaque(),
+            retain: { info in
+                guard let info = info else { return nil }
+                _ = Unmanaged<FileTreeWatcherBox>.fromOpaque(info).retain()
+                return info
+            },
+            release: { info in
+                guard let info = info else { return }
+                Unmanaged<FileTreeWatcherBox>.fromOpaque(info).release()
+            },
             copyDescription: nil
         )
 
@@ -327,15 +348,18 @@ class FileTreeViewController: NSViewController {
                 | kFSEventStreamCreateFlagUseCFTypes
         )
 
-        guard let stream = FSEventStreamCreate(
-            kCFAllocatorDefault,
-            fileTreeEventCallback,
-            &context,
-            pathsToWatch,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-            0.5,
-            flags
-        ) else {
+        let created = withExtendedLifetime(box) {
+            FSEventStreamCreate(
+                kCFAllocatorDefault,
+                fileTreeEventCallback,
+                &context,
+                pathsToWatch,
+                FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+                0.5,
+                flags
+            )
+        }
+        guard let stream = created else {
             Log.error("⚠️ Failed to watch file tree path: \(path)", category: "filetree")
             return
         }
