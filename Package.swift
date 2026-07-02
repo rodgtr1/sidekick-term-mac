@@ -110,9 +110,19 @@ let package = Package(
                 .unsafeFlags(["-swift-version", "6"])
             ]
         ),
+        // The MCP tool catalog, extracted from the executable so its schemas and
+        // argument handling can be unit tested (SidekickTests depends on it).
+        .target(
+            name: "SidekickMCPCore",
+            dependencies: ["SidekickIPCCore"],
+            path: "Sources/SidekickMCPCore",
+            swiftSettings: [
+                .unsafeFlags(["-swift-version", "6"])
+            ]
+        ),
         .executableTarget(
             name: "SidekickMCP",
-            dependencies: ["SidekickIPCCore"],
+            dependencies: ["SidekickIPCCore", "SidekickMCPCore"],
             path: "Sources/sidekick-mcp",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])
@@ -128,7 +138,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SidekickTests",
-            dependencies: ["Sidekick", "SidekickTelemetryCore", "SidekickIPCCore"],
+            dependencies: ["Sidekick", "SidekickTelemetryCore", "SidekickIPCCore", "SidekickMCPCore"],
             path: "Tests/SidekickTests"
         ),
     ]
