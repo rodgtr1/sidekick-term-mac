@@ -47,6 +47,8 @@ Send an interactive prompt:
 sidekick-ctl pane run "$WORKER_PANE" "Review the API error handling and report concrete defects"
 ```
 
+`pane run` types the text and presses Enter (delivered as a separate keystroke so TUIs don't swallow it as pasted text). After prompting an interactive agent, read the pane to confirm the prompt actually submitted; if it is still sitting in the input box, send `pane send-key "$WORKER_PANE" enter`.
+
 For a noninteractive worker, launch its complete argv atomically:
 
 ```sh

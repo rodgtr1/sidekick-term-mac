@@ -52,6 +52,20 @@ final class AutomationIPCTests: XCTestCase {
         }
     }
 
+    func testPaneRunParsesAsItsOwnCommand() throws {
+        let paneID = UUID()
+        let json = """
+        {"action":"pane_run","pane_id":"\(paneID.uuidString)","text":"swift test"}
+        """
+        let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
+        guard case let .paneRun(decodedID, text) = IPCCommandType.from(command) else {
+            return XCTFail("Expected paneRun")
+        }
+        XCTAssertEqual(decodedID, paneID)
+        XCTAssertEqual(text, "swift test",
+                       "text must arrive without a trailing return; the server sends Enter separately")
+    }
+
     func testWorktreeRemoveParsesBranchCwdAndForce() throws {
         let json = """
         {"action":"worktree_remove","worktree":"feature/login","cwd":"/tmp","force":true}

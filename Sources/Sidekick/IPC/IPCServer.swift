@@ -119,6 +119,7 @@ nonisolated enum IPCCommandType {
     case paneFocus(paneID: UUID)
     case paneClose(paneID: UUID)
     case paneSendText(paneID: UUID, text: String)
+    case paneRun(paneID: UUID, text: String)
     case paneSendKey(paneID: UUID, key: String)
     case paneRead(paneID: UUID, source: String, lines: Int?, json: Bool)
     case waitAgentStatus(paneID: UUID, status: AgentState, timeoutMS: Int)
@@ -211,6 +212,9 @@ nonisolated enum IPCCommandType {
         case "pane_send_text":
             guard let paneID = uuid(command.paneID), let text = command.text, text.count <= 1_000_000 else { return .invalidArguments }
             return .command(.paneSendText(paneID: paneID, text: text))
+        case "pane_run":
+            guard let paneID = uuid(command.paneID), let text = command.text, text.count <= 1_000_000 else { return .invalidArguments }
+            return .command(.paneRun(paneID: paneID, text: text))
         case "pane_send_key":
             guard let paneID = uuid(command.paneID), let key = command.key, !key.isEmpty else { return .invalidArguments }
             return .command(.paneSendKey(paneID: paneID, key: key))

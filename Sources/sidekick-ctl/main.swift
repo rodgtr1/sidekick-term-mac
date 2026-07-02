@@ -216,7 +216,7 @@ struct SidekickCtl {
             return ["action": "pane_send_key", "pane_id": args[1], "key": args[2]]
         case "run":
             guard args.count >= 3 else { throw CLIError("pane run requires a pane ID and command text") }
-            return ["action": "pane_send_text", "pane_id": args[1], "text": args.dropFirst(2).joined(separator: " ") + "\r"]
+            return ["action": "pane_run", "pane_id": args[1], "text": args.dropFirst(2).joined(separator: " ")]
         case "read":
             guard args.count >= 2 else { throw CLIError("pane read requires a pane ID") }
             var request: [String: Any] = ["action": "pane_read", "pane_id": args[1], "source": "visible"]

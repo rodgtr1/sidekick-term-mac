@@ -34,7 +34,7 @@ final class MCPToolCatalogTests: XCTestCase {
         "sidekick_pane_focus": "pane_focus",
         "sidekick_pane_close": "pane_close",
         "sidekick_pane_send_text": "pane_send_text",
-        "sidekick_pane_run": "pane_send_text",
+        "sidekick_pane_run": "pane_run",
         "sidekick_pane_send_key": "pane_send_key",
         "sidekick_pane_read": "pane_read",
         "sidekick_wait_agent_status": "wait_agent_status",
@@ -181,11 +181,12 @@ final class MCPToolCatalogTests: XCTestCase {
 
     // MARK: - Intentional arg→IPC renames stay pinned
 
-    func testPaneRunMapsCommandToTextWithTrailingReturn() throws {
+    func testPaneRunMapsCommandToTextWithoutTrailingReturn() throws {
         let request = try tool("sidekick_pane_run").buildRequest(["pane_id": UUID().uuidString, "command": "make test"])
-        XCTAssertEqual(request["action"] as? String, "pane_send_text")
-        XCTAssertEqual(request["text"] as? String, "make test\r",
-                       "pane_run must append a carriage return so the command actually runs")
+        XCTAssertEqual(request["action"] as? String, "pane_run")
+        XCTAssertEqual(request["text"] as? String, "make test",
+                       "pane_run must not embed a carriage return: TUIs treat one delivered in the "
+                       + "same chunk as pasted text, so the server sends Enter as a separate write")
     }
 
     func testPaneReadJSONFlagMapsToFormatJSON() throws {

@@ -408,6 +408,22 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             terminal.send(text: text)
             completion(IPCResponse())
 
+        case .paneRun(let paneID, let text):
+            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
+                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+                return
+            }
+            terminal.send(text: text)
+            // TUIs that treat a burst of stdin as a paste (Claude Code, Codex)
+            // swallow a carriage return delivered in the same chunk, leaving
+            // the text sitting in the input box unsubmitted. Deliver Enter as
+            // its own write once the paste settles so it registers as a real
+            // keypress; shells execute on it either way.
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
+                terminal.send(key: "enter")
+                completion(IPCResponse())
+            }
+
         case .paneSendKey(let paneID, let key):
             guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
                 completion(IPCResponse(ok: false, error: "Terminal pane not found"))

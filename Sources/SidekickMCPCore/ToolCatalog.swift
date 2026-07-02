@@ -149,7 +149,7 @@ public func makeTools(ipc: SidekickIPCClient) -> [Tool] {
             "command": ["type": "string", "description": "Command line to run."]
         ], required: ["pane_id", "command"]),
         buildRequest: { args in
-            ["action": "pane_send_text", "pane_id": try requireString(args, "pane_id"), "text": try requireString(args, "command") + "\r"]
+            ["action": "pane_run", "pane_id": try requireString(args, "pane_id"), "text": try requireString(args, "command")]
         },
         render: { _ in "Ran the command." }
     ),
