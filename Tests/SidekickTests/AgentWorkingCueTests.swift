@@ -3,18 +3,18 @@ import XCTest
 
 final class AgentWorkingCueTests: XCTestCase {
     func testAnchoredSpinnerCuesMatch() {
-        XCTAssertTrue(TerminalViewController.containsAgentWorkingCue("✻ Thinking…"))
-        XCTAssertTrue(TerminalViewController.containsAgentWorkingCue("Working... please wait"))
-        XCTAssertTrue(TerminalViewController.containsAgentWorkingCue("running..."))
-        XCTAssertTrue(TerminalViewController.containsAgentWorkingCue("Generating…"))
-        XCTAssertTrue(TerminalViewController.containsAgentWorkingCue("(esc to interrupt)"))
+        XCTAssertTrue(AgentStateDetector.containsAgentWorkingCue("✻ Thinking…"))
+        XCTAssertTrue(AgentStateDetector.containsAgentWorkingCue("Working... please wait"))
+        XCTAssertTrue(AgentStateDetector.containsAgentWorkingCue("running..."))
+        XCTAssertTrue(AgentStateDetector.containsAgentWorkingCue("Generating…"))
+        XCTAssertTrue(AgentStateDetector.containsAgentWorkingCue("(esc to interrupt)"))
     }
 
     func testBareWordsInOrdinaryOutputDoNotMatch() {
         // These would have flipped un-hooked state under the old bare-substring check.
-        XCTAssertFalse(TerminalViewController.containsAgentWorkingCue("I'm working on the report."))
-        XCTAssertFalse(TerminalViewController.containsAgentWorkingCue("nothing to commit, working tree clean"))
-        XCTAssertFalse(TerminalViewController.containsAgentWorkingCue("thinking about the design"))
-        XCTAssertFalse(TerminalViewController.containsAgentWorkingCue("the running total is 5"))
+        XCTAssertFalse(AgentStateDetector.containsAgentWorkingCue("I'm working on the report."))
+        XCTAssertFalse(AgentStateDetector.containsAgentWorkingCue("nothing to commit, working tree clean"))
+        XCTAssertFalse(AgentStateDetector.containsAgentWorkingCue("thinking about the design"))
+        XCTAssertFalse(AgentStateDetector.containsAgentWorkingCue("the running total is 5"))
     }
 }
