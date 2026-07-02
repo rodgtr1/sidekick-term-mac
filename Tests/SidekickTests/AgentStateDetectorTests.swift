@@ -12,6 +12,17 @@ final class AgentStateDetectorTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(interval))
     }
 
+    /// Spins the main run loop until `condition` holds, so timer-driven
+    /// assertions wait for the transition instead of guessing how long a
+    /// loaded CI runner needs. Returns without asserting; the caller's
+    /// assertion reports the failure if the timeout expires first.
+    private func spinMainRunLoop(until condition: () -> Bool, timeout: TimeInterval = 5) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+    }
+
     func testExplicitStatusTokensMapToStatesAndNotifyOnce() {
         let detector = AgentStateDetector()
         var notified: [AgentState] = []
@@ -61,12 +72,15 @@ final class AgentStateDetectorTests: XCTestCase {
         let detector = AgentStateDetector(doneQuietPeriod: 0.05, blockedPollInterval: 60)
         detector.processHeuristics(chunk: "Running… (esc to interrupt)")
         XCTAssertEqual(detector.state, .working)
-        spinMainRunLoop(for: 0.2)
+        spinMainRunLoop(until: { detector.state == .done })
         XCTAssertEqual(detector.state, .done)
     }
 
     func testContinuedOutputPushesQuietPeriodOut() {
-        let detector = AgentStateDetector(doneQuietPeriod: 0.15, blockedPollInterval: 60)
+        // The quiet period dwarfs the spin interval so the mid-loop `.working`
+        // assertions can't lose a race against the done timer on a stalled CI
+        // runner (the flake this test used to have at 0.15s/0.05s).
+        let detector = AgentStateDetector(doneQuietPeriod: 1.0, blockedPollInterval: 60)
         detector.processHeuristics(chunk: "Thinking…")
         XCTAssertEqual(detector.state, .working)
         // Keep output flowing faster than the quiet period — still working.
@@ -75,7 +89,7 @@ final class AgentStateDetectorTests: XCTestCase {
             detector.processHeuristics(chunk: "more tokens")
             XCTAssertEqual(detector.state, .working)
         }
-        spinMainRunLoop(for: 0.3)
+        spinMainRunLoop(until: { detector.state == .done })
         XCTAssertEqual(detector.state, .done)
     }
 
