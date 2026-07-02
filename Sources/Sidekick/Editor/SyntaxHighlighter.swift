@@ -73,19 +73,25 @@ class SyntaxHighlighter {
         textStorage.removeAttribute(.foregroundColor, range: range)
         textStorage.addAttribute(.foregroundColor, value: colorScheme.text, range: range)
 
-        // Prefer grammar-accurate tree-sitter highlighting where a grammar is
-        // wired (Swift today); fall through to the regex passes otherwise.
-        if TreeSitterHighlighter.canHighlight(ext: fileExtension),
-           TreeSitterHighlighter.highlight(
-               textStorage: textStorage,
-               fullText: nsText,
-               range: range,
-               ext: fileExtension,
-               scheme: colorScheme
-           ) {
+        // tree-sitter is authoritative for every language it has a grammar for
+        // (Swift, Go, Rust, Python, JS/TS/JSX/TSX, Markdown — the advertised
+        // set). Its grammar-accurate output fully replaces the old regex passes,
+        // so there is no regex fallback for these: on the rare parse failure the
+        // text simply stays the base color already applied above.
+        if TreeSitterHighlighter.canHighlight(ext: fileExtension) {
+            _ = TreeSitterHighlighter.highlight(
+                textStorage: textStorage,
+                fullText: nsText,
+                range: range,
+                ext: fileExtension,
+                scheme: colorScheme
+            )
             return
         }
 
+        // Regex highlighting survives only for languages tree-sitter has no
+        // grammar for: C/C++ and Java (keyword rules), HTML/CSS/JSON, and a
+        // generic pass for unknown text.
         if let rules = Self.rules(for: fileExtension) {
             highlightKeywordLanguage(rules, text: nsText, textStorage: textStorage, range: range)
         } else {
@@ -96,16 +102,16 @@ class SyntaxHighlighter {
                 highlightCSS(text: nsText, textStorage: textStorage, range: range)
             case "json":
                 highlightJSON(text: nsText, textStorage: textStorage, range: range)
-            case "md", "markdown", "mdx":
-                highlightMarkdown(text: nsText, textStorage: textStorage, range: range)
             default:
                 highlightGeneric(text: nsText, textStorage: textStorage, range: range)
             }
         }
     }
 
-    /// Shared path for all keyword-based languages (Swift, JS/TS, Python,
-    /// Rust, Go, C, Java). The per-language data lives in `rulesByExt`.
+    /// Regex fallback for keyword-based languages tree-sitter doesn't cover
+    /// (C/C++, Java in the document path). The per-language data lives in
+    /// `rulesByExt`, still shared with the diff tokenizer's `tokens(for:)`,
+    /// which regex-highlights every language line-by-line.
     private func highlightKeywordLanguage(_ rules: LanguageRules, text: NSString, textStorage: NSTextStorage, range: NSRange) {
         // Apply order is lowest-to-highest priority (later passes override
         // earlier ones). Numbers are weakest, so a `42` inside a string or a
@@ -150,17 +156,6 @@ class SyntaxHighlighter {
 
         // JSON booleans and null
         highlightKeywords(["true", "false", "null"], in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
-    }
-
-    private func highlightMarkdown(text: NSString, textStorage: NSTextStorage, range: NSRange) {
-        // Headers
-        highlightPattern("^#{1,6}\\s+.*$", in: text, textStorage: textStorage, range: range, color: colorScheme.keyword)
-
-        // Code blocks
-        highlightPattern("`[^`]+`|```[\\s\\S]*?```", in: text, textStorage: textStorage, range: range, color: colorScheme.function)
-
-        // Links
-        highlightPattern("\\[([^\\]]+)\\]\\([^)]+\\)", in: text, textStorage: textStorage, range: range, color: colorScheme.string)
     }
 
     private func highlightGeneric(text: NSString, textStorage: NSTextStorage, range: NSRange) {

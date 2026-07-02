@@ -9,9 +9,11 @@ import TreeSitterMarkdown
 import TreeSitterPython
 
 /// Grammar-accurate syntax highlighting via tree-sitter, replacing the regex
-/// highlighter for the languages it supports. Currently wired for Swift; every
-/// other extension falls back to the regex `SyntaxHighlighter` (so this is a
-/// strict upgrade — nothing regresses for unsupported files).
+/// highlighter for the languages it supports: Swift, Go, Rust, Python,
+/// JS/JSX/TS/TSX, and Markdown (the advertised set). tree-sitter is
+/// authoritative for these — the document highlighter no longer keeps a regex
+/// fallback for them. Extensions with no grammar here (C/C++, Java, HTML, CSS,
+/// JSON, unknown text) are still handled by the regex `SyntaxHighlighter`.
 ///
 /// Scoped to the document editor path. The compiled query is cached per language.
 /// Parsing is whole-document on each pass (cheap in tree-sitter; bounded by the
