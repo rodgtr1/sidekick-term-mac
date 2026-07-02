@@ -7,7 +7,12 @@ protocol GitPanelDelegate: AnyObject {
 }
 
 class GitPanelViewController: NSViewController {
-    private var gitStatusModel: GitStatusModel!
+    // Created up front (not in viewDidLoad) so the owning sidebar can seed a
+    // repository path via setRepositoryPath before the view loads — lazy panel
+    // creation runs the seed first. Its init is inert (polling starts only in
+    // setRepositoryPath), and setupBindings' Combine sinks deliver the model's
+    // current value on subscribe, so the seed is reflected without being clobbered.
+    private let gitStatusModel = GitStatusModel()
     // Populated on the main actor; cleared in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
 
@@ -39,7 +44,6 @@ class GitPanelViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        gitStatusModel = GitStatusModel()
         setupUI()
         setupBindings()
         themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }

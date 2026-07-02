@@ -56,6 +56,12 @@ class SidebarContainerView: NSView {
         wantsLayer = true
         applyBackground(enableBlur: true) // Default to blur enabled
 
+        // Seed the hidden-files setting from config up front so a lazily-created
+        // file tree agrees with the user's preference even before
+        // applyRuntimeConfig (the only caller of setShowHiddenFiles) runs — it
+        // isn't invoked at startup.
+        showHiddenFiles = Config.load().editor?.showHiddenFiles ?? false
+
         setupHeader()
         setupContent()
         // Panels are instantiated lazily on first show (see controller(for:)),
@@ -128,9 +134,10 @@ class SidebarContainerView: NSView {
         case .files:
             let fileTreeVC = FileTreeViewController()
             fileTreeVC.delegate = self
-            // Apply the hidden-files setting before loading so the first tree
-            // is built with the right visibility (setShowHidden no-ops without
-            // a loaded root, so order doesn't trigger a redundant reload).
+            // Seed the hidden-files setting and (if known) the project directory
+            // before the view loads. setShowHidden just records the flag here
+            // (no tree yet); loadFileTree is deferred until viewDidLoad, which
+            // then honors this seeded directory instead of defaulting to home.
             fileTreeVC.setShowHidden(showHiddenFiles)
             if let currentPath { fileTreeVC.loadFileTree(for: currentPath) }
             return fileTreeVC
@@ -268,6 +275,10 @@ class SidebarContainerView: NSView {
     func clearFileSelection() {
         (panelControllers[.files] as? FileTreeViewController)?.clearSelection()
     }
+
+    /// Test hook: the set of panels whose controllers have been instantiated so
+    /// far. Lets a unit test assert lazy creation without exposing the cache.
+    var _instantiatedPanels: Set<SidebarPanel> { Set(panelControllers.keys) }
 }
 
 extension SidebarContainerView: AgentDashboardDelegate {

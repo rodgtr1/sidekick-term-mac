@@ -53,6 +53,10 @@ class FileTreeViewController: NSViewController {
     /// Bumped on every full tree rebuild so a slow background build that has
     /// been superseded by a newer one is discarded instead of clobbering it.
     private var loadGeneration = 0
+    /// A directory the owning sidebar asked us to load before the view loaded
+    /// (lazy panel creation). `rebuildTree` renders into `outlineView`, which
+    /// doesn't exist yet, so the request is deferred to `viewDidLoad`.
+    private var pendingInitialPath: String?
 
     override func loadView() {
         view = NSView()
@@ -66,9 +70,12 @@ class FileTreeViewController: NSViewController {
         super.viewDidLoad()
         setupOutlineView()
         themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
-        showHidden = Config.load().editor?.showHiddenFiles ?? false
-        // Start with home directory instead of root
-        let initialPath = FileManager.default.homeDirectoryForCurrentUser.path
+        // The owning sidebar seeds `showHidden` (via setShowHidden) and, when it
+        // knows one, a project directory before the view loads. Honor a seeded
+        // directory; fall back to the home directory only when none was seeded.
+        // showHidden is already set by the seed, so we don't re-read config here
+        // (that would clobber a seeded/toggled value — the sidebar owns it).
+        let initialPath = pendingInitialPath ?? FileManager.default.homeDirectoryForCurrentUser.path
         loadFileTree(for: initialPath)
     }
 
@@ -131,6 +138,14 @@ class FileTreeViewController: NSViewController {
     }
 
     func loadFileTree(for path: String, force: Bool = false) {
+        // Before the view loads there is no `outlineView` to render into, and
+        // `rebuildTree`'s async completion would touch it. Defer: remember the
+        // request so `viewDidLoad` performs the initial load once the view exists.
+        guard isViewLoaded else {
+            pendingInitialPath = path
+            return
+        }
+
         Log.debug("🌳 loadFileTree called with path: \(path)", category: "sidebar")
 
         let workspace = WorkspaceResolver.cachedContext(for: path)

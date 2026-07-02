@@ -441,6 +441,10 @@ class SearchPanelViewController: NSViewController {
     func updateWorkingDirectory(_ directory: String) {
         currentWorkingDirectory = directory
 
+        // The sidebar may seed this before the view loads (lazy panel creation),
+        // when `searchField` doesn't exist yet and there's no query to re-run.
+        guard isViewLoaded else { return }
+
         // Re-run search if there's text in the search field
         let searchText = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if !searchText.isEmpty {
