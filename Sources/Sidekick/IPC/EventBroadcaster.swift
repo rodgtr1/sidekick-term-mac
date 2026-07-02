@@ -123,10 +123,14 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
     /// per-pane state backlog (subject to `filter`). Called on the connection's
     /// IPC thread, which then blocks reading the socket until the client hangs
     /// up and calls `removeSubscriber`.
-    func addSubscriber(_ fd: Int32, filter: EventFilter = EventFilter()) {
+    ///
+    /// `includeBacklog: false` skips the replay: a wait-for-the-next-event
+    /// client (`sidekick_wait_event`) must not have its wait satisfied by a
+    /// state that predates the subscription.
+    func addSubscriber(_ fd: Int32, filter: EventFilter = EventFilter(), includeBacklog: Bool = true) {
         lock.lock()
         subscribers[fd] = filter
-        let backlog = sortedSnapshotLocked()
+        let backlog = includeBacklog ? sortedSnapshotLocked() : []
         lock.unlock()
 
         send(SidekickEvent(type: "hello"), to: fd)

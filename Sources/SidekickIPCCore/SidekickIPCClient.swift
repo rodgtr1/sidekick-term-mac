@@ -105,6 +105,54 @@ public final class SidekickIPCClient {
         return true
     }
 
+    /// Outcome of `waitForLine`: the first line the predicate accepted, the
+    /// server hanging up first, or the deadline passing first.
+    public enum LineWaitResult {
+        case matched(Data)
+        case disconnected
+        case timedOut
+    }
+
+    /// Streams newline-delimited reply lines until `matches` accepts one, the
+    /// server hangs up, or `timeoutMS` elapses — the blocking primitive behind
+    /// `sidekick_wait_event`. The deadline is enforced with a receive timeout
+    /// on the socket, so a silent stream can't block past it.
+    public func waitForLine(
+        _ command: [String: Any],
+        timeoutMS: Int,
+        matches: (Data) -> Bool
+    ) -> LineWaitResult {
+        guard let fd = openConnection(command, halfCloseWrite: false) else { return .disconnected }
+        defer { close(fd) }
+
+        let deadline = Date().addingTimeInterval(Double(timeoutMS) / 1000)
+        var pending = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { return .timedOut }
+            var receiveTimeout = timeval(
+                tv_sec: Int(remaining),
+                tv_usec: Int32((remaining - floor(remaining)) * 1_000_000)
+            )
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size))
+
+            let count = read(fd, &buffer, buffer.count)
+            if count == 0 { return .disconnected }
+            if count < 0 {
+                if errno == EAGAIN || errno == EWOULDBLOCK { return .timedOut }
+                if errno == EINTR { continue }
+                return .disconnected
+            }
+            pending.append(contentsOf: buffer[0..<count])
+            while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+                let line = Data(pending[pending.startIndex...newline])
+                pending = pending[pending.index(after: newline)...]
+                if matches(line) { return .matched(line) }
+            }
+        }
+    }
+
     /// Streams newline-delimited reply lines to `onLine` until the server hangs
     /// up. Returns false only if the connection couldn't be established.
     public func stream(_ command: [String: Any], onLine: (Data) -> Void) -> Bool {

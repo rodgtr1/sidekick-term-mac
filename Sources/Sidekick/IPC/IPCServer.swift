@@ -25,11 +25,14 @@ nonisolated struct IPCCommand: Codable, Sendable {
     let force: Bool?
     /// Event-type filter for an `events` subscription (e.g. "agent_state").
     let type: String?
+    /// Whether an `events` subscription replays the current per-pane state on
+    /// connect (default true). Wait-for-next-event clients pass false.
+    let backlog: Bool?
     /// JSON-encoded `TranscriptUsage` blob for a `report_telemetry` call.
     let telemetry: String?
 
     enum CodingKeys: String, CodingKey {
-        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format, worktree, force, type, telemetry
+        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format, worktree, force, type, backlog, telemetry
         case paneID = "pane_id"
         case timeoutMS = "timeout_ms"
     }
@@ -585,8 +588,9 @@ nonisolated final class IPCServer: @unchecked Sendable {
             var noTimeout = timeval(tv_sec: 0, tv_usec: 0)
             setsockopt(clientFD, SOL_SOCKET, SO_RCVTIMEO, &noTimeout, socklen_t(MemoryLayout<timeval>.size))
             let filter = Self.eventFilter(from: command)
+            let includeBacklog = command.backlog ?? true
             let reader = Thread { [weak self] in
-                EventBroadcaster.shared.addSubscriber(clientFD, filter: filter)
+                EventBroadcaster.shared.addSubscriber(clientFD, filter: filter, includeBacklog: includeBacklog)
                 var drain = [UInt8](repeating: 0, count: 256)
                 while read(clientFD, &drain, drain.count) > 0 { /* clients don't send */ }
                 EventBroadcaster.shared.removeSubscriber(clientFD)

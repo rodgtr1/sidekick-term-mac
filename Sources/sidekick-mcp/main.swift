@@ -39,6 +39,11 @@ private struct Tool {
     let buildRequest: (_ arguments: [String: Any]) throws -> [String: Any]
     /// Renders a successful IPC reply's `result` (may be nil) into tool text.
     let render: (_ result: [String: Any]?) -> String
+    /// When set, the tool runs through this instead of the one-shot
+    /// buildRequest → ipc.send → render pipeline — for verbs that consume a
+    /// stream (wait_event) rather than a single reply. Returns the tool text;
+    /// a thrown ToolError becomes an error result.
+    var execute: ((_ arguments: [String: Any]) throws -> String)? = nil
 }
 
 private struct ToolError: Error { let message: String }
@@ -242,6 +247,40 @@ private nonisolated(unsafe) let tools: [Tool] = [
         render: { result in
             ((result?["matched"] as? Bool) == true) ? "Matched the requested output." : "Timed out before the output appeared."
         }
+    ),
+    Tool(
+        name: "sidekick_wait_event",
+        description: "Block until the next Sidekick event arrives, or the timeout elapses — the push alternative to polling wait_agent_status per pane. Optionally narrow by pane_id and/or event type: agent_state (a pane's agent changed status), command (a shell command finished), diff (a hook edit was queued/accepted/rejected), telemetry (token usage reported). Returns the event as JSON. Only events emitted after the call starts can match; current state is never replayed.",
+        inputSchema: object([
+            "pane_id": paneIDProperty,
+            "type": ["type": "string", "enum": ["agent_state", "command", "diff", "telemetry"], "description": "Only wait for this event type."],
+            "timeout_ms": ["type": "integer", "description": "Timeout in milliseconds (default 30000)."]
+        ]),
+        buildRequest: { _ in throw ToolError(message: "sidekick_wait_event runs through execute") },
+        render: { _ in "" },
+        execute: { args in
+            var request: [String: Any] = ["action": "events", "backlog": false]
+            if let paneID = args["pane_id"] as? String, !paneID.isEmpty { request["pane_id"] = paneID }
+            if let type = args["type"] as? String, !type.isEmpty { request["type"] = type }
+
+            var matchedEvent: [String: Any] = [:]
+            let outcome = ipc.waitForLine(request, timeoutMS: (args["timeout_ms"] as? Int) ?? 30_000) { line in
+                // The hello connection marker always arrives first; everything
+                // after it is a live event the server already filtered.
+                guard let event = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+                      (event["type"] as? String) != "hello" else { return false }
+                matchedEvent = event
+                return true
+            }
+            switch outcome {
+            case .matched:
+                return prettyJSON(matchedEvent)
+            case .timedOut:
+                return "Timed out before a matching event arrived."
+            case .disconnected:
+                throw ToolError(message: "Sidekick is not responding or closed the event stream. Is the app running?")
+            }
+        }
     )
 ]
 
@@ -303,6 +342,17 @@ private func handleToolsCall(id: Any, params: [String: Any]) {
         return
     }
     let arguments = (params["arguments"] as? [String: Any]) ?? [:]
+
+    if let execute = tool.execute {
+        do {
+            respond(id: id, result: toolResult(try execute(arguments)))
+        } catch let error as ToolError {
+            respond(id: id, result: toolResult(error.message, isError: true))
+        } catch {
+            respond(id: id, result: toolResult("Tool failed: \(error)", isError: true))
+        }
+        return
+    }
 
     let request: [String: Any]
     do {

@@ -128,7 +128,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SidekickTests",
-            dependencies: ["Sidekick", "SidekickTelemetryCore"],
+            dependencies: ["Sidekick", "SidekickTelemetryCore", "SidekickIPCCore"],
             path: "Tests/SidekickTests"
         ),
     ]
