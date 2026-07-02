@@ -1092,12 +1092,7 @@ extension MainWindowController: SidebarContainerDelegate {
 
         // Create or reuse quick open panel
         if quickOpenPanel == nil {
-            quickOpenPanel = QuickOpenPanel(
-                contentRect: .zero,
-                styleMask: [.titled, .resizable],
-                backing: .buffered,
-                defer: false
-            )
+            quickOpenPanel = QuickOpenPanel()
             quickOpenPanel?.quickOpenDelegate = self
         }
 

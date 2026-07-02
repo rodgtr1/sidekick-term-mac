@@ -29,4 +29,26 @@ final class QuickOpenFuzzyTests: XCTestCase {
             "/other/file.swift"
         )
     }
+
+    // MARK: - Shared fuzzy scorer
+
+    func testFuzzyScorerTiersRankExactAbovePrefixAboveSubstring() {
+        XCTAssertEqual(FuzzyScorer.score(candidate: "main.swift", query: "main.swift"), 1000)
+        XCTAssertEqual(FuzzyScorer.score(candidate: "main.swift", query: "main"), 800)
+        XCTAssertEqual(FuzzyScorer.score(candidate: "main.swift", query: "n.sw"), 600)
+    }
+
+    func testFuzzyScorerSubsequenceScoresTenPerCharacter() {
+        // "msw" isn't a prefix or substring of "main.swift" but its characters
+        // appear in order: 3 matches × 10.
+        XCTAssertEqual(FuzzyScorer.score(candidate: "main.swift", query: "msw"), 30)
+    }
+
+    func testFuzzyScorerReturnsNilWhenNotASubsequence() {
+        XCTAssertNil(FuzzyScorer.score(candidate: "main.swift", query: "xyz"))
+    }
+
+    func testFuzzyScorerIsCaseInsensitive() {
+        XCTAssertEqual(FuzzyScorer.score(candidate: "Main.Swift", query: "main.swift"), 1000)
+    }
 }

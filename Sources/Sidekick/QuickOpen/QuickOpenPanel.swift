@@ -12,13 +12,12 @@ struct FileResult {
     let directory: String
 }
 
-class QuickOpenPanel: NSPanel {
-    private var searchField: NSSearchField!
-    private var scrollView: NSScrollView!
-    private var tableView: NSTableView!
+/// Cmd+P quick-open: debounced `fd`/`find` search, fuzzy-ranked. The panel
+/// chrome (search field, table, key handling) lives in `FilterableListPanel`;
+/// this subclass supplies the file results and the async search.
+class QuickOpenPanel: FilterableListPanel {
     private var findTask: Process?
     private var debounceWorkItem: DispatchWorkItem?
-    private var searchFieldDelegate: SearchFieldDelegate?
 
     weak var quickOpenDelegate: QuickOpenPanelDelegate?
 
@@ -33,195 +32,49 @@ class QuickOpenPanel: NSPanel {
     /// that ordinary repos are covered in full.
     private nonisolated static let candidateScanCap = 20_000
 
-    override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask, backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
-        super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
-            styleMask: [.titled, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-
-        setupPanel()
-        setupUI()
+    init() {
+        super.init(chrome: Chrome(
+            title: "Quick Open",
+            placeholder: "Type to search files...",
+            size: NSSize(width: 600, height: 400),
+            columnIdentifier: "FileResult",
+            hidesOnDeactivate: false
+        ))
     }
 
-    private func setupPanel() {
-        title = "Quick Open"
-        level = .floating
-        isFloatingPanel = true
-        becomesKeyOnlyIfNeeded = false
-        hidesOnDeactivate = false
+    // MARK: - FilterableListPanel hooks
 
-        // Center on screen
-        center()
+    override var itemCount: Int { fileResults.count }
 
-        // Style
-        titlebarAppearsTransparent = true
-        titleVisibility = .hidden
-
-        // Make sure it can become key - handled by override methods
+    override func cellView(forRow row: Int) -> NSView? {
+        let cellView = QuickOpenCellView()
+        cellView.configure(with: fileResults[row])
+        return cellView
     }
 
-    override var canBecomeKey: Bool {
-        return true
-    }
-
-    override var canBecomeMain: Bool {
-        return false
-    }
-
-    private func setupUI() {
-        guard let contentView = contentView else { return }
-
-        // Container view with padding
-        let containerView = NSView()
-        containerView.wantsLayer = true
-        containerView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-        containerView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(containerView)
-
-        // Search field
-        searchField = NSSearchField()
-        searchField.placeholderString = "Type to search files..."
-        searchField.target = self
-        searchField.action = #selector(searchFieldChanged(_:))
-        searchField.font = NSFont.systemFont(ofSize: 14)
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-
-        // Route escape/arrows/enter from the field editor to the panel
-        searchFieldDelegate = SearchFieldDelegate()
-        searchFieldDelegate?.escapeHandler = { [weak self] in
-            self?.close()
-        }
-        searchFieldDelegate?.moveUpHandler = { [weak self] in
-            self?.selectPreviousRow()
-        }
-        searchFieldDelegate?.moveDownHandler = { [weak self] in
-            self?.selectNextRow()
-        }
-        searchFieldDelegate?.enterHandler = { [weak self] in
-            guard let self = self, let selectedRow = self.getSelectedRow() else { return }
-            self.selectFileAtRow(selectedRow)
-        }
-        searchField.delegate = searchFieldDelegate
-
-        // Table view
-        tableView = NSTableView()
-        tableView.headerView = nil
-        tableView.rowSizeStyle = .medium
-        tableView.backgroundColor = NSColor.clear
-        if #available(macOS 12.0, *) {
-            tableView.style = .sourceList
-        } else {
-            tableView.selectionHighlightStyle = .sourceList
-        }
-        tableView.target = self
-        tableView.doubleAction = #selector(tableViewDoubleClick(_:))
-
-        // Column
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("FileResult"))
-        column.width = 560
-        column.resizingMask = .autoresizingMask
-        tableView.addTableColumn(column)
-
-        // Scroll view
-        scrollView = NSScrollView()
-        scrollView.documentView = tableView
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.backgroundColor = NSColor.clear
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-
-        containerView.addSubview(searchField)
-        containerView.addSubview(scrollView)
-
-        NSLayoutConstraint.activate([
-            // Container view
-            containerView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            containerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            containerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            containerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-
-            // Search field
-            searchField.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 20),
-            searchField.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 20),
-            searchField.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -20),
-            searchField.heightAnchor.constraint(equalToConstant: 28),
-
-            // Scroll view
-            scrollView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
-            scrollView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 20),
-            scrollView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -20),
-            scrollView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -20)
-        ])
-
-        // Setup table view
-        tableView.dataSource = self
-        tableView.delegate = self
-    }
-
-    override func keyDown(with event: NSEvent) {
-        switch event.keyCode {
-        case 53: // Escape
-            close()
-        case 125: // Down arrow
-            selectNextRow()
-        case 126: // Up arrow
-            selectPreviousRow()
-        case 36: // Return
-            if let selectedRow = getSelectedRow() {
-                selectFileAtRow(selectedRow)
-            }
-        default:
-            super.keyDown(with: event)
-        }
-    }
-
-    private func selectNextRow() {
-        let selectedRow = tableView.selectedRow
-        let nextRow = selectedRow + 1
-        if nextRow < fileResults.count {
-            tableView.selectRowIndexes(IndexSet(integer: nextRow), byExtendingSelection: false)
-            tableView.scrollRowToVisible(nextRow)
-        }
-    }
-
-    private func selectPreviousRow() {
-        let selectedRow = tableView.selectedRow
-        let previousRow = selectedRow - 1
-        if previousRow >= 0 {
-            tableView.selectRowIndexes(IndexSet(integer: previousRow), byExtendingSelection: false)
-            tableView.scrollRowToVisible(previousRow)
-        }
-    }
-
-    private func getSelectedRow() -> Int? {
-        let selectedRow = tableView.selectedRow
-        return selectedRow >= 0 && selectedRow < fileResults.count ? selectedRow : nil
-    }
-
-    @objc private func searchFieldChanged(_ sender: NSSearchField) {
-        let searchText = sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Cancel previous debounce work
+    override func queryChanged(_ query: String) {
+        // Cancel previous debounce work and any in-flight find task.
         debounceWorkItem?.cancel()
-
-        // Cancel current find task
         findTask?.terminate()
 
-        if searchText.isEmpty {
+        if query.isEmpty {
             fileResults = []
             tableView.reloadData()
             return
         }
 
-        // Debounce search by 150ms
+        // Debounce search by 150ms.
         let workItem = DispatchWorkItem { [weak self] in
-            self?.performFileSearch(searchText)
+            self?.performFileSearch(query)
         }
         debounceWorkItem = workItem
-
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+    }
+
+    override func activateRow(_ row: Int) {
+        let result = fileResults[row]
+        quickOpenDelegate?.quickOpenPanel(self, didSelectFile: result.path)
+        close()
     }
 
     private func performFileSearch(_ searchText: String) {
@@ -347,8 +200,8 @@ class QuickOpenPanel: NSPanel {
             // directory-only match discounted so filename hits still rank on top.
             // (fd now matches on the full path, so some results match only via a
             // directory component — keep those, just below true filename matches.)
-            let nameScore = calculateFuzzyScore(fileName: fileName, searchText: searchText)
-            let pathScore = calculateFuzzyScore(fileName: relativePath, searchText: searchText)
+            let nameScore = FuzzyScorer.score(candidate: fileName, query: searchText) ?? 0
+            let pathScore = FuzzyScorer.score(candidate: relativePath, query: searchText) ?? 0
             let score = max(nameScore, pathScore / 2)
             guard score > 0 else { continue }
 
@@ -367,60 +220,7 @@ class QuickOpenPanel: NSPanel {
 
     private func applyResults(_ results: [FileResult]) {
         fileResults = results
-        tableView.reloadData()
-
-        // Auto-select first result
-        if !fileResults.isEmpty {
-            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        }
-    }
-
-    private nonisolated static func calculateFuzzyScore(fileName: String, searchText: String) -> Int {
-        let lowerFileName = fileName.lowercased()
-        let lowerSearchText = searchText.lowercased()
-
-        // Exact match gets highest score
-        if lowerFileName == lowerSearchText {
-            return 1000
-        }
-
-        // Starts with search text gets high score
-        if lowerFileName.hasPrefix(lowerSearchText) {
-            return 800
-        }
-
-        // Contains search text gets medium score
-        if lowerFileName.contains(lowerSearchText) {
-            return 600
-        }
-
-        // Fuzzy match: check if all characters from search exist in order
-        var searchIndex = lowerSearchText.startIndex
-        var score = 0
-
-        for char in lowerFileName {
-            if searchIndex < lowerSearchText.endIndex && char == lowerSearchText[searchIndex] {
-                score += 10
-                searchIndex = lowerSearchText.index(after: searchIndex)
-            }
-        }
-
-        // Return score only if all search characters were matched
-        return searchIndex >= lowerSearchText.endIndex ? score : 0
-    }
-
-    @objc private func tableViewDoubleClick(_ sender: NSTableView) {
-        if let selectedRow = getSelectedRow() {
-            selectFileAtRow(selectedRow)
-        }
-    }
-
-    private func selectFileAtRow(_ row: Int) {
-        guard row < fileResults.count else { return }
-
-        let result = fileResults[row]
-        quickOpenDelegate?.quickOpenPanel(self, didSelectFile: result.path)
-        close()
+        reloadAndSelectFirst()
     }
 
     func show(relativeTo parentWindow: NSWindow, workingDirectory: String) {
@@ -451,30 +251,6 @@ class QuickOpenPanel: NSPanel {
         findTask?.terminate()
 
         super.close()
-    }
-}
-
-// MARK: - NSTableViewDataSource
-extension QuickOpenPanel: NSTableViewDataSource {
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        return fileResults.count
-    }
-}
-
-// MARK: - NSTableViewDelegate
-extension QuickOpenPanel: NSTableViewDelegate {
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < fileResults.count else { return nil }
-
-        let result = fileResults[row]
-        let cellView = QuickOpenCellView()
-        cellView.configure(with: result)
-
-        return cellView
-    }
-
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        return 32
     }
 }
 
@@ -525,35 +301,5 @@ class QuickOpenCellView: NSTableCellView {
     func configure(with result: FileResult) {
         fileNameLabel.stringValue = result.fileName
         pathLabel.stringValue = result.relativePath
-    }
-}
-
-// MARK: - Search Field Delegate
-// Routes keys the field editor would otherwise swallow (escape, arrows,
-// enter) back to the owning panel so list navigation works while typing.
-class SearchFieldDelegate: NSObject, NSSearchFieldDelegate {
-    var escapeHandler: (() -> Void)?
-    var moveUpHandler: (() -> Void)?
-    var moveDownHandler: (() -> Void)?
-    var enterHandler: (() -> Void)?
-
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-            escapeHandler?()
-            return true
-        }
-        if commandSelector == #selector(NSResponder.moveUp(_:)), let moveUpHandler {
-            moveUpHandler()
-            return true
-        }
-        if commandSelector == #selector(NSResponder.moveDown(_:)), let moveDownHandler {
-            moveDownHandler()
-            return true
-        }
-        if commandSelector == #selector(NSResponder.insertNewline(_:)), let enterHandler {
-            enterHandler()
-            return true
-        }
-        return false
     }
 }
