@@ -2,71 +2,57 @@
 
 ![Sidekick's Agents panel showing live agent status and per-agent context-usage bars](screenshot-agents-panel.png)
 
-A native macOS terminal built for running AI coding agents — Claude Code,
-Codex, and friends — alongside a real dev environment, not just a shell
-prompt. It's fast (Swift/AppKit, not Electron), it looks like a normal
-terminal, and it adds exactly the things that make agent-driven development
-easier: live per-tab agent status, a context-usage bar so you can see a
-session approaching its token limit, one-click git worktrees so parallel
-agents don't collide, and an inline diff review before an agent's edits land.
+Sidekick is a native macOS terminal built for AI agents.
 
-Everything else you'd want from a terminal — tabs, splits, a file tree, a git
-panel, a built-in editor — is there too, and every opinionated bit (built-in
-editor vs. your own `$EDITOR`/nvim, sidebar visibility, theme) is a config
-toggle, not a requirement.
+Instead of treating Claude Code, Codex, and Pi like ordinary shell processes,
+Sidekick understands what they're doing: it tracks each agent's state live and
+tells you when one needs you, watches context usage as a session approaches
+its token limit, isolates parallel agents into their own git worktrees, puts
+their edits through an inline diff review before they land, and exposes the
+entire terminal through [MCP](https://modelcontextprotocol.io), so agents
+can orchestrate other agents.
 
-## Why Sidekick
-
-- **Built for agent workflows, not bolted onto a generic terminal.** An
-  Agents dashboard shows every running agent's state (working / waiting /
-  done) with a live context-usage bar per agent, dock bounces and
-  notifications when one needs you, and a diff approval panel to review an
-  agent's proposed edits before they land — with configurable auto-approve
-  rules for the edits you trust.
-- **Git worktree per agent.** Spin up an isolated worktree — and optionally
-  launch an agent straight into it — with one action, so parallel agents
-  never fight over the same working tree.
-- **A real sidebar without leaving the terminal.** Files, Search, Git,
-  Worktrees, Agents, and SSH Hosts panels, VS Code-style, in a native window.
-- **Scriptable down to the socket.** A Unix-socket IPC layer, a `sidekick-ctl`
-  CLI, and a full [MCP](https://modelcontextprotocol.io) server mean any
-  agent or script — not just the ones running inside Sidekick — can list
-  panes, split them, run commands, and read output.
-- **Native and fast.** Swift + AppKit, not a bundled browser.
-- **Configurable, not opinionated.** Theme, fonts, editor mode, approval
-  policy — all in one live-reloading `config.toml` or the Preferences window.
+It's also still a normal terminal (tabs, splits, session restore, a file
+tree, a git panel), written in Swift and AppKit, not Electron. And every
+opinionated bit (built-in editor vs. your own `$EDITOR`/nvim, sidebar
+visibility, theme) is a config toggle, not a requirement.
 
 ## Features
 
-**Terminal** — SwiftTerm-powered emulation, auto-detected shell, cwd + git
+**Terminal**: SwiftTerm-powered emulation, auto-detected shell, cwd + git
 branch in the tab title, Catppuccin Mocha/Latte themes (or drop in your own
 JSON palette), tabs, up to 4 splits per tab, and full session restore
 (tabs/panes/cwd) across restarts.
 
-**Sidebar** — Files (with git status and a hidden-file toggle), Search,
+**Sidebar**: Files (with git status and a hidden-file toggle), Search,
 Git (stage/unstage/commit/push/pull), Worktrees (create/open/remove with a
 guard against discarding uncommitted work), and Hosts (jump straight into an
 `ssh` session for anything in `~/.ssh/config`).
 
-**Agent orchestration** — an Agents dashboard with live state per tab and a
+**Agent orchestration**: an Agents dashboard with live state per tab and a
 per-agent context-usage bar (green → yellow → red as a session's context
 window fills up); macOS notifications and dock bounces when an agent needs
 input or finishes; an inline diff approval panel with accept/reject/"remember
 for this session"; and a configurable approval policy (ask every edit,
 auto-approve edits, or fully autonomous) with always-allow/always-ask glob
-overrides for things like `.env` and secrets.
+overrides for things like `.env` and secrets. One action spins up an isolated
+git worktree, optionally launching an agent straight into it, so parallel
+agents never fight over the same working tree.
 
-**Editor** — a built-in editor with tree-sitter syntax highlighting (Swift,
+**Editor**: a built-in editor with tree-sitter syntax highlighting (Swift,
 Go, Rust, Python, TypeScript/JavaScript/JSX/TSX, Markdown), or set
 `file_open_mode = "terminal"` to open files in your own `$EDITOR`/nvim
-instead — the built-in editor is opt-in, not the only option.
+instead; the built-in editor is opt-in, not the only option.
 
-**MCP server (`sidekick-mcp`)** — exposes pane orchestration as native MCP
-tools (`pane_list`, `pane_split`, `pane_run`, `pane_read`,
-`wait_agent_status`, and more) so Claude Code, Claude Desktop, Cursor, or any
-other MCP client can drive Sidekick directly. See [MCP Server](#mcp-server).
+**Scriptable down to the socket**: the `sidekick-mcp` server exposes pane
+orchestration as native MCP tools (`pane_list`, `pane_split`, `pane_run`,
+`pane_read`, `wait_agent_status`, and more) so Claude Code, Claude Desktop,
+Cursor, or any other MCP client can drive Sidekick directly, and the
+`sidekick-ctl` CLI talks to the same Unix socket for plain scripts, so any
+agent or script, not just the ones running inside Sidekick, can list panes,
+split them, run commands, and read output. See [MCP Server](#mcp-server).
 
-**Quality of life** — quick open (`⌘P`) and a command palette (`⇧⌘P`),
+**Quality of life**: quick open (`⌘P`) and a command palette (`⇧⌘P`),
 paste an image straight into a terminal as a temp-file path, app-wide font
 zoom, drag-to-reorder tabs, and `config.toml` changes that apply live with no
 restart.
@@ -96,12 +82,12 @@ System Settings → Privacy & Security → "Open Anyway" (macOS no longer
 supports right-click → Open to bypass this on recent versions).
 
 Optional one-button setup, once it's installed:
-- **Preferences → Terminal → Install for zsh** — shell integration (prompt
+- **Preferences → Terminal → Install for zsh**: shell integration (prompt
   marks, cwd tracking, agent-exit cleanup).
-- **Preferences → Agents** — auto-detects Claude Code, Codex, and Pi and
+- **Preferences → Agents**: auto-detects Claude Code, Codex, and Pi and
   wires up the Agents panel. Safe to re-run.
 
-Apple Silicon only for now — Intel would need a universal build
+Apple Silicon only for now; Intel would need a universal build
 (`swift build --arch arm64 --arch x86_64`).
 
 ## Preferences
@@ -110,30 +96,31 @@ Apple Silicon only for now — Intel would need a universal build
 
 **Preferences → Editor → File Tree Opens** picks what happens when you open
 a file from the sidebar:
-- **Terminal Editor** — opens it with `$EDITOR` (falling back to `nvim`) right
+- **Terminal Editor**: opens it with `$EDITOR` (falling back to `nvim`) right
   in the terminal pane.
-- **Built-in Editor** — opens it in Sidekick's own editor pane, with its own
+- **Built-in Editor**: opens it in Sidekick's own editor pane, with its own
   font/size, word-wrap, and tree-sitter syntax highlighting.
 
-A separate checkbox toggles whether hidden (dot) files show up — dimmed — in
+A separate checkbox toggles whether hidden (dot) files show up, dimmed, in
 the file tree.
 
 ### Agents
 
 **Preferences → Agents** has one row per supported agent (Claude Code, Codex,
 Pi). Sidekick detects whether each is installed (by looking for its config
-directory) and shows an **Install** button — safe to click more than once.
+directory) and shows an **Install** button that is safe to click more than
+once.
 Installing wires that agent's own hook/extension system to a bundled status
 helper so its state shows up live in the Agents dashboard and context-usage
 bar:
 
-- **Claude Code** — adds hooks to `~/.claude/settings.json` so prompt
+- **Claude Code**: adds hooks to `~/.claude/settings.json` so prompt
   submission, tool use, permission requests, and session end/stop map to
   Sidekick's busy/ready/done/idle states, plus a hook that reports token
   usage and cost.
-- **Codex** — enables `hooks = true` and adds equivalent `[[hooks.<event>]]`
+- **Codex**: enables `hooks = true` and adds equivalent `[[hooks.<event>]]`
   blocks to `~/.codex/config.toml`.
-- **Pi** — drops a TypeScript extension into `~/.pi/agent/extensions/` that
+- **Pi**: drops a TypeScript extension into `~/.pi/agent/extensions/` that
   reports status over OSC 666 and forwards session transcripts for telemetry.
 
 Approval behavior (auto-approve vs. ask-every-edit vs. fully autonomous)
@@ -141,7 +128,7 @@ lives in the separate **Approvals** tab, not here.
 
 ## Keyboard Shortcuts
 
-A few of the most-used ones — the full, always-current list is in the app
+A few of the most-used ones; the full, always-current list is in the app
 via `⌘K` ("Keyboard Shortcuts").
 
 | Shortcut | Action |
@@ -160,8 +147,8 @@ via `⌘K` ("Keyboard Shortcuts").
 ## MCP Server
 
 `sidekick-mcp` exposes Sidekick's pane orchestration as MCP tools over
-stdio, so any MCP client can drive it directly — no `sidekick-ctl` shell-outs
-needed:
+stdio, so any MCP client can drive it directly, with no `sidekick-ctl`
+shell-outs needed:
 
 ```json
 { "mcpServers": { "sidekick": { "command": "/path/to/sidekick-mcp" } } }
@@ -216,7 +203,7 @@ pane, creates (or reuses) a worktree for that branch in a sibling
 ### Claude/Codex Agent Status Hooks
 
 Sidekick can drive tab status indicators from Claude Code and Codex
-lifecycle hooks — more reliable than parsing terminal text:
+lifecycle hooks, which is more reliable than parsing terminal text:
 
 ```bash
 scripts/install-agent-status-hooks
@@ -230,7 +217,7 @@ Restart open Claude Code/Codex sessions after installing.
 ## Configuration
 
 Sidekick loads `~/.config/sidekick/config.toml`, created with defaults on
-first launch. Changes apply live — no restart needed.
+first launch. Changes apply live; no restart needed.
 
 ```toml
 [theme]
@@ -285,11 +272,11 @@ Drop custom theme palettes (same JSON schema as the built-ins) into
 
 ## Dependencies
 
-- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) — terminal emulation
-- [TOMLKit](https://github.com/LebJe/TOMLKit) — config file parsing
+- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm): terminal emulation
+- [TOMLKit](https://github.com/LebJe/TOMLKit): config file parsing
 - [SwiftTreeSitter](https://github.com/ChimeHQ/SwiftTreeSitter) + per-language
-  tree-sitter grammars — editor syntax highlighting
+  tree-sitter grammars: editor syntax highlighting
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE).

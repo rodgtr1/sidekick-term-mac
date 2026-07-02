@@ -1,6 +1,5 @@
 import Foundation
 import Cocoa
-import CoreServices
 
 nonisolated enum GitFileStatus: String, CaseIterable, Sendable {
     case modified = "M"
@@ -79,15 +78,6 @@ nonisolated struct GitFileItem: Sendable {
     }
 }
 
-/// What the FSEvents context actually retains (via its retain/release
-/// callbacks) — never the model itself. The weak reference means a callback
-/// racing a last-release on another thread reads nil instead of a dangling
-/// model pointer.
-private final class GitStatusWatcherBox {
-    weak var model: GitStatusModel?
-    init(_ model: GitStatusModel) { self.model = model }
-}
-
 class GitStatusModel: ObservableObject {
     @Published var files: [GitFileItem] = []
     @Published var currentBranch: String = ""
@@ -101,15 +91,14 @@ class GitStatusModel: ObservableObject {
     private var _repositoryPath: String = ""
     // Fallback poll for changes FSEvents can't see (e.g. edits over NFS).
     private let fallbackRefreshInterval: TimeInterval = 30.0
-    private let refreshDebounce: TimeInterval = 0.3
     // How long to keep ignoring watcher events after an app-owned git mutation
     // finishes, so the mutation's own FSEvents (delivered up to the stream's
     // latency late) don't trigger a redundant refresh on top of the explicit one.
     private let watcherSettleDelay: TimeInterval = 0.6
     // Set on the main actor; torn down in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var refreshTimer: Timer?
-    nonisolated(unsafe) private var eventStream: FSEventStreamRef?
-    nonisolated(unsafe) private var pendingRefresh: DispatchWorkItem?
+    // The app's shared FSEvents change detector — see RepositoryWatcher.
+    private let watcher = RepositoryWatcher()
     private let gitService: GitService
     private var refreshGeneration: Int = 0
     // Coalesce overlapping refreshes: while a background git query is running, a
@@ -128,23 +117,24 @@ class GitStatusModel: ObservableObject {
 
     init(gitService: GitService = GitService()) {
         self.gitService = gitService
+        // App-owned mutations (stage/commit/checkout/…) refresh themselves when
+        // they complete; ignore the `.git` churn they generate in the meantime.
+        watcher.onChange = { [weak self] in
+            guard let self, !self.watcherSuppressed else { return }
+            self.refreshStatus()
+        }
     }
 
     var repositoryPath: String {
         return _repositoryPath
     }
 
-    // Tear down the timer and FSEvents stream directly: the resource handles are
-    // nonisolated(unsafe) so this nonisolated deinit can reach them without
-    // hopping to the main actor (which a deinit can't await).
+    // Tear down the fallback timer directly: it's nonisolated(unsafe) so this
+    // nonisolated deinit can reach it without hopping to the main actor (which a
+    // deinit can't await). The FSEvents stream is owned by `watcher`, whose own
+    // deinit stops it when this model releases its last reference.
     deinit {
         refreshTimer?.invalidate()
-        pendingRefresh?.cancel()
-        if let eventStream {
-            FSEventStreamStop(eventStream)
-            FSEventStreamInvalidate(eventStream)
-            FSEventStreamRelease(eventStream)
-        }
     }
 
     func setRepositoryPath(_ path: String) {
@@ -165,7 +155,7 @@ class GitStatusModel: ObservableObject {
         _repositoryPath = repositoryRoot
         refreshStatus(force: true)
         startAutoRefresh()
-        startWatchingRepository(repositoryRoot)
+        watcher.start(root: repositoryRoot)
     }
 
     func refreshStatus(force: Bool = false) {
@@ -232,83 +222,7 @@ class GitStatusModel: ObservableObject {
     private func stopAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = nil
-        pendingRefresh?.cancel()
-        pendingRefresh = nil
-        stopWatchingRepository()
-    }
-
-    // MARK: - File system watching
-
-    private func startWatchingRepository(_ repositoryRoot: String) {
-        stopWatchingRepository()
-
-        // The stream is dispatched to the main queue (below), so the callback
-        // already runs on the main actor — assert that to reach the model.
-        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
-            guard let info = info else { return }
-            let box = Unmanaged<GitStatusWatcherBox>.fromOpaque(info).takeUnretainedValue()
-            MainActor.assumeIsolated { box.model?.scheduleDebouncedRefresh() }
-        }
-
-        // The context retains a weak box, not the model: FSEventStreamCreate
-        // takes its own +1 via the retain callback and drops it when the stream
-        // is deallocated after Invalidate, so a callback already in flight can
-        // never see freed memory even if our last release happens off-main.
-        let box = GitStatusWatcherBox(self)
-        var context = FSEventStreamContext(
-            version: 0,
-            info: Unmanaged.passUnretained(box).toOpaque(),
-            retain: { info in
-                guard let info = info else { return nil }
-                _ = Unmanaged<GitStatusWatcherBox>.fromOpaque(info).retain()
-                return info
-            },
-            release: { info in
-                guard let info = info else { return }
-                Unmanaged<GitStatusWatcherBox>.fromOpaque(info).release()
-            },
-            copyDescription: nil
-        )
-
-        let created = withExtendedLifetime(box) {
-            FSEventStreamCreate(
-                nil,
-                callback,
-                &context,
-                [repositoryRoot] as CFArray,
-                FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-                0.5,
-                FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
-            )
-        }
-        guard let stream = created else {
-            Log.error("GitStatusModel: Failed to create FSEvents stream for \(repositoryRoot)", category: "git")
-            return
-        }
-
-        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
-        FSEventStreamStart(stream)
-        eventStream = stream
-    }
-
-    private func stopWatchingRepository() {
-        guard let stream = eventStream else { return }
-        FSEventStreamStop(stream)
-        FSEventStreamInvalidate(stream)
-        FSEventStreamRelease(stream)
-        eventStream = nil
-    }
-
-    private func scheduleDebouncedRefresh() {
-        // App-owned mutations (stage/commit/checkout/…) refresh themselves when
-        // they complete; ignore the `.git` churn they generate in the meantime.
-        guard !watcherSuppressed else { return }
-        pendingRefresh?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.refreshStatus() }
-        }
-        pendingRefresh = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + refreshDebounce, execute: work)
+        watcher.stop()
     }
 
     // These run on the background queue from refreshStatus. They touch only the
