@@ -7,13 +7,14 @@ class DiffViewController: NSViewController {
     private var filePath: String?
     private let gitService = GitService()
 
+    /// Chrome colors shared by the diff surfaces (this controller and the
+    /// uncommitted-changes panel). The diff *content* — added/removed lines,
+    /// hunk/file headers, intraline emphasis — is colored entirely by
+    /// InlineDiffRenderer, so this holds only the surrounding view colors.
     struct DiffColors {
         static var background: NSColor { AppTheme.windowBackground }
         static var text: NSColor { AppTheme.primaryText }
-        static var added: NSColor { AppTheme.success }
-        static var removed: NSColor { AppTheme.error }
         static var context: NSColor { AppTheme.mutedText }
-        static var hunkHeader: NSColor { AppTheme.accent }
         static var fileHeader: NSColor { AppTheme.warning }
     }
 
