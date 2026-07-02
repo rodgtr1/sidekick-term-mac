@@ -205,6 +205,15 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var currentCWD: String = "~"
     private var isUpdatingCWD = false
 
+    // Consolidated git access: the single entry point for asking git a question
+    // (repo root, branch), spawning through the shared ProcessRunner.
+    private let gitService = GitService()
+    // FSEvents-backed branch tracking for the pane title, so an in-place branch
+    // switch or commit (which leaves the cwd unchanged) refreshes the title
+    // without polling. Points at the current cwd's repository root.
+    private let branchWatcher = RepositoryWatcher()
+    private var watchedRepoRoot: String?
+
     // SwiftTerm tracks the exact child PID; scanning `ps` for "a child of
     // this app" breaks as soon as a second tab (or any transient child
     // process) exists.
@@ -288,6 +297,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
         agentStateDetector.readVisibleScreen = { [weak self] in
             self?.readVisibleScreenText() ?? ""
+        }
+        // A change under the repo (commit, checkout, stage) can flip the branch
+        // without moving the cwd, so refresh the title from FSEvents rather than
+        // waiting for the next cwd change.
+        branchWatcher.onChange = { [weak self] in
+            self?.updateTitle()
         }
         setupTerminal()
         startConfiguredProcess()
@@ -694,51 +709,61 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let basename = cwdURL.lastPathComponent.isEmpty ? "~" : cwdURL.lastPathComponent
 
         DispatchQueue.global(qos: .background).async { [weak self] in
-            let branch = self?.getGitBranch(at: cwd)
+            guard let self = self else { return }
+            // Single git entry point: resolve the repo root, then read the
+            // branch. A nil root means the cwd isn't in a repository, so the
+            // title shows just the directory (no bogus "(unknown)").
+            let repositoryRoot = self.gitService.repositoryRoot(from: cwd)
+            let branch = repositoryRoot.flatMap { try? self.gitService.currentBranch(repositoryRoot: $0) }
+
+            // GitService reports a detached HEAD already parenthesized as
+            // "(sha)"; unwrap it so neither the window title nor the tab title
+            // (both add their own parens) ends up double-wrapped as "((sha))".
+            let label = Self.titleBranchLabel(branch)
 
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
 
                 // Update window title
-                if let branch = branch, !branch.isEmpty {
-                    self.view.window?.title = "\(basename) (\(branch)) - Sidekick"
+                if let label = label, !label.isEmpty {
+                    self.view.window?.title = "\(basename) (\(label)) - Sidekick"
                 } else {
                     self.view.window?.title = "\(basename) - Sidekick"
                 }
 
+                // Point the FSEvents watcher at the current repo so an in-place
+                // branch change refreshes the title without polling.
+                self.updateBranchWatch(repositoryRoot: repositoryRoot)
+
                 // Notify delegate for tab title updates
-                self.delegate?.terminalDidUpdateTitle(self, directory: self.currentCWD, branch: branch)
+                self.delegate?.terminalDidUpdateTitle(self, directory: self.currentCWD, branch: label)
             }
         }
     }
 
-    nonisolated private func getGitBranch(at path: String) -> String? {
-        // Via the shared runner so this inherits its timeout backstop and
-        // non-interactive git env, and doesn't re-hand-roll the (stderr-drain)
-        // Process plumbing.
-        guard let result = try? ProcessRunner.shared.run(
-            executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-            arguments: ["-C", path, "symbolic-ref", "--short", "HEAD"],
-            currentDirectoryURL: URL(fileURLWithPath: path)
-        ) else { return nil }
-
-        guard result.succeeded else {
-            // Non-zero usually means a detached HEAD — fall back to the sha.
-            return getGitBranchDetached(at: path)
+    /// Normalizes `GitService.currentBranch` output for display in a title that
+    /// wraps it in parens: a detached HEAD arrives as "(sha)", so strip the
+    /// paired parens to avoid "((sha))". Real branch names never arrive already
+    /// parenthesized.
+    nonisolated private static func titleBranchLabel(_ branch: String?) -> String? {
+        guard let branch = branch else { return nil }
+        if branch.hasPrefix("("), branch.hasSuffix(")"), branch.count >= 2 {
+            return String(branch.dropFirst().dropLast())
         }
-        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        return output.isEmpty ? nil : output
+        return branch
     }
 
-    nonisolated private func getGitBranchDetached(at path: String) -> String? {
-        guard let result = try? ProcessRunner.shared.run(
-            executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-            arguments: ["-C", path, "rev-parse", "--short", "HEAD"],
-            currentDirectoryURL: URL(fileURLWithPath: path)
-        ), result.succeeded else { return nil }
-
-        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        return output.isEmpty ? nil : "detached@\(output)"
+    /// (Re)targets the branch watcher when the pane's repository changes. A no-op
+    /// when the root is unchanged so an FSEvents-driven `updateTitle` doesn't
+    /// tear down and rebuild the very stream that triggered it.
+    private func updateBranchWatch(repositoryRoot: String?) {
+        guard repositoryRoot != watchedRepoRoot else { return }
+        watchedRepoRoot = repositoryRoot
+        if let repositoryRoot {
+            branchWatcher.start(root: repositoryRoot)
+        } else {
+            branchWatcher.stop()
+        }
     }
 
     private func handleProcessTerminated() {
