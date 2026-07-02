@@ -23,8 +23,18 @@ class SidebarContainerView: NSView {
 
     private(set) var currentPanel: SidebarPanel = .files
     private var isVisible: Bool = true
-    private var panelViews: [SidebarPanel: NSView] = [:]
+
+    /// Panels are created lazily: each controller — and its FSEvents watcher
+    /// (file tree) or git polling — is instantiated only the first time its
+    /// panel is actually shown. See `controller(for:)`.
     private var panelControllers: [SidebarPanel: NSViewController] = [:]
+
+    /// State pushed at us before a panel exists is remembered here and applied
+    /// when the panel is first created, so a lazily-instantiated file tree /
+    /// git / search panel still opens on the right directory and hidden-files
+    /// setting.
+    private var currentPath: String?
+    private var showHiddenFiles: Bool = false
 
     private let headerHeight: CGFloat = 32
     private var headerView: NSView!
@@ -48,8 +58,9 @@ class SidebarContainerView: NSView {
 
         setupHeader()
         setupContent()
-        createPanelViews()
-        showPanel(.files)
+        // Panels are instantiated lazily on first show (see controller(for:)),
+        // so nothing here spins up the file-tree watcher or git polling. The
+        // current panel is materialized when the sidebar first becomes visible.
 
         themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
     }
@@ -101,70 +112,71 @@ class SidebarContainerView: NSView {
         headerView?.layer?.backgroundColor = AppTheme.headerBackground.cgColor
     }
 
-    private func createPanelViews() {
-        // Create placeholder views for each panel
-        for panel in SidebarPanel.allCases {
-            let view = createPanelView(for: panel)
-            panelViews[panel] = view
-        }
+    /// Returns the controller for `panel`, creating it (and starting its
+    /// watchers / polling) the first time it's needed, then caching it.
+    private func controller(for panel: SidebarPanel) -> NSViewController {
+        if let existing = panelControllers[panel] { return existing }
+        let created = makeController(for: panel)
+        panelControllers[panel] = created
+        return created
     }
 
-    private func createPanelView(for panel: SidebarPanel) -> NSView {
+    /// Builds a panel controller and seeds it with the current cross-panel
+    /// state (directory, hidden-files) that was pushed before it existed.
+    private func makeController(for panel: SidebarPanel) -> NSViewController {
         switch panel {
         case .files:
             let fileTreeVC = FileTreeViewController()
             fileTreeVC.delegate = self
-            panelControllers[panel] = fileTreeVC
-            return fileTreeVC.view
+            // Apply the hidden-files setting before loading so the first tree
+            // is built with the right visibility (setShowHidden no-ops without
+            // a loaded root, so order doesn't trigger a redundant reload).
+            fileTreeVC.setShowHidden(showHiddenFiles)
+            if let currentPath { fileTreeVC.loadFileTree(for: currentPath) }
+            return fileTreeVC
         case .git:
             let gitPanelVC = GitPanelViewController()
             gitPanelVC.delegate = self
-            panelControllers[panel] = gitPanelVC
-            return gitPanelVC.view
+            if let currentPath { gitPanelVC.setRepositoryPath(currentPath) }
+            return gitPanelVC
         case .search:
             let searchPanelVC = SearchPanelViewController()
             searchPanelVC.delegate = self
-            panelControllers[panel] = searchPanelVC
-            return searchPanelVC.view
+            if let currentPath { searchPanelVC.updateWorkingDirectory(currentPath) }
+            return searchPanelVC
         case .worktrees:
             let worktreesVC = WorktreesPanelViewController()
             worktreesVC.delegate = self
-            panelControllers[panel] = worktreesVC
-            return worktreesVC.view
+            return worktreesVC
         case .agents:
             let agentDashboardVC = AgentDashboardViewController()
             agentDashboardVC.delegate = self
-            panelControllers[panel] = agentDashboardVC
-            return agentDashboardVC.view
+            return agentDashboardVC
         case .hosts:
             let hostsPanelVC = HostsPanelViewController()
             hostsPanelVC.delegate = self
-            panelControllers[panel] = hostsPanelVC
-            return hostsPanelVC.view
+            return hostsPanelVC
         }
     }
 
     func showPanel(_ panel: SidebarPanel) {
-        // Hide current panel
-        if let currentView = panelViews[currentPanel] {
-            currentView.removeFromSuperview()
-        }
+        // Hide the current panel's view (only if it was ever created).
+        panelControllers[currentPanel]?.view.removeFromSuperview()
 
-        // Show new panel
+        // Show new panel, creating its controller lazily on first show.
         currentPanel = panel
         titleLabel.stringValue = panel.rawValue.uppercased()
 
-        if let newView = panelViews[panel] {
-            contentView.addSubview(newView)
-            newView.translatesAutoresizingMaskIntoConstraints = false
+        let newView = controller(for: panel).view
+        contentView.addSubview(newView)
+        newView.translatesAutoresizingMaskIntoConstraints = false
 
-            NSLayoutConstraint.activate([
-                newView.topAnchor.constraint(equalTo: contentView.topAnchor),
-                newView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-                newView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-                newView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
-            ])
-        }
+        NSLayoutConstraint.activate([
+            newView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            newView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            newView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            newView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
 
         if panel == .search {
             (panelControllers[.search] as? SearchPanelViewController)?.focusSearchField()
@@ -192,6 +204,12 @@ class SidebarContainerView: NSView {
     func setVisible(_ visible: Bool) {
         isVisible = visible
         isHidden = !visible
+        // Unhiding the sidebar without an explicit showPanel (e.g. toggleSidebar)
+        // must still mount a panel — materialize the current one on demand so it
+        // isn't blank the first time it's revealed.
+        if visible, panelControllers[currentPanel]?.view.superview == nil {
+            showPanel(currentPanel)
+        }
     }
 
     var visible: Bool {
@@ -199,6 +217,10 @@ class SidebarContainerView: NSView {
     }
 
     func updateFileTree(path: String) {
+        // Remember the directory so a not-yet-created files/git/search panel
+        // opens on it when first shown.
+        currentPath = path
+
         if let fileTreeVC = panelControllers[.files] as? FileTreeViewController {
             fileTreeVC.loadFileTree(for: path)
         }
@@ -215,12 +237,13 @@ class SidebarContainerView: NSView {
     }
 
     func toggleHiddenFiles() {
-        if let fileTreeVC = panelControllers[.files] as? FileTreeViewController {
-            fileTreeVC.toggleHiddenFiles()
-        }
+        setShowHiddenFiles(!showHiddenFiles)
     }
 
     func setShowHiddenFiles(_ show: Bool) {
+        // Track it so a lazily-created file tree is built with the right
+        // visibility even if this arrives before the panel exists.
+        showHiddenFiles = show
         if let fileTreeVC = panelControllers[.files] as? FileTreeViewController {
             fileTreeVC.setShowHidden(show)
         }
