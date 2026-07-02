@@ -81,11 +81,15 @@ The app isn't notarized yet, so on first launch you may need to go to
 System Settings → Privacy & Security → "Open Anyway" (macOS no longer
 supports right-click → Open to bypass this on recent versions).
 
-Optional one-button setup, once it's installed:
-- **Preferences → Terminal → Install for zsh**: shell integration (prompt
-  marks, cwd tracking, agent-exit cleanup).
+Then, two one-button setup steps:
+
 - **Preferences → Agents**: auto-detects Claude Code, Codex, and Pi and
-  wires up the Agents panel. Safe to re-run.
+  hooks them into the Agents dashboard. This is the step that turns on the
+  agent features Sidekick is built around: without it, agent status falls
+  back to less reliable text heuristics and the context-usage bar has no
+  data. Safe to re-run.
+- **Preferences → Terminal → Install for zsh** (optional): shell integration
+  for prompt marks, cwd tracking, and agent-exit cleanup.
 
 Apple Silicon only for now; Intel would need a universal build
 (`swift build --arch arm64 --arch x86_64`).
