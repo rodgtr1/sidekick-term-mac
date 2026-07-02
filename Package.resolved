@@ -1,5 +1,5 @@
 {
-  "originHash" : "3a1b06019404198cc2739d4667c5f0aa4dd9cf34b8c24734c0de69e696513d24",
+  "originHash" : "d1e3eeea1a0d11829961a797a29768de9c5ff6a1d1e452471836438ad21cf1a4",
   "pins" : [
     {
       "identity" : "swift-argument-parser",
@@ -60,7 +60,6 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/tree-sitter-grammars/tree-sitter-markdown",
       "state" : {
-        "branch" : "split_parser",
         "revision" : "c3570720f7f7bbad22fe96603f106276618e0cf5"
       }
     },
@@ -87,7 +86,6 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/alex-pinkus/tree-sitter-swift",
       "state" : {
-        "branch" : "with-generated-files",
         "revision" : "31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5"
       }
     },

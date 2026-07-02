@@ -337,7 +337,7 @@ final class TabController: NSObject {
     /// otherwise we return nil so the terminal falls back to the default start
     /// directory. Guards against a tampered/stale session.json launching a pane
     /// at an arbitrary path.
-    private static func validatedRestoredDirectory(_ path: String?) -> String? {
+    static func validatedRestoredDirectory(_ path: String?) -> String? {
         guard let path, path.hasPrefix("/") else { return nil }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
