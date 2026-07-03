@@ -135,6 +135,44 @@ class TabModel: Identifiable {
     func updateAgentStateFromPanes() {
         agentState = panes.map(\.agentState).max(by: { $0.priority < $1.priority }) ?? .idle
     }
+
+    /// True when any pane in this tab carries an unacknowledged failed-command
+    /// attention mark, so a background split whose hidden pane failed still
+    /// lights the tab in the agents panel and the ⇧⌘J cycle.
+    var hasCommandAttention: Bool {
+        panes.contains { $0.failedCommandAttention }
+    }
+
+    /// The oldest still-unacknowledged failed-command mark among this tab's
+    /// panes, driving the agents-panel "Command failed · 12s" elapsed line.
+    var commandAttentionSince: Date? {
+        panes.filter { $0.failedCommandAttention }
+            .map { $0.failedCommandAttentionChangedAt }
+            .min()
+    }
+
+    /// The next tab ⇧⌘J should jump to, walking attention buckets most-urgent
+    /// first — needs-input, then a failed background command, then finished,
+    /// then working — and wrapping past the active tab within each bucket. A
+    /// failed command joins the same cycle the agent states already use rather
+    /// than getting a parallel shortcut. Returns nil when nothing wants
+    /// attention; returns `activeIndex` when it is the sole candidate in the
+    /// most-urgent non-empty bucket (the caller treats that as a no-op). Pure so
+    /// the ordering is unit-testable without a live window.
+    static func nextAttentionIndex(in tabs: [TabModel], activeIndex: Int) -> Int? {
+        let buckets: [(TabModel) -> Bool] = [
+            { $0.agentState == .ready },
+            { $0.hasCommandAttention },
+            { $0.agentState == .done },
+            { $0.agentState == .working }
+        ]
+        for matches in buckets {
+            let candidates = tabs.indices.filter { matches(tabs[$0]) }
+            guard !candidates.isEmpty else { continue }
+            return candidates.first(where: { $0 > activeIndex }) ?? candidates[0]
+        }
+        return nil
+    }
 }
 
 enum SplitDirection {

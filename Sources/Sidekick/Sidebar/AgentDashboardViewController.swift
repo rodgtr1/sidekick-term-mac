@@ -36,6 +36,10 @@ final class AgentDashboardViewController: NSViewController {
         let state: AgentState
         let since: Date
         let isActive: Bool
+        /// A pane in this tab failed a command while out of view. When the tab
+        /// is otherwise idle this becomes the row's headline ("Command failed");
+        /// either way it joins the ⇧⌘J attention cycle.
+        let hasCommandAttention: Bool
         let usage: TranscriptUsage?
         let cost: Double?
         /// Every reporting pane in the tab, each priced at its own model. Two
@@ -81,6 +85,12 @@ final class AgentDashboardViewController: NSViewController {
             self,
             selector: #selector(agentStateChanged),
             name: .pendingApprovalsChanged,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(agentStateChanged),
+            name: .paneCommandAttentionChanged,
             object: nil
         )
     }
@@ -227,21 +237,29 @@ final class AgentDashboardViewController: NSViewController {
         updateFooter(tabs)
 
         var newRows = tabs.enumerated().compactMap { index, tab -> Row? in
-            guard tab.agentState != .idle else { return nil }
+            let commandAttention = tab.hasCommandAttention
+            // A tab earns a row for a live agent state OR an unacknowledged
+            // failed command; the latter shows even when the agent is idle.
+            guard tab.agentState != .idle || commandAttention else { return nil }
+            // When the tab is otherwise idle, the failure drives the row's
+            // headline and its elapsed clock; a live agent state keeps its own.
+            let since = (tab.agentState == .idle ? tab.commandAttentionSince : nil) ?? tab.agentStateChangedAt
             return Row(
                 tabIndex: index,
                 title: tab.title,
                 state: tab.agentState,
-                since: tab.agentStateChangedAt,
+                since: since,
                 isActive: tab.isActive,
+                hasCommandAttention: commandAttention,
                 usage: tab.telemetry,
                 cost: tab.telemetryCostUSD,
                 paneTelemetries: tab.paneTelemetries
             )
         }
-        // Actionable tabs first: needs-input, then working, then done.
+        // Actionable tabs first: needs-input, then a failed background command,
+        // then working, then done.
         newRows.sort { lhs, rhs in
-            let l = Self.sortPriority(lhs.state), r = Self.sortPriority(rhs.state)
+            let l = Self.sortPriority(lhs), r = Self.sortPriority(rhs)
             return l == r ? lhs.tabIndex < rhs.tabIndex : l < r
         }
 
@@ -382,7 +400,7 @@ final class AgentDashboardViewController: NSViewController {
                   let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false),
                   let detail = cell.viewWithTag(Self.detailLabelTag) as? NSTextField else { continue }
             let rowData = rows[row]
-            let (stateLabel, _) = Self.describe(rowData.state)
+            let (stateLabel, _) = Self.rowPresentation(rowData)
             detail.stringValue = "\(stateLabel) · \(Self.elapsedString(since: rowData.since))"
         }
     }
@@ -393,13 +411,26 @@ final class AgentDashboardViewController: NSViewController {
         delegate?.agentDashboard(self, didSelectTabAt: rows[row].tabIndex)
     }
 
-    private static func sortPriority(_ state: AgentState) -> Int {
-        switch state {
+    private static func sortPriority(_ row: Row) -> Int {
+        // An idle tab that's here only for a failed command sorts just under
+        // needs-input; when the tab also has a live agent state, that state
+        // keeps its own rank (the attention still counts for the ⇧⌘J cycle).
+        if row.state == .idle && row.hasCommandAttention { return 1 }
+        switch row.state {
         case .ready: return 0
-        case .working: return 1
-        case .done: return 2
-        case .idle: return 3
+        case .working: return 2
+        case .done: return 3
+        case .idle: return 4
         }
+    }
+
+    /// The row's headline label and color. A failed background command becomes
+    /// the headline only when no live agent state would otherwise occupy it.
+    private static func rowPresentation(_ row: Row) -> (label: String, color: NSColor) {
+        if row.state == .idle && row.hasCommandAttention {
+            return ("Command failed", AppTheme.error)
+        }
+        return describe(row.state)
     }
 
     fileprivate static func describe(_ state: AgentState) -> (label: String, color: NSColor) {
@@ -465,7 +496,7 @@ extension AgentDashboardViewController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard row < rows.count else { return nil }
         let rowData = rows[row]
-        let (stateLabel, stateColor) = Self.describe(rowData.state)
+        let (stateLabel, stateColor) = Self.rowPresentation(rowData)
 
         let cell = NSTableCellView()
         cell.wantsLayer = true

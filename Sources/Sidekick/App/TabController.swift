@@ -159,6 +159,9 @@ final class TabController: NSObject {
 
         // Attach the split controller for the new tab
         let newTab = tabs[index]
+        // The user is now looking at this tab's active pane: drop any
+        // failed-command attention mark on it.
+        newTab.activePane?.setFailedCommandAttention(false)
         if let newController = tabSplitControllers[newTab.id] {
             currentSplitController = newController
             attachController(newController)
@@ -215,6 +218,8 @@ final class TabController: NSObject {
         // until the user switches tabs by hand.
         tabs[activeTabIndex].isActive = true
         let newTab = tabs[activeTabIndex]
+        // The survivor is now the viewed tab; clear its active pane's mark.
+        newTab.activePane?.setFailedCommandAttention(false)
         if let newController = tabSplitControllers[newTab.id] {
             currentSplitController = newController
             attachController(newController)
@@ -441,6 +446,10 @@ extension TabController: PaneSplitControllerDelegate {
         let tab = tabs[tabIndex]
 
         tab.activePaneIndex = index
+        // The user just brought this pane forward: acknowledge any failed-command
+        // attention on it. (switchToTab clears too, but only fires on a tab
+        // change, not on selecting a sibling pane within the current tab.)
+        pane.setFailedCommandAttention(false)
         if tabIndex != activeTabIndex {
             switchToTab(index: tabIndex)
         }

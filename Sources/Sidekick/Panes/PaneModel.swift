@@ -13,6 +13,33 @@ class PaneModel: Identifiable, Hashable {
     var agentState: AgentState = .idle
     var agentStateChangedAt = Date()
 
+    /// True when a command in this pane exited non-zero while the pane was NOT
+    /// being viewed (a background tab, or an unfocused split). It rides the same
+    /// passive attention surfaces an agent's `ready` state uses: the agents-panel
+    /// row highlight and the ⇧⌘J attention cycle. Cleared when the user visits
+    /// the pane, or when the next command in it exits zero.
+    var failedCommandAttention: Bool = false
+    var failedCommandAttentionChangedAt = Date()
+
+    /// Whether a finished command should leave this pane attention-worthy. A
+    /// clean exit never does; a failure does only when the pane is out of view,
+    /// since a failure in the pane the user is already looking at needs no mark.
+    /// Pure so the decision is unit-testable without a live window.
+    static func shouldMarkAttention(commandSucceeded: Bool, paneIsBeingViewed: Bool) -> Bool {
+        !commandSucceeded && !paneIsBeingViewed
+    }
+
+    /// Sets the failed-command attention mark and, on an actual change, posts so
+    /// the passive attention surfaces refresh. Returns whether it changed.
+    @discardableResult
+    func setFailedCommandAttention(_ value: Bool) -> Bool {
+        guard failedCommandAttention != value else { return false }
+        failedCommandAttention = value
+        failedCommandAttentionChangedAt = Date()
+        NotificationCenter.default.post(name: .paneCommandAttentionChanged, object: self)
+        return true
+    }
+
     static func == (lhs: PaneModel, rhs: PaneModel) -> Bool {
         return lhs.id == rhs.id
     }

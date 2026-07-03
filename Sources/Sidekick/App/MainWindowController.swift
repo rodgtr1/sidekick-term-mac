@@ -685,6 +685,17 @@ class MainWindowController: NSWindowController {
             if tab.panes.contains(where: { $0.id == pane.id }) {
                 notifyIfLongCommandFinished(status, tabTitle: tab.title)
 
+                // A non-zero exit in a pane the user isn't looking at joins the
+                // attention cycle; a zero exit clears any earlier mark. "Being
+                // viewed" means the active pane of the active tab. Setting the
+                // mark posts, so the agents panel refreshes on its own.
+                if let status = status {
+                    let viewed = tab.isActive && tab.activePane?.id == pane.id
+                    pane.setFailedCommandAttention(
+                        PaneModel.shouldMarkAttention(commandSucceeded: status.succeeded, paneIsBeingViewed: viewed)
+                    )
+                }
+
                 // Only surface status from the pane the tab is showing as active.
                 guard tab.activePane?.id == pane.id else { break }
                 tab.lastCommandFailed = status.map { !$0.succeeded } ?? false
@@ -1247,19 +1258,14 @@ extension MainWindowController {
         return true
     }
 
-    /// Cmd+Shift+J: cycles through tabs whose agent wants attention, most
-    /// urgent state first — needs-input tabs, then finished ones, then
-    /// working ones. Repeated presses walk all tabs in that state.
+    /// Cmd+Shift+J: cycles through tabs wanting attention, most urgent first —
+    /// needs-input tabs, then tabs with a failed background command, then
+    /// finished ones, then working ones. Repeated presses walk all tabs in that
+    /// bucket. Ordering lives in `TabModel.nextAttentionIndex`.
     private func jumpToNextAttentionTab() {
-        for state in [AgentState.ready, .done, .working] {
-            let candidates = tabs.indices.filter { tabs[$0].agentState == state }
-            guard !candidates.isEmpty else { continue }
-            let next = candidates.first(where: { $0 > activeTabIndex }) ?? candidates[0]
-            if next != activeTabIndex {
-                switchToTab(index: next)
-            }
-            return
-        }
+        guard let next = TabModel.nextAttentionIndex(in: tabs, activeIndex: activeTabIndex),
+              next != activeTabIndex else { return }
+        switchToTab(index: next)
     }
 
     func cycleTabs(forward: Bool) {

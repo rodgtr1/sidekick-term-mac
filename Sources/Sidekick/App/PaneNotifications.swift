@@ -26,6 +26,11 @@ nonisolated extension Notification.Name {
     /// `userInfo["status"]` carries a `TerminalCommandStatus` when one is known.
     static let paneCommandStatusChanged = Notification.Name("PaneCommandStatusChanged")
 
+    /// A pane's failed-command attention mark was set or cleared. `object` is
+    /// the `PaneModel`. The agents dashboard reloads so the row highlight
+    /// tracks it, the same way it does for agent-state changes.
+    static let paneCommandAttentionChanged = Notification.Name("PaneCommandAttentionChanged")
+
     /// A pane's title (cwd/branch) changed. `object` is the `PaneModel`.
     static let paneTitleChanged = Notification.Name("PaneTitleChanged")
 
