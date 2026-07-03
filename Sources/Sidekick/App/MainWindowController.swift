@@ -1412,6 +1412,18 @@ extension MainWindowController: AutomationHost {
         config.telemetry?.resolvedRates() ?? TelemetryRates.defaults
     }
 
+    /// Working directory of the pane with `paneID`, searched across all tabs, or
+    /// nil when it can't be found. Feeds worktree-scoped auto-approve.
+    func workingDirectory(forPane paneID: UUID?) -> String? {
+        guard let paneID else { return nil }
+        for tab in tabs {
+            if let pane = tab.panes.first(where: { $0.id == paneID }) {
+                return pane.resolvedWorkingDirectory()
+            }
+        }
+        return nil
+    }
+
     /// Flips the per-session auto-approve toggle. Menu-driven. Updates the scoped
     /// Claude permission mode so the change reaches agents launched afterward in
     /// Sidekick panes; the next relaunch re-syncs from the persistent `[approval]`

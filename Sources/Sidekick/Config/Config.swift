@@ -208,6 +208,11 @@ auto_allow = []
 #   Example:
 #     always_ask = [".env", "**/secrets/**", "*.pem"]
 always_ask = []
+# worktree_auto_approve: when true, edits from a pane sitting inside a registered
+#   git worktree apply silently as long as the edited path stays INSIDE that
+#   worktree. Paths outside it (the main checkout, other worktrees, anything
+#   global) still prompt, and `always_ask` still wins everywhere. Default false.
+worktree_auto_approve = false
 
 [telemetry]
 # Per-model prices (USD per 1M tokens) for the agents-panel "est $" column.
@@ -403,16 +408,25 @@ nonisolated public struct ApprovalConfig: Codable, Sendable {
     /// after an "approve & remember" grant. A security override, e.g. `[".env"]`.
     public var alwaysAsk: [String]
 
+    /// Opt-in: when true, edits from a pane whose CWD sits inside a registered
+    /// git worktree are approved silently as long as the edited path stays
+    /// INSIDE that worktree. Paths outside it (the main checkout, other
+    /// worktrees, anything global) still prompt, and `always_ask` still wins.
+    /// Default false.
+    public var worktreeAutoApprove: Bool
+
     enum CodingKeys: String, CodingKey {
         case mode
         case autoAllow = "auto_allow"
         case alwaysAsk = "always_ask"
+        case worktreeAutoApprove = "worktree_auto_approve"
     }
 
     public init() {
         self.mode = "ask"
         self.autoAllow = []
         self.alwaysAsk = []
+        self.worktreeAutoApprove = false
     }
 
     public init(from decoder: Decoder) throws {
@@ -421,6 +435,7 @@ nonisolated public struct ApprovalConfig: Codable, Sendable {
         mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? mode
         autoAllow = try container.decodeIfPresent([String].self, forKey: .autoAllow) ?? autoAllow
         alwaysAsk = try container.decodeIfPresent([String].self, forKey: .alwaysAsk) ?? alwaysAsk
+        worktreeAutoApprove = try container.decodeIfPresent(Bool.self, forKey: .worktreeAutoApprove) ?? worktreeAutoApprove
     }
 
     /// True when edits should be approved without a popup — both "auto" and the

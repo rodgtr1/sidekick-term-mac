@@ -43,6 +43,7 @@ class PreferencesWindowController: NSWindowController {
     private var approvalModePopup: NSPopUpButton!
     private var autoAllowField: NSTextField!
     private var alwaysAskField: NSTextField!
+    private var worktreeAutoApproveCheckbox: NSButton!
 
     init(config: Config, mainWindowController: MainWindowController? = nil) {
         self.config = config
@@ -347,6 +348,20 @@ class PreferencesWindowController: NSWindowController {
             preferredWidth: 420
         )
 
+        worktreeAutoApproveCheckbox = NSButton(
+            checkboxWithTitle: "Auto-approve edits inside registered worktrees",
+            target: self,
+            action: #selector(worktreeAutoApproveChanged(_:))
+        )
+        worktreeAutoApproveCheckbox.font = NSFont.systemFont(ofSize: 13)
+
+        let worktreeAutoApproveHelp = Self.wrappingLabel(
+            "When a pane sits in a git worktree, edits inside that worktree apply without prompting. Paths outside it — the main checkout, other worktrees — still ask, and Always Ask rules still win.",
+            fontSize: 11,
+            maxLines: 4,
+            preferredWidth: 420
+        )
+
         form.fieldLabel("Agent Edits:", gapAbove: 30)
         form.leadingControl(approvalModePopup, gapAbove: 10, width: 220)
         form.fullWidth(modeHelp, gapAbove: 6)
@@ -356,6 +371,8 @@ class PreferencesWindowController: NSWindowController {
         form.fieldLabel("Always Ask (comma-separated globs):", gapAbove: 22)
         form.fullWidth(alwaysAskField, gapAbove: 8)
         form.fullWidth(alwaysAskHelp, gapAbove: 6)
+        form.checkbox(worktreeAutoApproveCheckbox, gapAbove: 22)
+        form.fullWidth(worktreeAutoApproveHelp, gapAbove: 6)
 
         addTab(approvalsView, identifier: "approvals", label: "Approvals")
     }
@@ -503,6 +520,7 @@ class PreferencesWindowController: NSWindowController {
         approvalModePopup.selectItem(at: Self.approvalModeIndex(approval.mode))
         autoAllowField.stringValue = approval.autoAllow.joined(separator: ", ")
         alwaysAskField.stringValue = approval.alwaysAsk.joined(separator: ", ")
+        worktreeAutoApproveCheckbox.state = approval.worktreeAutoApprove ? .on : .off
 
         updateShellIntegrationStatus()
     }
@@ -661,6 +679,12 @@ class PreferencesWindowController: NSWindowController {
     @objc private func alwaysAskChanged(_ sender: NSTextField) {
         let globs = Self.parseGlobs(sender.stringValue)
         mutateConfig { Self.ensuringApproval(&$0); $0.approval?.alwaysAsk = globs }
+        mainWindowController?.applyRuntimeConfig(config)
+    }
+
+    @objc private func worktreeAutoApproveChanged(_ sender: NSButton) {
+        let enabled = sender.state == .on
+        mutateConfig { Self.ensuringApproval(&$0); $0.approval?.worktreeAutoApprove = enabled }
         mainWindowController?.applyRuntimeConfig(config)
     }
 

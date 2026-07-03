@@ -7,6 +7,8 @@ private final class StubApprovalHost: DiffApprovalHost {
     var shouldAutoApproveEdits = false
     var approvalConfig = ApprovalConfig()
     var automationWindow: NSWindow?
+    var paneWorkingDirectories: [UUID?: String] = [:]
+    func workingDirectory(forPane paneID: UUID?) -> String? { paneWorkingDirectories[paneID] }
 }
 
 @MainActor

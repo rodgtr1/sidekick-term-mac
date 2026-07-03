@@ -79,6 +79,23 @@ nonisolated enum WorkspaceResolver {
         )
     }
 
+    /// The root of the *linked* git worktree containing `path`, or nil when
+    /// `path` is in the primary checkout, outside any repo, or unresolvable.
+    ///
+    /// A linked worktree (created by `git worktree add`) has a `.git` *file* at
+    /// its root pointing into the primary repo's git dir; the primary checkout
+    /// has a `.git` *directory*. Only linked worktrees are eligible for
+    /// worktree-scoped auto-approve — the primary checkout stays protected, so
+    /// enabling the feature never turns off prompting for the main repo. Uses
+    /// the memoized root lookup since it runs on the per-edit approval path.
+    static func linkedWorktreeRoot(from path: String) -> String? {
+        guard let root = cachedGitRoot(from: path) else { return nil }
+        let dotGit = URL(fileURLWithPath: root).appendingPathComponent(".git").path
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory) else { return nil }
+        return isDirectory.boolValue ? nil : root
+    }
+
     /// `gitRoot(from:)` against the shared runner, memoized for `cacheTTL` so a
     /// burst of identical lookups on the main thread spawns at most one `git`.
     static func cachedGitRoot(from path: String) -> String? {

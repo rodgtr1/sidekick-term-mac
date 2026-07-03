@@ -53,10 +53,13 @@ nonisolated struct SessionApprovals {
 /// Decides whether an agent edit to a given path is approved silently or needs
 /// the review sheet. Precedence, highest first:
 ///   1. `always_ask` globs — always prompt. A security override: an entry like
-///      `.env` keeps prompting even in auto mode or after a "remember" grant.
+///      `.env` keeps prompting even in auto mode, after a "remember" grant, or
+///      inside a worktree-scoped auto-approve root.
 ///   2. session "approve & remember" allowances.
-///   3. `auto_allow` globs — silent approve even while the global mode is "ask".
-///   4. global auto toggle — the `[approval] mode` config plus the menu toggle.
+///   3. worktree-scoped auto-approve — when enabled and the pane sits in a
+///      registered worktree, edits INSIDE that worktree root approve silently.
+///   4. `auto_allow` globs — silent approve even while the global mode is "ask".
+///   5. global auto toggle — the `[approval] mode` config plus the menu toggle.
 nonisolated enum ApprovalPolicy {
     enum Decision { case ask, allow }
 
@@ -65,12 +68,16 @@ nonisolated enum ApprovalPolicy {
         globalAuto: Bool,
         autoAllow: [String],
         alwaysAsk: [String],
-        session: SessionApprovals
+        session: SessionApprovals,
+        workingRoot: String? = nil,
+        worktreeAutoApprove: Bool = false
     ) -> Decision {
         let canonicalPath = canonical(path)
         // always_ask is the security override, so it fails CLOSED: a pattern
         // that can't compile still forces a prompt rather than silently
-        // dropping protection for that rule.
+        // dropping protection for that rule. Checked FIRST so it also wins over
+        // worktree-scoped auto-approve — an `.env` rule keeps prompting inside a
+        // worktree just as it does everywhere else.
         for pattern in alwaysAsk {
             switch globMatch(pattern, canonicalPath: canonicalPath) {
             case .match:
@@ -83,6 +90,15 @@ nonisolated enum ApprovalPolicy {
             }
         }
         if session.allows(canonicalPath) { return .allow }
+        // Worktree-scoped auto-approve: only paths that actually live inside the
+        // pane's worktree root approve. An edit to an absolute path outside it
+        // (the main checkout, another worktree, anything global) falls through
+        // and prompts as usual. Both operands are canonicalized so symlinks and
+        // `..` traversal can't smuggle a path across the boundary.
+        if worktreeAutoApprove, let workingRoot,
+           isPath(canonicalPath, withinRoot: canonical(workingRoot)) {
+            return .allow
+        }
         // auto_allow grants silent approval, so it fails the other way: an
         // over-broad pattern (matches every path) or one that can't compile is
         // ignored — a typo must never become a blanket auto-approve.
@@ -114,6 +130,17 @@ nonisolated enum ApprovalPolicy {
             "/etc/hosts",
         ]
         return probes.allSatisfy { globMatch(trimmed, canonicalPath: $0) == .match }
+    }
+
+    /// True when `path` is `root` itself or lives inside it. Both arguments must
+    /// already be canonical. The check is path-component-based, not a raw string
+    /// prefix: `root` gets a trailing `/` before the prefix test, so a sibling
+    /// whose name merely starts with `root`'s last segment — `/wt/n3-foobar`
+    /// against root `/wt/n3-foo` — is correctly treated as OUTSIDE.
+    static func isPath(_ path: String, withinRoot root: String) -> Bool {
+        if path == root { return true }
+        let boundary = root.hasSuffix("/") ? root : root + "/"
+        return path.hasPrefix(boundary)
     }
 
     /// Canonicalizes a path for matching: expands `~`, resolves symlinks, and

@@ -10,11 +10,16 @@ protocol DiffApprovalHost: AnyObject {
     /// `[approval]` config mode and the per-session toggle.
     var shouldAutoApproveEdits: Bool { get }
     /// The active `[approval]` config, supplying the auto_allow / always_ask
-    /// glob rules layered on top of `shouldAutoApproveEdits`.
+    /// glob rules and the worktree auto-approve opt-in layered on top of
+    /// `shouldAutoApproveEdits`.
     var approvalConfig: ApprovalConfig { get }
     /// The window approvals are reviewed in, or nil when there's none (app
     /// closing / already gone).
     var automationWindow: NSWindow? { get }
+    /// Working directory of the pane an edit hook ran in, or nil when the pane
+    /// can't be resolved (no id, or already closed). Used to scope worktree
+    /// auto-approve to the pane's own checkout.
+    func workingDirectory(forPane paneID: UUID?) -> String?
 }
 
 /// Owns hook diff-approval policy: silent allows, per-pane "approve & remember"
@@ -119,8 +124,19 @@ final class DiffApprovalCoordinator {
             globalAuto: host?.shouldAutoApproveEdits ?? false,
             autoAllow: config.autoAllow,
             alwaysAsk: config.alwaysAsk,
-            session: sessionApprovals[pane] ?? SessionApprovals()
+            session: sessionApprovals[pane] ?? SessionApprovals(),
+            workingRoot: worktreeRoot(forPane: pane, config: config),
+            worktreeAutoApprove: config.worktreeAutoApprove
         )
+    }
+
+    /// The registered-worktree root the pane sits in, or nil. Resolved only when
+    /// the opt-in is on so a disabled feature never forks `git`. Nil for a pane
+    /// in the primary checkout keeps that checkout prompting.
+    private func worktreeRoot(forPane pane: UUID?, config: ApprovalConfig) -> String? {
+        guard config.worktreeAutoApprove,
+              let cwd = host?.workingDirectory(forPane: pane) else { return nil }
+        return WorkspaceResolver.linkedWorktreeRoot(from: cwd)
     }
 
     /// After an "approve & remember" grant, entries already queued from the
