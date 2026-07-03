@@ -5,6 +5,15 @@ import Foundation
 nonisolated struct TerminalCommandStatus {
     let exitCode: Int
     let duration: TimeInterval?
+    /// The command line from the OSC 133 `C` mark, when one opened this
+    /// command. Nil for a bare `D` with no preceding `C`.
+    let command: String?
+
+    init(exitCode: Int, duration: TimeInterval?, command: String? = nil) {
+        self.exitCode = exitCode
+        self.duration = duration
+        self.command = command
+    }
 
     var succeeded: Bool { exitCode == 0 }
 
@@ -82,6 +91,7 @@ nonisolated struct CommandRecorder {
     /// no preceding `C` still yields a status, just with no duration or record.
     mutating func commandFinished(exitCode: Int, at date: Date = Date()) -> TerminalCommandStatus {
         let duration = inFlightCommand.map { date.timeIntervalSince($0.startDate) }
+        let commandLine = inFlightCommand?.command
         if let inFlight = inFlightCommand {
             let cleanOutput = TerminalText.stripANSIEscapes(TerminalText.stripOSCSequences(inFlightOutput))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -99,7 +109,7 @@ nonisolated struct CommandRecorder {
         }
         inFlightCommand = nil
         inFlightOutput = ""
-        return TerminalCommandStatus(exitCode: exitCode, duration: duration)
+        return TerminalCommandStatus(exitCode: exitCode, duration: duration, command: commandLine)
     }
 
     /// The most recently finished commands (oldest first), capped to `limit`

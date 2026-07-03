@@ -45,6 +45,11 @@ final class NotificationCoordinator: NSObject {
     /// transitions.
     private var lastAgentState: [UUID: AgentState] = [:]
 
+    /// Each pane's most recently finished command, so a failed-command
+    /// notification can name the command instead of just the tab. Fed by
+    /// `.paneCommandStatusChanged`, which also produces the attention mark.
+    private var lastCommandStatus: [UUID: TerminalCommandStatus] = [:]
+
     /// When Sidekick last became inactive; nil while it is frontmost. Drives the
     /// background grace period for completion/failure notifications.
     private var backgroundSince: Date?
@@ -128,7 +133,15 @@ final class NotificationCoordinator: NSObject {
     @objc private func commandAttentionChanged(_ note: Notification) {
         guard let pane = note.object as? PaneModel else { return }
         if pane.failedCommandAttention {
-            attemptDeliver(.commandFailed, paneID: pane.id)
+            // Deferred one runloop tick: the attention mark and our
+            // `lastCommandStatus` are both fed by the same
+            // `.paneCommandStatusChanged` post, and observer order is not
+            // guaranteed. By the next tick the status observer has definitely
+            // run, so the notification can name the command that failed.
+            DispatchQueue.main.async { [weak self, weak pane] in
+                guard let self, let pane, pane.failedCommandAttention else { return }
+                self.attemptDeliver(.commandFailed, paneID: pane.id, status: self.lastCommandStatus[pane.id])
+            }
         } else if let showing = delivered[pane.id], showing.isResolvedByCommandAttentionClear {
             withdraw(paneID: pane.id)
         }
@@ -136,14 +149,16 @@ final class NotificationCoordinator: NSObject {
 
     @objc private func commandStatusChanged(_ note: Notification) {
         guard let pane = note.object as? PaneModel,
-              let status = note.userInfo?["status"] as? TerminalCommandStatus,
-              config.longRunningCommandQualifies(duration: status.duration) else { return }
+              let status = note.userInfo?["status"] as? TerminalCommandStatus else { return }
+        lastCommandStatus[pane.id] = status
+        guard config.longRunningCommandQualifies(duration: status.duration) else { return }
         attemptDeliver(.longRunningCommand, paneID: pane.id, status: status)
     }
 
     @objc private func paneDidClose(_ note: Notification) {
         guard let pane = note.object as? PaneModel else { return }
         lastAgentState[pane.id] = nil
+        lastCommandStatus[pane.id] = nil
         withdraw(paneID: pane.id)
     }
 
@@ -178,7 +193,8 @@ final class NotificationCoordinator: NSObject {
         post(
             identifier: paneID.uuidString,
             title: title(for: trigger, status: status),
-            body: body(for: trigger, tabTitle: tabTitle, status: status),
+            subtitle: tabTitle,
+            body: body(for: trigger, status: status),
             paneID: paneID
         )
     }
@@ -192,23 +208,39 @@ final class NotificationCoordinator: NSObject {
         }
     }
 
-    private func body(for trigger: NotificationTrigger, tabTitle: String, status: TerminalCommandStatus?) -> String {
+    /// The body names the command and its outcome; the tab lives in the
+    /// subtitle and the verdict in the title, so neither is repeated here.
+    private func body(for trigger: NotificationTrigger, status: TerminalCommandStatus?) -> String {
         switch trigger {
-        case .needsInput, .finished, .commandFailed:
-            return tabTitle
-        case .longRunningCommand:
-            if let status { return "\(tabTitle) — \(status.summary)" }
-            return tabTitle
+        case .needsInput, .finished:
+            return ""
+        case .commandFailed, .longRunningCommand:
+            guard let status else { return "" }
+            var parts: [String] = []
+            if let command = status.command { parts.append(Self.truncate(command)) }
+            if !status.succeeded { parts.append("exit \(status.exitCode)") }
+            if let duration = status.duration { parts.append(Self.durationString(duration)) }
+            return parts.joined(separator: " · ")
         }
+    }
+
+    private static func truncate(_ command: String, to limit: Int = 80) -> String {
+        command.count > limit ? command.prefix(limit - 1) + "…" : command
+    }
+
+    private static func durationString(_ duration: TimeInterval) -> String {
+        guard duration >= 60 else { return String(format: "%.1fs", duration) }
+        return "\(Int(duration) / 60)m \(Int(duration) % 60)s"
     }
 
     /// Schedule (or replace, since the identifier is per-pane) a system
     /// notification. No sound by default — quiet hours are macOS Focus/DND's job.
-    private func post(identifier: String, title: String, body: String, paneID: UUID) {
+    private func post(identifier: String, title: String, subtitle: String, body: String, paneID: UUID) {
         guard Bundle.main.bundleIdentifier != nil else { return }
         let center = UNUserNotificationCenter.current()
         let content = UNMutableNotificationContent()
         content.title = title
+        content.subtitle = subtitle
         content.body = body
         content.sound = nil
         content.userInfo = ["paneID": paneID.uuidString]
