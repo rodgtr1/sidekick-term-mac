@@ -26,6 +26,15 @@ nonisolated struct GitStatusEntry: Equatable, Sendable {
     }
 }
 
+/// One file changed between the merge-base of HEAD and the repo's default
+/// branch, from `git diff --name-status <default>...HEAD`. `status` is the
+/// porcelain letter (M/A/D/R/C…); a pure value type so the git panel and tests
+/// can reason over it without shelling out.
+nonisolated struct GitBranchDiffEntry: Equatable, Sendable {
+    let path: String
+    let status: Character
+}
+
 /// One-glance dirtiness of a working tree, for the Worktrees panel. `conflicted`
 /// counts files in a merge-conflict state; `changed` counts every other
 /// modified/untracked file. `clean` means no entries at all.
@@ -112,6 +121,89 @@ nonisolated final class GitService: Sendable {
               let ahead = Int(parts[1]) else { return nil }
 
         return (ahead: ahead, behind: behind)
+    }
+
+    /// The repository's default branch, resolved robustly: prefer the
+    /// `origin/HEAD` symbolic ref (its target with the `origin/` prefix
+    /// stripped), then fall back to a local `main`, then `master` — but only
+    /// when that local branch actually exists. Returns nil when none apply, so
+    /// the caller can hide the "changes vs main" section rather than run a diff
+    /// against a ref that isn't there.
+    func defaultBranch(repositoryRoot: String) throws -> String? {
+        let symbolic = try runGit(
+            ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+            repositoryRoot: repositoryRoot,
+            allowOptionalLocks: false
+        )
+        if symbolic.succeeded {
+            let ref = symbolic.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !ref.isEmpty {
+                return ref.hasPrefix("origin/") ? String(ref.dropFirst("origin/".count)) : ref
+            }
+        }
+
+        for candidate in ["main", "master"] where localBranchExists(candidate, repositoryRoot: repositoryRoot) {
+            return candidate
+        }
+        return nil
+    }
+
+    private func localBranchExists(_ branch: String, repositoryRoot: String) -> Bool {
+        ((try? runGit(
+            ["rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"],
+            repositoryRoot: repositoryRoot,
+            allowOptionalLocks: false
+        ))?.succeeded) ?? false
+    }
+
+    /// Files changed between the merge-base of HEAD and `defaultBranch`
+    /// (`git diff --name-status <default>...HEAD`, three-dot) — the committed
+    /// work an agent has done on a worktree branch, which plain `git status`
+    /// can't see. Empty when there are no such changes or the diff fails.
+    func changedFilesAgainstDefaultBranch(
+        repositoryRoot: String,
+        defaultBranch: String
+    ) throws -> [GitBranchDiffEntry] {
+        let result = try runGit(
+            ["diff", "--name-status", "\(defaultBranch)...HEAD"],
+            repositoryRoot: repositoryRoot,
+            allowOptionalLocks: false
+        )
+        guard result.succeeded else { return [] }
+        return Self.parseNameStatusOutput(result.stdout)
+    }
+
+    /// The committed diff of a single file against the merge-base of HEAD and
+    /// `defaultBranch` (`git diff <default>...HEAD -- <file>`), for the vs-main
+    /// review rows in the git panel.
+    func diffAgainstDefaultBranch(
+        relativePath: String,
+        repositoryRoot: String,
+        defaultBranch: String
+    ) throws -> String {
+        let output = try gitOutput(
+            ["diff", "\(defaultBranch)...HEAD", "--", relativePath],
+            repositoryRoot: repositoryRoot
+        )
+        return output.isEmpty ? "No changes" : output
+    }
+
+    /// Parses `git diff --name-status` output. Each line is `<status>\t<path>`,
+    /// or `<status>\t<old>\t<new>` for renames/copies — where the last field is
+    /// the destination path. The status letter is taken verbatim (the numeric
+    /// similarity score on `R100`/`C075` is dropped).
+    static func parseNameStatusOutput(_ output: String) -> [GitBranchDiffEntry] {
+        output
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .compactMap { parseNameStatusLine(String($0)) }
+    }
+
+    static func parseNameStatusLine(_ line: String) -> GitBranchDiffEntry? {
+        let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        guard fields.count >= 2, let statusChar = fields[0].first else { return nil }
+        // Rename/copy entries carry old + new paths; the destination is last.
+        let rawPath = fields.last ?? fields[1]
+        return GitBranchDiffEntry(path: unquoteGitPath(rawPath), status: statusChar)
     }
 
     func status(repositoryRoot: String) throws -> [GitStatusEntry] {

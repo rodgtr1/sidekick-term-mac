@@ -2,7 +2,7 @@ import Cocoa
 
 protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL)
-    func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String, kind: GitDiffKind)
     func sidebarContainer(_ container: SidebarContainerView, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String?)
     func sidebarContainerTabs(_ container: SidebarContainerView) -> [TabModel]
@@ -19,6 +19,10 @@ protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didRequestCreateWorktree branch: String, agent: WorktreeAgent)
     /// Remove the worktree registered for `branch`; `force` overrides the guard.
     func sidebarContainer(_ container: SidebarContainerView, didRequestRemoveWorktree branch: String, force: Bool)
+    /// Merge `branch`'s worktree into the repository's primary checkout.
+    func sidebarContainer(_ container: SidebarContainerView, didRequestMergeWorktree branch: String)
+    /// A worktree row was selected: point the git panel (only) at that checkout.
+    func sidebarContainer(_ container: SidebarContainerView, didSelectWorktreeForGitPanel path: String)
 }
 
 class SidebarContainerView: NSView {
@@ -37,6 +41,11 @@ class SidebarContainerView: NSView {
     /// git / search panel still opens on the right directory and hidden-files
     /// setting.
     private var currentPath: String?
+    /// A transient git-panel-only repository override set by selecting a worktree
+    /// row. It repoints just the git panel (not the file tree/search), and is
+    /// cleared on the next `updateFileTree` (tab switch / cwd change) so the panel
+    /// reverts to tracking the active tab, as before.
+    private var gitPanelOverridePath: String?
     private var showHiddenFiles: Bool = false
 
     private let headerHeight: CGFloat = 32
@@ -147,7 +156,9 @@ class SidebarContainerView: NSView {
         case .git:
             let gitPanelVC = GitPanelViewController()
             gitPanelVC.delegate = self
-            if let currentPath { gitPanelVC.setRepositoryPath(currentPath) }
+            // A pending worktree-selection override wins over the active tab's
+            // path so a panel created after the selection opens on that checkout.
+            if let path = gitPanelOverridePath ?? currentPath { gitPanelVC.setRepositoryPath(path) }
             return gitPanelVC
         case .search:
             let searchPanelVC = SearchPanelViewController()
@@ -244,6 +255,9 @@ class SidebarContainerView: NSView {
         // Remember the directory so a not-yet-created files/git/search panel
         // opens on it when first shown.
         currentPath = path
+        // A tab switch / cwd change repoints the git panel as normal, so the
+        // transient worktree-selection override no longer applies.
+        gitPanelOverridePath = nil
 
         if let fileTreeVC = panelControllers[.files] as? FileTreeViewController {
             fileTreeVC.loadFileTree(for: path)
@@ -277,6 +291,15 @@ class SidebarContainerView: NSView {
         if let fileTreeVC = panelControllers[.files] as? FileTreeViewController {
             fileTreeVC.refresh()
         }
+    }
+
+    /// Points the git panel (only — not the file tree or search) at `path`,
+    /// e.g. after a worktree row is selected. If the git panel isn't
+    /// instantiated yet, the override is remembered so it opens on this checkout
+    /// when first shown. Transient: cleared by the next `updateFileTree`.
+    func retargetGitPanel(toRepositoryPath path: String) {
+        gitPanelOverridePath = path
+        (panelControllers[.git] as? GitPanelViewController)?.setRepositoryPath(path)
     }
 
     /// Re-list worktrees after a create/remove completes, so the row appears or
@@ -340,6 +363,14 @@ extension SidebarContainerView: WorktreesPanelDelegate {
     func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestRemoveBranch branch: String, force: Bool) {
         delegate?.sidebarContainer(self, didRequestRemoveWorktree: branch, force: force)
     }
+
+    func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestMergeBranch branch: String) {
+        delegate?.sidebarContainer(self, didRequestMergeWorktree: branch)
+    }
+
+    func worktreesPanel(_ panel: WorktreesPanelViewController, didSelectWorktree path: String) {
+        delegate?.sidebarContainer(self, didSelectWorktreeForGitPanel: path)
+    }
 }
 
 extension SidebarContainerView: HostsPanelDelegate {
@@ -359,8 +390,8 @@ extension SidebarContainerView: FileTreeDelegate {
 }
 
 extension SidebarContainerView: GitPanelDelegate {
-    func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String) {
-        delegate?.sidebarContainer(self, didRequestDiffFor: filePath)
+    func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String, kind: GitDiffKind) {
+        delegate?.sidebarContainer(self, didRequestDiffFor: filePath, kind: kind)
     }
 
     func gitPanel(_ panel: GitPanelViewController, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?) {

@@ -213,4 +213,122 @@ final class GitServiceTests: XCTestCase {
 
         XCTAssertEqual(path, "café.txt")
     }
+
+    // MARK: - Changes vs default branch (name-status parsing)
+
+    func testParseNameStatusSimpleEntries() {
+        let entries = GitService.parseNameStatusOutput("""
+        M\tSources/App.swift
+        A\tSources/New.swift
+        D\tSources/Gone.swift
+
+        """)
+
+        XCTAssertEqual(entries, [
+            GitBranchDiffEntry(path: "Sources/App.swift", status: "M"),
+            GitBranchDiffEntry(path: "Sources/New.swift", status: "A"),
+            GitBranchDiffEntry(path: "Sources/Gone.swift", status: "D")
+        ])
+    }
+
+    func testParseNameStatusRenameUsesDestinationPath() {
+        // Rename/copy entries carry a similarity score and old+new paths; the
+        // destination (last field) is what the panel lists.
+        let entries = GitService.parseNameStatusOutput("R100\told/path.swift\tnew/path.swift\n")
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].path, "new/path.swift")
+        XCTAssertEqual(entries[0].status, "R")
+    }
+
+    func testParseNameStatusUnquotesUnicodePath() {
+        let entries = GitService.parseNameStatusOutput("A\t\"caf\\303\\251.txt\"\n")
+
+        XCTAssertEqual(entries.first?.path, "café.txt")
+    }
+
+    func testParseNameStatusRejectsBlankLines() {
+        XCTAssertTrue(GitService.parseNameStatusOutput("\n\n").isEmpty)
+    }
+
+    // MARK: - Default branch + branch diff (real git)
+
+    /// Builds a throwaway repo in a temp dir and returns a `git` runner bound to
+    /// it plus the repo URL; the caller registers cleanup.
+    private func makeTempRepo(cleanup: inout [URL]) throws -> (git: ([String]) throws -> Void, repo: URL) {
+        let fm = FileManager.default
+        let repo = fm.temporaryDirectory.appendingPathComponent("sk-git-\(UUID().uuidString)")
+        try fm.createDirectory(at: repo, withIntermediateDirectories: true)
+        cleanup.append(repo)
+
+        @discardableResult
+        func git(_ args: [String]) throws -> Void {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = args
+            p.currentDirectoryURL = repo
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            try p.run()
+            p.waitUntilExit()
+        }
+        try git(["init", "-q", "-b", "main"])
+        try git(["config", "user.email", "t@example.com"])
+        try git(["config", "user.name", "Test"])
+        return (git, repo)
+    }
+
+    func testDefaultBranchFallsBackToLocalMain() throws {
+        var cleanup: [URL] = []
+        defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let (git, repo) = try makeTempRepo(cleanup: &cleanup)
+        try "hi".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "init"])
+
+        // No origin/HEAD; a local `main` exists, so detection falls back to it.
+        XCTAssertEqual(try GitService().defaultBranch(repositoryRoot: repo.path), "main")
+    }
+
+    func testDefaultBranchFallsBackToMasterWhenNoMain() throws {
+        var cleanup: [URL] = []
+        defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let (git, repo) = try makeTempRepo(cleanup: &cleanup)
+        try "hi".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "init"])
+        // Rename the only branch to `master`; `main` no longer exists.
+        try git(["branch", "-m", "master"])
+
+        XCTAssertEqual(try GitService().defaultBranch(repositoryRoot: repo.path), "master")
+    }
+
+    func testChangedFilesAgainstDefaultBranchListsCommittedWork() throws {
+        var cleanup: [URL] = []
+        defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let (git, repo) = try makeTempRepo(cleanup: &cleanup)
+        try "base".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "init"])
+
+        // Commit new work on a feature branch; plain `git status` wouldn't see it.
+        try git(["checkout", "-q", "-b", "feature"])
+        try "hello".write(to: repo.appendingPathComponent("feature.txt"), atomically: true, encoding: .utf8)
+        try "base\nmore".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "work"])
+
+        let service = GitService()
+        let entries = try service.changedFilesAgainstDefaultBranch(repositoryRoot: repo.path, defaultBranch: "main")
+        let byPath = Dictionary(uniqueKeysWithValues: entries.map { ($0.path, $0.status) })
+        XCTAssertEqual(byPath["feature.txt"], "A")
+        XCTAssertEqual(byPath["README"], "M")
+
+        // A single-file three-dot diff renders that file's committed changes.
+        let diff = try service.diffAgainstDefaultBranch(relativePath: "feature.txt", repositoryRoot: repo.path, defaultBranch: "main")
+        XCTAssertTrue(diff.contains("+hello"))
+
+        // On the default branch itself there is nothing to compare.
+        try git(["checkout", "-q", "main"])
+        XCTAssertTrue(try service.changedFilesAgainstDefaultBranch(repositoryRoot: repo.path, defaultBranch: "main").isEmpty)
+    }
 }

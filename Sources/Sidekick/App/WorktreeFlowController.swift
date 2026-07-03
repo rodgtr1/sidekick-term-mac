@@ -90,6 +90,26 @@ final class WorktreeFlowController {
         }
     }
 
+    func mergeWorktree(branch: String) {
+        guard let repoRoot = activeRepoRoot() else {
+            presentWorktreeError("Worktrees need a pane inside a git repository.")
+            return
+        }
+        // Merging shells out to git in the primary checkout (dirty check, merge,
+        // conflict abort); do it off the main thread, then refresh and surface
+        // any failure — the guard/abort logic lives in WorktreeService.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try WorktreeService().mergeBranch(branch, intoPrimaryFrom: repoRoot) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if case .failure(let error) = result {
+                    self.presentWorktreeError(Self.worktreeErrorMessage(error))
+                }
+                self.host?.worktreeRefreshPanel()
+            }
+        }
+    }
+
     /// True when `candidate` is the worktree `path` or lives inside it.
     private static func path(_ candidate: String?, isWithin path: String) -> Bool {
         guard let candidate else { return false }
@@ -114,6 +134,8 @@ final class WorktreeFlowController {
             return "Not a git repository — worktree commands need a directory inside one."
         case WorktreeService.WorktreeError.noWorktreeForBranch(let branch):
             return "No worktree registered for branch '\(branch)'."
+        case WorktreeService.WorktreeError.primaryHasUncommittedChanges:
+            return "The primary checkout has uncommitted changes. Commit or stash them before merging, so the merge can't discard local work."
         case WorktreeService.WorktreeError.gitFailed(let message):
             return "git worktree failed: \(message)"
         default:

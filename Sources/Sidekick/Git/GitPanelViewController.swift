@@ -1,7 +1,14 @@
 import Cocoa
 
+/// Which diff a `didRequestDiffFor` targets: the file's working-tree changes,
+/// or its committed changes vs the repo's default branch (three-dot merge-base).
+enum GitDiffKind: Equatable, Sendable {
+    case uncommitted
+    case againstDefaultBranch
+}
+
 protocol GitPanelDelegate: AnyObject {
-    func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String)
+    func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String, kind: GitDiffKind)
     func gitPanel(_ panel: GitPanelViewController, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
 }
 
@@ -31,6 +38,17 @@ class GitPanelViewController: NSViewController {
     private var pushButton: NSButton!
     private var commitContainer: NSView?
     private var commitLabel: NSTextField?
+    // "Changes vs <default>" review section, shown only off the default branch.
+    private var branchDiffContainer: NSView!
+    private var branchDiffHeaderLabel: NSTextField!
+    private var branchDiffScrollView: NSScrollView!
+    private var branchDiffTableView: NSTableView!
+    private var branchDiffHeightConstraint: NSLayoutConstraint!
+    private let branchDiffRowHeight: CGFloat = 24
+    private let branchDiffHeaderHeight: CGFloat = 22
+    /// Ceiling on the section's height so a long committed-diff list can't crowd
+    /// out the uncommitted list above it; the inner table scrolls past this.
+    private let branchDiffMaxHeight: CGFloat = 220
     private var themeObserver: ThemeObserver?
 
     override func loadView() {
@@ -59,13 +77,20 @@ class GitPanelViewController: NSViewController {
         commitMessageTextView?.backgroundColor = AppTheme.windowBackground
         commitMessageTextView?.textColor = AppTheme.primaryText
         commitMessageTextView?.insertionPointColor = AppTheme.cursor
+        branchDiffContainer?.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        branchDiffHeaderLabel?.textColor = AppTheme.mutedText
+        branchDiffScrollView?.backgroundColor = AppTheme.sidebarBackground
+        branchDiffScrollView?.contentView.backgroundColor = AppTheme.sidebarBackground
+        branchDiffTableView?.backgroundColor = AppTheme.sidebarBackground
         // statusLabel color is driven by isClean binding; reload re-colors rows.
         tableView?.reloadData()
+        branchDiffTableView?.reloadData()
     }
 
     private func setupUI() {
         setupHeader()
         setupTableView()
+        setupBranchDiffSection()
         setupCommitArea()
         layoutViews()
     }
@@ -228,6 +253,82 @@ class GitPanelViewController: NSViewController {
         ])
     }
 
+    /// Read-only "Changes vs <default>" section between the uncommitted list and
+    /// the commit area: a header row plus a table of committed-changed files.
+    /// Collapsed to zero height (and hidden) until the model reports the panel is
+    /// off the default branch, so on the default branch it looks exactly as before.
+    private func setupBranchDiffSection() {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.isHidden = true
+        view.addSubview(container)
+        branchDiffContainer = container
+
+        branchDiffHeaderLabel = NSTextField(labelWithString: "CHANGES VS MAIN")
+        branchDiffHeaderLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        branchDiffHeaderLabel.textColor = AppTheme.mutedText
+        branchDiffHeaderLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(branchDiffHeaderLabel)
+
+        branchDiffScrollView = NSScrollView()
+        branchDiffScrollView.translatesAutoresizingMaskIntoConstraints = false
+        branchDiffScrollView.hasVerticalScroller = true
+        branchDiffScrollView.hasHorizontalScroller = false
+        branchDiffScrollView.autohidesScrollers = true
+        branchDiffScrollView.borderType = .noBorder
+        branchDiffScrollView.drawsBackground = true
+        branchDiffScrollView.backgroundColor = AppTheme.sidebarBackground
+        branchDiffScrollView.contentView.drawsBackground = true
+        branchDiffScrollView.contentView.backgroundColor = AppTheme.sidebarBackground
+
+        branchDiffTableView = NSTableView()
+        branchDiffTableView.dataSource = self
+        branchDiffTableView.delegate = self
+        branchDiffTableView.headerView = nil
+        branchDiffTableView.backgroundColor = AppTheme.sidebarBackground
+        branchDiffTableView.usesAlternatingRowBackgroundColors = false
+        if #available(macOS 12.0, *) { branchDiffTableView.style = .plain }
+        branchDiffTableView.selectionHighlightStyle = .regular
+
+        let statusColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Status"))
+        statusColumn.width = 30
+        statusColumn.minWidth = 30
+        statusColumn.maxWidth = 30
+        branchDiffTableView.addTableColumn(statusColumn)
+        let fileColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("File"))
+        fileColumn.isEditable = false
+        branchDiffTableView.addTableColumn(fileColumn)
+
+        branchDiffTableView.target = self
+        branchDiffTableView.action = #selector(branchDiffTableClicked(_:))
+        branchDiffScrollView.documentView = branchDiffTableView
+        container.addSubview(branchDiffScrollView)
+
+        branchDiffHeightConstraint = container.heightAnchor.constraint(equalToConstant: 0)
+
+        // The internal vertical chain is sub-required so it yields silently to
+        // the required height=0 when the section is collapsed (hidden), rather
+        // than logging an unsatisfiable-constraints conflict.
+        let headerTop = branchDiffHeaderLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: 4)
+        let scrollTop = branchDiffScrollView.topAnchor.constraint(equalTo: branchDiffHeaderLabel.bottomAnchor, constant: 2)
+        let scrollBottom = branchDiffScrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        [headerTop, scrollTop, scrollBottom].forEach { $0.priority = .defaultHigh }
+
+        NSLayoutConstraint.activate([
+            headerTop,
+            branchDiffHeaderLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+
+            scrollTop,
+            branchDiffScrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            branchDiffScrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollBottom,
+
+            branchDiffHeightConstraint
+        ])
+    }
+
     private func setupCommitArea() {
         // Commit message area
         let commitContainer = NSView()
@@ -297,12 +398,19 @@ class GitPanelViewController: NSViewController {
             scrollView.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 68),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -120)
+            // The uncommitted list flexes to fill whatever the vs-main section
+            // (0 height when hidden) leaves above the commit area.
+            scrollView.bottomAnchor.constraint(equalTo: branchDiffContainer.topAnchor),
+
+            branchDiffContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            branchDiffContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
 
-        // Commit area constraints
+        // Commit area constraints; the vs-main section sits directly above it.
         if let commitContainer = commitContainer {
             NSLayoutConstraint.activate([
+                branchDiffContainer.bottomAnchor.constraint(equalTo: commitContainer.topAnchor),
+
                 commitContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 commitContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                 commitContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -333,6 +441,7 @@ class GitPanelViewController: NSViewController {
     /// updates and fires `onChange` once, so a single repaint stays in sync.
     private func applyModelState() {
         tableView.reloadData()
+        updateBranchDiffSection()
 
         branchLabel.stringValue = gitStatusModel.currentBranch.isEmpty ? "No repository" : gitStatusModel.currentBranch
 
@@ -352,6 +461,28 @@ class GitPanelViewController: NSViewController {
         if commitMessageTextView.string != gitStatusModel.commitMessage {
             commitMessageTextView.string = gitStatusModel.commitMessage
         }
+    }
+
+    /// Shows/hides and sizes the vs-main section from the model. The base branch
+    /// is empty exactly when the section should be hidden (HEAD is the default
+    /// branch, or there are no committed changes vs it), so on the default branch
+    /// the panel is unchanged.
+    private func updateBranchDiffSection() {
+        let base = gitStatusModel.branchDiffBaseBranch
+        let files = gitStatusModel.branchDiffFiles
+        let show = !base.isEmpty && !files.isEmpty
+
+        branchDiffContainer.isHidden = !show
+        guard show else {
+            branchDiffHeightConstraint.constant = 0
+            branchDiffTableView.reloadData()
+            return
+        }
+
+        branchDiffHeaderLabel.stringValue = "CHANGES VS \(base.uppercased())"
+        let contentHeight = branchDiffHeaderHeight + 6 + CGFloat(files.count) * branchDiffRowHeight
+        branchDiffHeightConstraint.constant = min(contentHeight, branchDiffMaxHeight)
+        branchDiffTableView.reloadData()
     }
 
     func setRepositoryPath(_ path: String) {
@@ -520,6 +651,9 @@ class GitPanelViewController: NSViewController {
 
 extension GitPanelViewController: NSTableViewDataSource {
     func numberOfRows(in tableView: NSTableView) -> Int {
+        if tableView === branchDiffTableView {
+            return gitStatusModel.branchDiffFiles.count
+        }
         return gitStatusModel.files.count
     }
 }
@@ -528,6 +662,9 @@ extension GitPanelViewController: NSTableViewDataSource {
 
 extension GitPanelViewController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if tableView === branchDiffTableView {
+            return branchDiffCell(tableColumn: tableColumn, row: row)
+        }
         guard row < gitStatusModel.files.count else { return nil }
         let file = gitStatusModel.files[row]
 
@@ -628,6 +765,61 @@ extension GitPanelViewController: NSTableViewDelegate {
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         return 24
+    }
+
+    /// Read-only status + filename cell for a "Changes vs <default>" row. No
+    /// action column: these rows are reviewed, never staged from the panel.
+    private func branchDiffCell(tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < gitStatusModel.branchDiffFiles.count else { return nil }
+        let file = gitStatusModel.branchDiffFiles[row]
+        let identifier = tableColumn?.identifier
+
+        let cellView = branchDiffTableView.makeView(withIdentifier: identifier!, owner: self) as? NSTableCellView
+            ?? {
+                let created = NSTableCellView()
+                created.identifier = identifier
+                let field = NSTextField()
+                field.isEditable = false
+                field.isBordered = false
+                field.backgroundColor = .clear
+                field.lineBreakMode = .byTruncatingTail
+                field.translatesAutoresizingMaskIntoConstraints = false
+                created.addSubview(field)
+                created.textField = field
+                if identifier?.rawValue == "Status" {
+                    field.alignment = .center
+                    field.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+                    NSLayoutConstraint.activate([
+                        field.centerXAnchor.constraint(equalTo: created.centerXAnchor),
+                        field.centerYAnchor.constraint(equalTo: created.centerYAnchor)
+                    ])
+                } else {
+                    field.font = NSFont.systemFont(ofSize: 13)
+                    NSLayoutConstraint.activate([
+                        field.leadingAnchor.constraint(equalTo: created.leadingAnchor, constant: 4),
+                        field.trailingAnchor.constraint(equalTo: created.trailingAnchor, constant: -4),
+                        field.centerYAnchor.constraint(equalTo: created.centerYAnchor)
+                    ])
+                }
+                return created
+            }()
+
+        if identifier?.rawValue == "Status" {
+            cellView.textField?.stringValue = file.status.rawValue
+            cellView.textField?.textColor = file.status.color
+        } else {
+            cellView.textField?.stringValue = file.filename
+            cellView.textField?.textColor = AppTheme.primaryText
+        }
+        return cellView
+    }
+
+    @objc private func branchDiffTableClicked(_ sender: NSTableView) {
+        let row = sender.clickedRow
+        guard row >= 0 && row < gitStatusModel.branchDiffFiles.count else { return }
+        let file = gitStatusModel.branchDiffFiles[row]
+        let fullPath = gitStatusModel.repositoryPath + "/" + file.path
+        delegate?.gitPanel(self, didRequestDiffFor: fullPath, kind: .againstDefaultBranch)
     }
 
     @objc private func stageFile(_ sender: NSButton) {

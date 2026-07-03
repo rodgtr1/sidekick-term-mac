@@ -78,6 +78,22 @@ nonisolated struct GitFileItem: Sendable {
     }
 }
 
+/// One committed file changed vs the default branch, for the git panel's
+/// read-only "Changes vs <default>" review section. Unlike GitFileItem it
+/// carries a single status (from `git diff --name-status`), no staged/unstaged
+/// split — these rows are never staged from the panel.
+nonisolated struct GitBranchDiffItem: Sendable {
+    let path: String
+    let filename: String
+    let status: GitFileStatus
+
+    init(path: String, status: Character) {
+        self.path = path
+        self.filename = URL(fileURLWithPath: path).lastPathComponent
+        self.status = GitFileStatus(rawValue: String(status)) ?? .modified
+    }
+}
+
 class GitStatusModel {
     /// Fired on the main actor after a batch of state changes settles (a status
     /// refresh, a repository switch, or a commit clearing the message). The git
@@ -87,6 +103,13 @@ class GitStatusModel {
     var onChange: (() -> Void)?
 
     var files: [GitFileItem] = []
+    /// Files committed on this branch vs the default branch (three-dot diff),
+    /// shown in the panel's read-only "Changes vs <default>" section. Empty when
+    /// HEAD is the default branch or detection failed.
+    var branchDiffFiles: [GitBranchDiffItem] = []
+    /// The default branch these committed changes are compared against (e.g.
+    /// "main"), or empty when the section is hidden (HEAD is the default branch).
+    var branchDiffBaseBranch: String = ""
     var currentBranch: String = ""
     var aheadCount: Int = 0
     var behindCount: Int = 0
@@ -159,6 +182,8 @@ class GitStatusModel {
             aheadCount = 0
             behindCount = 0
             files = []
+            branchDiffFiles = []
+            branchDiffBaseBranch = ""
             isClean = true
             isLoading = false
             error = nil
@@ -169,7 +194,31 @@ class GitStatusModel {
         _repositoryPath = repositoryRoot
         refreshStatus(force: true)
         startAutoRefresh()
-        watcher.start(root: repositoryRoot)
+        // In a linked worktree, HEAD/index live in the main repo's
+        // .git/worktrees/<name> dir, not under the checkout root — watch both so
+        // an agent's stages/commits fire the watcher, not just the fallback poll.
+        var watchPaths = [repositoryRoot]
+        if let gitDir = Self.linkedWorktreeGitDir(forRoot: repositoryRoot) {
+            watchPaths.append(gitDir)
+        }
+        watcher.start(paths: watchPaths)
+    }
+
+    /// For a linked worktree whose root `.git` is a *file*, the resolved git
+    /// directory it points at (`<mainrepo>/.git/worktrees/<name>`); nil for a
+    /// normal repo whose `.git` is a directory. A relative pointer is resolved
+    /// against the worktree root.
+    private nonisolated static func linkedWorktreeGitDir(forRoot root: String) -> String? {
+        let dotGit = URL(fileURLWithPath: root).appendingPathComponent(".git")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dotGit.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let contents = try? String(contentsOf: dotGit, encoding: .utf8),
+              let pointer = RepositoryWatcher.gitdirPointer(fromGitFileContents: contents) else {
+            return nil
+        }
+        if pointer.hasPrefix("/") { return pointer }
+        return URL(fileURLWithPath: root).appendingPathComponent(pointer).standardizedFileURL.path
     }
 
     func refreshStatus(force: Bool = false) {
@@ -196,6 +245,7 @@ class GitStatusModel {
             let branch = self.getCurrentBranch(repositoryRoot: repositoryPath)
             let statusItems = self.getGitStatus(repositoryRoot: repositoryPath)
             let counts = self.getAheadBehindCounts(repositoryRoot: repositoryPath)
+            let branchDiff = self.getBranchDiff(repositoryRoot: repositoryPath, currentBranch: branch)
 
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -214,6 +264,8 @@ class GitStatusModel {
                     self.currentBranch = branch
                     self.aheadCount = counts.ahead
                     self.behindCount = counts.behind
+                    self.branchDiffBaseBranch = branchDiff.baseBranch
+                    self.branchDiffFiles = branchDiff.files
                     // nil means the status query failed — keep the prior file
                     // list rather than clearing to a false "clean" state.
                     if let statusItems {
@@ -254,6 +306,28 @@ class GitStatusModel {
 
     private nonisolated func getAheadBehindCounts(repositoryRoot: String) -> (ahead: Int, behind: Int) {
         ((try? gitService.aheadBehindCounts(repositoryRoot: repositoryRoot)) ?? nil) ?? (ahead: 0, behind: 0)
+    }
+
+    /// Committed changes vs the default branch, for the panel's review section.
+    /// Empty (and no base branch) when HEAD *is* the default branch, when the
+    /// default can't be resolved, or when there are no such changes — those are
+    /// all the "hide the section entirely" case.
+    private nonisolated func getBranchDiff(
+        repositoryRoot: String,
+        currentBranch: String
+    ) -> (baseBranch: String, files: [GitBranchDiffItem]) {
+        // `try?` flattens the throwing Optional result to a single Optional.
+        guard let baseBranch = try? gitService.defaultBranch(repositoryRoot: repositoryRoot),
+              baseBranch != currentBranch else {
+            return ("", [])
+        }
+        let entries = (try? gitService.changedFilesAgainstDefaultBranch(
+            repositoryRoot: repositoryRoot, defaultBranch: baseBranch
+        )) ?? []
+        let items = entries
+            .map { GitBranchDiffItem(path: $0.path, status: $0.status) }
+            .sorted { $0.filename < $1.filename }
+        return (items.isEmpty ? "" : baseBranch, items)
     }
 
     /// Returns nil on a git failure (distinct from an empty array, which means a

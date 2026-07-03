@@ -23,6 +23,9 @@ nonisolated struct WorktreeService: Sendable {
         case notAGitRepository
         case noWorktreeForBranch(String)
         case gitFailed(String)
+        /// The primary checkout has uncommitted changes, so a merge into it is
+        /// refused up front — merging into a dirty tree is how work gets lost.
+        case primaryHasUncommittedChanges
     }
 
     private let git: GitService
@@ -157,6 +160,50 @@ nonisolated struct WorktreeService: Sendable {
             throw WorktreeError.gitFailed(message.isEmpty ? "git worktree remove failed" : message)
         }
         return path
+    }
+
+    /// Merges `branch` into the repository's primary checkout, run entirely in
+    /// the primary root (never a linked worktree). Resolving the primary from
+    /// `directory` means the caller can pass any path inside the repo family —
+    /// including the worktree being merged. Guards:
+    ///
+    /// - Refuses when the primary tree is dirty (`git status --porcelain`
+    ///   non-empty) with `.primaryHasUncommittedChanges`, before touching HEAD.
+    /// - On a failed merge (conflicts), runs `git merge --abort` in the primary
+    ///   root so it's left clean, then throws `.gitFailed` carrying git's output
+    ///   so the user can resolve manually.
+    func mergeBranch(_ branch: String, intoPrimaryFrom directory: String) throws {
+        guard Self.isValidBranchName(branch) else {
+            throw WorktreeError.gitFailed("invalid branch name: \(branch)")
+        }
+        guard let repoRoot = git.repositoryRoot(from: directory) else {
+            throw WorktreeError.notAGitRepository
+        }
+
+        // The primary checkout is the first (non-bare) entry git lists; the
+        // merge must land there even when `directory` is a linked worktree.
+        let listing = try git.run(repositoryRoot: repoRoot, arguments: ["worktree", "list", "--porcelain"])
+        guard listing.succeeded,
+              let primaryRoot = Self.parseWorktrees(porcelain: listing.stdout).first(where: { !$0.isBare })?.path else {
+            throw WorktreeError.notAGitRepository
+        }
+
+        let status = try git.run(repositoryRoot: primaryRoot, arguments: ["status", "--porcelain"])
+        guard status.succeeded else {
+            throw WorktreeError.gitFailed("unable to read status of the primary checkout")
+        }
+        guard status.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw WorktreeError.primaryHasUncommittedChanges
+        }
+
+        let result = try git.run(repositoryRoot: primaryRoot, arguments: ["merge", branch])
+        guard result.succeeded else {
+            // Leave the primary tree clean: undo the half-applied merge so the
+            // user isn't dropped into a conflicted main they didn't ask for.
+            _ = try? git.run(repositoryRoot: primaryRoot, arguments: ["merge", "--abort"])
+            let combined = (result.stdout + "\n" + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw WorktreeError.gitFailed(combined.isEmpty ? "git merge failed" : combined)
+        }
     }
 
     /// Prunes stale worktree admin entries — bookkeeping for worktrees whose

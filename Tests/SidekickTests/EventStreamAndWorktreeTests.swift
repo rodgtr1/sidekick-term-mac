@@ -283,6 +283,113 @@ final class EventStreamAndWorktreeTests: XCTestCase {
         XCTAssertNoThrow(try service.pruneWorktrees(directory: repo.path))
     }
 
+    // MARK: - WorktreeService.mergeBranch (real git)
+
+    /// Repo with `main` (one commit) plus a `feature` branch that adds a commit;
+    /// returns the runner and repo URL. Caller registers cleanup.
+    private func makeMergeRepo(cleanup: inout [URL]) throws -> (git: ([String]) throws -> Void, repo: URL) {
+        let fm = FileManager.default
+        let repo = fm.temporaryDirectory.appendingPathComponent("sk-merge-\(UUID().uuidString)")
+        try fm.createDirectory(at: repo, withIntermediateDirectories: true)
+        cleanup.append(repo)
+
+        func git(_ args: [String]) throws {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = args
+            p.currentDirectoryURL = repo
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            try p.run()
+            p.waitUntilExit()
+        }
+        try git(["init", "-q", "-b", "main"])
+        try git(["config", "user.email", "t@example.com"])
+        try git(["config", "user.name", "Test"])
+        try "line1\n".write(to: repo.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "init"])
+        return (git, repo)
+    }
+
+    func testMergeBranchSuccessBringsInCommittedWork() throws {
+        var cleanup: [URL] = []
+        defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let (git, repo) = try makeMergeRepo(cleanup: &cleanup)
+
+        // A feature branch adds a new file, then main goes back to being checked out.
+        try git(["checkout", "-q", "-b", "feature"])
+        try "hello".write(to: repo.appendingPathComponent("feature.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "feature work"])
+        try git(["checkout", "-q", "main"])
+
+        try WorktreeService().mergeBranch("feature", intoPrimaryFrom: repo.path)
+
+        // The feature file is now on main and the tree is clean.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent("feature.txt").path))
+        XCTAssertTrue(try porcelainStatus(repo).isEmpty)
+    }
+
+    func testMergeBranchRefusesDirtyPrimary() throws {
+        var cleanup: [URL] = []
+        defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let (git, repo) = try makeMergeRepo(cleanup: &cleanup)
+
+        try git(["checkout", "-q", "-b", "feature"])
+        try "hello".write(to: repo.appendingPathComponent("feature.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "feature work"])
+        try git(["checkout", "-q", "main"])
+
+        // Dirty the primary checkout (uncommitted edit) before merging.
+        try "line1\nlocal edit\n".write(to: repo.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try WorktreeService().mergeBranch("feature", intoPrimaryFrom: repo.path)) { error in
+            XCTAssertEqual(error as? WorktreeService.WorktreeError, .primaryHasUncommittedChanges)
+        }
+        // The merge never ran: the feature file wasn't pulled in and the local edit survives.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("feature.txt").path))
+    }
+
+    func testMergeBranchConflictAbortsLeavingPrimaryClean() throws {
+        var cleanup: [URL] = []
+        defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let (git, repo) = try makeMergeRepo(cleanup: &cleanup)
+
+        // feature and main edit the same line → a merge conflict.
+        try git(["checkout", "-q", "-b", "feature"])
+        try "feature change\n".write(to: repo.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "feature edit"])
+        try git(["checkout", "-q", "main"])
+        try "main change\n".write(to: repo.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "main edit"])
+
+        XCTAssertThrowsError(try WorktreeService().mergeBranch("feature", intoPrimaryFrom: repo.path)) { error in
+            guard case WorktreeService.WorktreeError.gitFailed = error else {
+                return XCTFail("expected gitFailed, got \(error)")
+            }
+        }
+
+        // The abort left main clean: no conflict markers, no in-progress merge.
+        XCTAssertTrue(try porcelainStatus(repo).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent(".git/MERGE_HEAD").path))
+    }
+
+    /// `git status --porcelain` output for `repo`, trimmed.
+    private func porcelainStatus(_ repo: URL) throws -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        p.arguments = ["status", "--porcelain"]
+        p.currentDirectoryURL = repo
+        let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+        try p.run()
+        p.waitUntilExit()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     func testEnsureWorktreeCopiesWorktreeIncludeFiles() throws {
         let fm = FileManager.default
         let repo = fm.temporaryDirectory.appendingPathComponent("sk-wt-\(UUID().uuidString)")

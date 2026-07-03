@@ -33,6 +33,12 @@ protocol WorktreesPanelDelegate: AnyObject {
     /// Remove the worktree registered for `branch`; `force` overrides the
     /// dirty/locked guard. The panel has already confirmed with the user.
     func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestRemoveBranch branch: String, force: Bool)
+    /// Merge `branch`'s worktree into the primary checkout. The panel has already
+    /// confirmed with the user; the dirty/conflict guards live in the service.
+    func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestMergeBranch branch: String)
+    /// A worktree row was selected (single click): point the git panel at that
+    /// checkout so flipping to the Git panel shows its status + vs-main changes.
+    func worktreesPanel(_ panel: WorktreesPanelViewController, didSelectWorktree path: String)
 }
 
 /// Sidebar panel listing the active repo's git worktrees — the human cockpit
@@ -342,6 +348,17 @@ final class WorktreesPanelViewController: NSViewController {
         presentRemoveDialog(for: row)
     }
 
+    private func mergeSelected() {
+        guard let row = rows[safe: tableView.clickedRow], let branch = row.branch,
+              let primaryBranch = primaryBranchName else { return }
+        presentMergeDialog(branch: branch, into: primaryBranch)
+    }
+
+    /// The primary checkout's branch — the merge target — from the current rows.
+    private var primaryBranchName: String? {
+        rows.first(where: { $0.isPrimary })?.branch
+    }
+
     // MARK: - Create / remove dialogs
 
     private func presentCreateSheet() {
@@ -391,6 +408,20 @@ final class WorktreesPanelViewController: NSViewController {
             default:
                 break
             }
+        }
+    }
+
+    private func presentMergeDialog(branch: String, into primaryBranch: String) {
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Merge '\(branch)' into '\(primaryBranch)'?"
+        alert.informativeText = "This runs `git merge \(branch)` in the primary checkout. It's refused if '\(primaryBranch)' has uncommitted changes, and aborted (leaving '\(primaryBranch)' clean) if the merge conflicts."
+        alert.addButton(withTitle: "Merge")
+        alert.addButton(withTitle: "Cancel")
+
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            self.delegate?.worktreesPanel(self, didRequestMergeBranch: branch)
         }
     }
 
@@ -479,6 +510,15 @@ extension WorktreesPanelViewController: NSTableViewDelegate {
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { 58 }
 
+    /// Single-click selection points the git panel at the selected checkout.
+    /// Guarded on a valid row so a `reloadData`-driven deselection (selectedRow
+    /// == -1) doesn't fire. Double-click still opens the tab as before — its
+    /// first click retargets here, which is harmless.
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard let row = rows[safe: tableView.selectedRow] else { return }
+        delegate?.worktreesPanel(self, didSelectWorktree: row.path)
+    }
+
     /// Dot + line-two text and color for a row, blending agent state with dirty.
     private static func describe(_ row: Row) -> (text: String, color: NSColor) {
         let summary = row.summary
@@ -529,6 +569,12 @@ extension WorktreesPanelViewController: NSMenuDelegate {
         guard let row = rows[safe: tableView.clickedRow] else { return }
         menu.addItem(withTitle: row.hasPane ? "Focus Pane" : "Open Terminal", action: #selector(menuOpen), keyEquivalent: "")
         menu.addItem(withTitle: "Open Diff", action: #selector(menuDiff), keyEquivalent: "")
+        // Merge a non-primary worktree's branch into the primary checkout's
+        // branch. Only when both branches are known (the target comes from the
+        // primary row's checked-out branch).
+        if !row.isPrimary, row.branch != nil, let primaryBranch = primaryBranchName {
+            menu.addItem(withTitle: "Merge into \(primaryBranch)…", action: #selector(menuMerge), keyEquivalent: "")
+        }
         if !row.isPrimary {
             menu.addItem(.separator())
             menu.addItem(withTitle: "Remove Worktree…", action: #selector(menuRemove), keyEquivalent: "")
@@ -538,5 +584,6 @@ extension WorktreesPanelViewController: NSMenuDelegate {
 
     @objc private func menuOpen() { openSelected() }
     @objc private func menuDiff() { diffSelected() }
+    @objc private func menuMerge() { mergeSelected() }
     @objc private func menuRemove() { removeSelected() }
 }

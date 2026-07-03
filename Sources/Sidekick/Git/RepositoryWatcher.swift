@@ -28,7 +28,7 @@ final class RepositoryWatcher {
     // end-of-life, so they opt out of isolation like GitStatusModel's did.
     nonisolated(unsafe) private var eventStream: FSEventStreamRef?
     nonisolated(unsafe) private var pending: DispatchWorkItem?
-    private var watchedRoot: String?
+    private var watchedPaths: [String] = []
 
     /// `debounce` collapses a burst of file writes into one `onChange`;
     /// `latency` is the FSEvents coalescing window before the callback fires.
@@ -50,12 +50,23 @@ final class RepositoryWatcher {
         }
     }
 
-    /// Begins watching `root`, replacing any existing stream. A no-op restart of
-    /// the same root is avoided by the caller (this always rebuilds), so callers
-    /// should guard on a changed root when that matters.
+    /// Begins watching `root`, replacing any existing stream. Convenience for
+    /// the single-directory callers; see `start(paths:)` for the multi-path form.
     func start(root: String) {
+        start(paths: [root])
+    }
+
+    /// Begins watching every path in `paths` under one FSEvents stream,
+    /// replacing any existing stream. A linked worktree keeps HEAD/index inside
+    /// `<mainrepo>/.git/worktrees/<name>` rather than under the checkout root, so
+    /// the git panel watches both that directory and the root — otherwise an
+    /// agent's stages/commits fire no event and only the fallback poll notices.
+    /// A no-op restart is avoided by the caller (this always rebuilds), so
+    /// callers should guard on changed paths when that matters.
+    func start(paths: [String]) {
         stop()
-        watchedRoot = root
+        watchedPaths = paths
+        guard !paths.isEmpty else { return }
 
         // The stream is dispatched to the main queue (below), so the callback
         // already runs on the main actor — assert that to reach the watcher.
@@ -90,14 +101,14 @@ final class RepositoryWatcher {
                 nil,
                 callback,
                 &context,
-                [root] as CFArray,
+                paths as CFArray,
                 FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
                 latency,
                 FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
             )
         }
         guard let stream = created else {
-            Log.error("RepositoryWatcher: Failed to create FSEvents stream for \(root)", category: "git")
+            Log.error("RepositoryWatcher: Failed to create FSEvents stream for \(paths.joined(separator: ", "))", category: "git")
             return
         }
 
@@ -110,12 +121,28 @@ final class RepositoryWatcher {
     func stop() {
         pending?.cancel()
         pending = nil
-        watchedRoot = nil
+        watchedPaths = []
         guard let stream = eventStream else { return }
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
         eventStream = nil
+    }
+
+    /// The git directory a `.git` *file* points at, parsed from its
+    /// `gitdir: <path>` line. In a linked worktree `.git` is a file (not a
+    /// directory) holding a single `gitdir:` pointer at
+    /// `<mainrepo>/.git/worktrees/<name>`. Returns nil for a normal repo's
+    /// directory `.git` or any content without the pointer. The path is returned
+    /// verbatim (may be relative to the worktree root); the caller resolves it.
+    nonisolated static func gitdirPointer(fromGitFileContents contents: String) -> String? {
+        for line in contents.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("gitdir:") else { continue }
+            let path = trimmed.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
+            return path.isEmpty ? nil : path
+        }
+        return nil
     }
 
     private func scheduleDebounced() {

@@ -101,7 +101,7 @@ class PaneModel: Identifiable, Hashable {
         }
     }
 
-    func createDiffViewController(for filePath: String) {
+    func createDiffViewController(for filePath: String, kind: GitDiffKind = .uncommitted) {
         let diffVC = DiffViewController()
         self.diffViewController = diffVC
         self.currentDirectory = URL(fileURLWithPath: filePath).deletingLastPathComponent().path
@@ -113,7 +113,7 @@ class PaneModel: Identifiable, Hashable {
         self.paneType = .diff
 
         // Show the diff
-        diffVC.showDiff(for: filePath)
+        diffVC.showDiff(for: filePath, kind: kind)
 
         // Update title based on filename
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent

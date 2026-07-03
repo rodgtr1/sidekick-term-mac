@@ -86,7 +86,7 @@ class DiffViewController: NSViewController {
         Log.debug("📝 DiffViewController: setupTextView complete, view bounds: \(view.bounds)", category: "editor")
     }
 
-    func showDiff(for filePath: String) {
+    func showDiff(for filePath: String, kind: GitDiffKind = .uncommitted) {
         Log.debug("📝 DiffViewController: showDiff called for: \(filePath)", category: "editor")
         self.filePath = filePath
 
@@ -96,7 +96,7 @@ class DiffViewController: NSViewController {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let diffContent = try await self.loadGitDiff(for: filePath)
+                let diffContent = try await self.loadGitDiff(for: filePath, kind: kind)
                 Log.debug("📝 DiffViewController: Loaded diff content (\(diffContent.count) chars)", category: "editor")
                 self.displayDiff(diffContent)
             } catch {
@@ -106,7 +106,7 @@ class DiffViewController: NSViewController {
         }
     }
 
-    private nonisolated func loadGitDiff(for filePath: String) async throws -> String {
+    private nonisolated func loadGitDiff(for filePath: String, kind: GitDiffKind) async throws -> String {
         Log.debug("📝 loadGitDiff: filePath = \(filePath)", category: "editor")
 
         let gitRoot = gitService.repositoryRoot(from: filePath) ?? URL(fileURLWithPath: filePath).deletingLastPathComponent().path
@@ -116,7 +116,20 @@ class DiffViewController: NSViewController {
         let relativePath = workspace.relativePath(for: filePath)
         Log.debug("📝 loadGitDiff: relativePath = \(relativePath)", category: "editor")
 
-        let diff = try gitService.diff(relativePath: relativePath, repositoryRoot: gitRoot)
+        let diff: String
+        switch kind {
+        case .uncommitted:
+            diff = try gitService.diff(relativePath: relativePath, repositoryRoot: gitRoot)
+        case .againstDefaultBranch:
+            // The committed vs-default diff needs the default branch; if it can't
+            // be resolved there's nothing to compare against.
+            guard let base = try gitService.defaultBranch(repositoryRoot: gitRoot) else {
+                return "No changes"
+            }
+            diff = try gitService.diffAgainstDefaultBranch(
+                relativePath: relativePath, repositoryRoot: gitRoot, defaultBranch: base
+            )
+        }
         Log.debug("📝 loadGitDiff: git diff output length = \(diff.count)", category: "editor")
         return diff
     }

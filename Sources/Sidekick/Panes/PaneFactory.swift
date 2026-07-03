@@ -16,9 +16,9 @@ enum PaneFactory {
         return pane
     }
 
-    static func diffPane(for filePath: String) -> PaneModel {
+    static func diffPane(for filePath: String, kind: GitDiffKind = .uncommitted) -> PaneModel {
         let pane = PaneModel()
-        pane.createDiffViewController(for: filePath)
+        pane.createDiffViewController(for: filePath, kind: kind)
         return pane
     }
 

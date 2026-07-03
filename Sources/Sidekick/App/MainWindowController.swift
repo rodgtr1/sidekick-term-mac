@@ -925,6 +925,16 @@ extension MainWindowController: SidebarContainerDelegate {
         worktreeFlowController.removeWorktree(branch: branch, force: force)
     }
 
+    func sidebarContainer(_ container: SidebarContainerView, didRequestMergeWorktree branch: String) {
+        worktreeFlowController.mergeWorktree(branch: branch)
+    }
+
+    func sidebarContainer(_ container: SidebarContainerView, didSelectWorktreeForGitPanel path: String) {
+        // Retarget the git panel only (not the file tree / search) — transient
+        // until the next tab switch or cwd change, per the worktrees-panel design.
+        container.retargetGitPanel(toRepositoryPath: path)
+    }
+
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL) {
         Log.debug("📂 Sidebar requested to open file: \(url.path)", category: "app")
 
@@ -941,8 +951,8 @@ extension MainWindowController: SidebarContainerDelegate {
         runCommandInActiveTerminal(command)
     }
 
-    func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String) {
-        openDiffViewer(for: filePath)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String, kind: GitDiffKind) {
+        openDiffViewer(for: filePath, kind: kind)
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?) {
@@ -989,12 +999,12 @@ extension MainWindowController: SidebarContainerDelegate {
         syncSidebarToActiveTab()
     }
 
-    private func openDiffViewer(for filePath: String) {
-        openDiffInNewTab(for: filePath)
+    private func openDiffViewer(for filePath: String, kind: GitDiffKind = .uncommitted) {
+        openDiffInNewTab(for: filePath, kind: kind)
     }
 
-    private func openDiffInNewTab(for filePath: String) {
-        openSinglePaneTab(pane: PaneFactory.diffPane(for: filePath))
+    private func openDiffInNewTab(for filePath: String, kind: GitDiffKind) {
+        openSinglePaneTab(pane: PaneFactory.diffPane(for: filePath, kind: kind))
     }
 
     private func openUncommittedChangesInNewTab(repositoryPath: String, focusedFilePath: String?) {
