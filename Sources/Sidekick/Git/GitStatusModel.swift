@@ -78,15 +78,22 @@ nonisolated struct GitFileItem: Sendable {
     }
 }
 
-class GitStatusModel: ObservableObject {
-    @Published var files: [GitFileItem] = []
-    @Published var currentBranch: String = ""
-    @Published var aheadCount: Int = 0
-    @Published var behindCount: Int = 0
-    @Published var isClean: Bool = true
-    @Published var commitMessage: String = ""
-    @Published var isLoading: Bool = false
-    @Published var error: String?
+class GitStatusModel {
+    /// Fired on the main actor after a batch of state changes settles (a status
+    /// refresh, a repository switch, or a commit clearing the message). The git
+    /// panel reads the properties below and repaints. A plain callback rather
+    /// than Combine `@Published`, matching the app's dominant model→view idiom
+    /// (`RepositoryWatcher.onChange`, `ConfigWatcher.onChange`). Set before use.
+    var onChange: (() -> Void)?
+
+    var files: [GitFileItem] = []
+    var currentBranch: String = ""
+    var aheadCount: Int = 0
+    var behindCount: Int = 0
+    var isClean: Bool = true
+    var commitMessage: String = ""
+    var isLoading: Bool = false
+    var error: String?
 
     private var _repositoryPath: String = ""
     // Fallback poll for changes FSEvents can't see (e.g. edits over NFS).
@@ -129,6 +136,12 @@ class GitStatusModel: ObservableObject {
         return _repositoryPath
     }
 
+    /// Notify the observing panel that the published state above changed. Called
+    /// on the main actor at the end of each batch update.
+    private func notifyChanged() {
+        onChange?()
+    }
+
     // Tear down the fallback timer directly: it's nonisolated(unsafe) so this
     // nonisolated deinit can reach it without hopping to the main actor (which a
     // deinit can't await). The FSEvents stream is owned by `watcher`, whose own
@@ -149,6 +162,7 @@ class GitStatusModel: ObservableObject {
             isClean = true
             isLoading = false
             error = nil
+            notifyChanged()
             return
         }
 
@@ -207,6 +221,7 @@ class GitStatusModel: ObservableObject {
                         self.isClean = statusItems.isEmpty
                     }
                     self.isLoading = false
+                    self.notifyChanged()
                 }
             }
         }
@@ -227,8 +242,8 @@ class GitStatusModel: ObservableObject {
 
     // These run on the background queue from refreshStatus. They touch only the
     // Sendable `gitService` (an immutable let) and their arguments, so they're
-    // nonisolated; results are folded back into @Published state on the main
-    // actor by the caller.
+    // nonisolated; results are folded back into the observable state on the
+    // main actor by the caller.
     private nonisolated func getCurrentBranch(repositoryRoot: String) -> String {
         do {
             return try gitService.currentBranch(repositoryRoot: repositoryRoot)
@@ -303,6 +318,7 @@ class GitStatusModel: ObservableObject {
         executeGitCommand(["commit", "-m", message]) { [weak self] success in
             if success {
                 self?.commitMessage = ""
+                self?.notifyChanged()
                 self?.refreshStatus(force: true)
                 completion(true, nil)
             } else {

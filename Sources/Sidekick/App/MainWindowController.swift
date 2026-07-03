@@ -148,11 +148,16 @@ class MainWindowController: NSWindowController {
     private var currentPaneSplitController: PaneSplitController? { tabController.currentSplitController }
     private var quickOpenPanel: QuickOpenPanel?
     private var preferencesWindowController: PreferencesWindowController?
-    fileprivate var commandPalette: CommandPalettePanel?
     // Set on the main actor; removed in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var keyEventMonitor: Any?
     nonisolated(unsafe) private var clickEventMonitor: Any?
     private let keyboardCommandRouter = KeyboardCommandRouter()
+    /// Owns the ⇧⌘P palette and the keyboard-command dispatch table; drives the
+    /// behaviors back through the `PaletteCommandHost` conformance below.
+    private var paletteCommandRegistry: PaletteCommandRegistry!
+    /// Owns the worktrees-panel create/remove/open flows; the
+    /// `SidebarContainerDelegate` worktree methods forward here.
+    private var worktreeFlowController: WorktreeFlowController!
     private let configWatcher = ConfigWatcher()
     private var sessionSaveTimer: Timer?
     /// Owns IPC command translation and the hook diff-approval queue.
@@ -200,6 +205,8 @@ class MainWindowController: NSWindowController {
         self.init(window: window)
         self.config = config
         self.tabController = TabController(host: self)
+        self.paletteCommandRegistry = PaletteCommandRegistry(host: self)
+        self.worktreeFlowController = WorktreeFlowController(host: self)
         Log.debug("✅ WindowController initialized", category: "app")
 
         setupUI()
@@ -888,90 +895,22 @@ extension MainWindowController: SidebarContainerDelegate {
 
     // MARK: Worktrees panel
 
+    // These forward to WorktreeFlowController, which owns the worktree flows.
+
     func sidebarContainerActiveRepoRoot(_ container: SidebarContainerView) -> String? {
-        guard let cwd = tabController.currentWorkingDirectoryForNewTerminal() else { return nil }
-        // Cached: the worktrees panel asks for this on every refresh, and an
-        // uncached `git rev-parse` per call stalled the main thread.
-        return WorkspaceResolver.cachedGitRoot(from: cwd)
+        worktreeFlowController.activeRepoRoot()
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenWorktree path: String) {
-        // Focus an existing pane in that checkout if there is one; else open a
-        // fresh terminal there.
-        if let index = tabs.firstIndex(where: { tab in
-            tab.panes.contains { Self.path($0.resolvedWorkingDirectory(), isWithin: path) }
-        }) {
-            switchToTab(index: index)
-        } else {
-            createNewTab(workingDirectory: path)
-        }
+        worktreeFlowController.openWorktree(path: path)
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestCreateWorktree branch: String, agent: WorktreeAgent) {
-        guard let repoRoot = sidebarContainerActiveRepoRoot(container) else {
-            presentWorktreeError("Worktrees need a pane inside a git repository.")
-            return
-        }
-        // Creating the worktree shells out to git (checks out files); do it off
-        // the main thread, then open the pane on the resulting directory.
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Result { try WorktreeService().ensureWorktree(forBranch: branch, directory: repoRoot) }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                switch result {
-                case .success(let path):
-                    self.createNewTab(workingDirectory: path, command: agent.argv)
-                    self.sidebarContainerView.refreshWorktrees()
-                case .failure(let error):
-                    self.presentWorktreeError(Self.worktreeErrorMessage(error))
-                }
-            }
-        }
+        worktreeFlowController.createWorktree(branch: branch, agent: agent)
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestRemoveWorktree branch: String, force: Bool) {
-        guard let repoRoot = sidebarContainerActiveRepoRoot(container) else { return }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Result { try WorktreeService().removeWorktree(forBranch: branch, directory: repoRoot, force: force) }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if case .failure(let error) = result {
-                    self.presentWorktreeError(Self.worktreeErrorMessage(error))
-                }
-                self.sidebarContainerView.refreshWorktrees()
-            }
-        }
-    }
-
-    /// True when `candidate` is the worktree `path` or lives inside it.
-    private static func path(_ candidate: String?, isWithin path: String) -> Bool {
-        guard let candidate else { return false }
-        let base = URL(fileURLWithPath: path).standardizedFileURL.path
-        let other = URL(fileURLWithPath: candidate).standardizedFileURL.path
-        return other == base || other.hasPrefix(base.hasSuffix("/") ? base : base + "/")
-    }
-
-    private func presentWorktreeError(_ message: String) {
-        guard let window = window else { return }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Worktree"
-        alert.informativeText = message
-        alert.addButton(withTitle: "OK")
-        alert.beginSheetModal(for: window)
-    }
-
-    private static func worktreeErrorMessage(_ error: Error) -> String {
-        switch error {
-        case WorktreeService.WorktreeError.notAGitRepository:
-            return "Not a git repository — worktree commands need a directory inside one."
-        case WorktreeService.WorktreeError.noWorktreeForBranch(let branch):
-            return "No worktree registered for branch '\(branch)'."
-        case WorktreeService.WorktreeError.gitFailed(let message):
-            return "git worktree failed: \(message)"
-        default:
-            return "Worktree operation failed: \(error.localizedDescription)"
-        }
+        worktreeFlowController.removeWorktree(branch: branch, force: force)
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL) {
@@ -1099,67 +1038,6 @@ extension MainWindowController: SidebarContainerDelegate {
         quickOpenPanel?.show(relativeTo: window, workingDirectory: currentWorkingDirectory)
     }
 
-    func showCommandPalette() {
-        guard let window = window else { return }
-
-        if commandPalette == nil {
-            commandPalette = CommandPalettePanel()
-        }
-
-        commandPalette?.show(relativeTo: window, actions: paletteActions())
-    }
-
-    /// The command-palette entries. Most route their action straight through
-    /// `performKeyboardCommand`, and all take their shortcut label from
-    /// `KeyboardCommand.displayShortcut`, so the palette can't drift from the
-    /// keyboard bindings the way the old hand-maintained ("⌘T") strings did.
-    /// Panel-show entries keep a bespoke action because the keyboard command
-    /// *toggles* the panel whereas the palette should always *show* it.
-    private func paletteActions() -> [PaletteAction] {
-        // (title, SF Symbol, command driving both the action and the shortcut label)
-        let routed: [(String, String, KeyboardCommand)] = [
-            ("New Tab", "plus.rectangle", .newTab),
-            ("Close Tab", "xmark.rectangle", .closeTab),
-            ("Split Pane Horizontally", "rectangle.split.2x1", .splitPane(.horizontal)),
-            ("Split Pane Vertically", "rectangle.split.1x2", .splitPane(.vertical)),
-            ("Find in Terminal", "magnifyingglass", .findInTerminal),
-            ("Jump to Previous Prompt", "arrow.up.to.line", .jumpToPrompt(previous: true)),
-            ("Jump to Next Prompt", "arrow.down.to.line", .jumpToPrompt(previous: false)),
-            ("Quick Open File", "doc.text.magnifyingglass", .quickOpen),
-            ("Toggle Sidebar", "sidebar.left", .toggleSidebar),
-            ("Toggle Hidden Files", "eye.slash", .toggleHiddenFiles),
-            ("Zoom In", "plus.magnifyingglass", .zoomIn),
-            ("Zoom Out", "minus.magnifyingglass", .zoomOut),
-            ("Reset Zoom", "1.magnifyingglass", .zoomReset),
-            ("Preferences", "gearshape", .preferences)
-        ]
-
-        var actions = routed.map { title, symbol, command in
-            PaletteAction(title: title, subtitle: command.displayShortcut, symbolName: symbol) { [weak self] in
-                self?.performKeyboardCommand(command)
-            }
-        }
-
-        // Panel-show entries: always show (not toggle), so keep explicit actions.
-        let panels: [(String, String, SidebarPanel)] = [
-            ("Show Files Panel", "folder", .files),
-            ("Show Git Panel", "arrow.branch", .git),
-            ("Show Search Panel", "magnifyingglass.circle", .search)
-        ]
-        actions.append(contentsOf: panels.map { title, symbol, panel in
-            PaletteAction(title: title, subtitle: KeyboardCommand.showPanel(panel).displayShortcut, symbolName: symbol) { [weak self] in
-                self?.showPanel(panel)
-            }
-        })
-
-        actions.append(
-            PaletteAction(title: "Edit Config File", subtitle: "config.toml", symbolName: "doc.badge.gearshape") { [weak self] in
-                self?.openConfigFile()
-            }
-        )
-        return actions
-    }
-
     func showPreferences() {
         // Reuse only a still-open window. The controller snapshots the config it
         // was built with, so once it has closed (or config reloaded from disk),
@@ -1280,7 +1158,7 @@ extension MainWindowController {
             return pasteImageAsTempFileIfPossible()
         }
 
-        performKeyboardCommand(command)
+        paletteCommandRegistry.perform(command)
         return true
     }
 
@@ -1291,7 +1169,7 @@ extension MainWindowController {
     /// mutateConfig). When the on-disk file is broken, the toggle still
     /// applies to this window but save() refuses, so the user's file isn't
     /// clobbered with defaults.
-    private func toggleHiddenFiles() {
+    func toggleHiddenFiles() {
         var fresh = Config.load()
         if fresh.loadDidFail {
             fresh = config
@@ -1342,58 +1220,6 @@ extension MainWindowController {
         return true
     }
 
-    private func performKeyboardCommand(_ command: KeyboardCommand) {
-        switch command {
-        case .cycleTabs(let forward):
-            cycleTabs(forward: forward)
-        case .showPanel(let panel):
-            togglePanel(panel)
-        case .closeCurrentPane:
-            closeCurrentPane()
-        case .splitPane(let direction):
-            currentPaneSplitController?.splitPane(direction: direction)
-        case .newTab:
-            createNewTab()
-        case .jumpToPrompt(let previous):
-            guard let terminal = tabs[safe: activeTabIndex]?.activePane?.terminalViewController else { return }
-            if previous {
-                terminal.scrollToPreviousPrompt()
-            } else {
-                terminal.scrollToNextPrompt()
-            }
-        case .commandPalette:
-            showCommandPalette()
-        case .findInTerminal:
-            tabs[safe: activeTabIndex]?.activePane?.terminalViewController?.showFindBar()
-        case .toggleHiddenFiles:
-            toggleHiddenFiles()
-        case .closeTab:
-            closeTab(index: activeTabIndex)
-        case .saveFile:
-            saveCurrentFile()
-        case .toggleSidebar:
-            toggleSidebar()
-        case .quickOpen:
-            showQuickOpen()
-        case .preferences:
-            showPreferences()
-        case .focusPane(let forward):
-            forward ? currentPaneSplitController?.focusNextPane() : currentPaneSplitController?.focusPreviousPane()
-        case .selectTab(let index):
-            switchToTab(index: index)
-        case .zoomIn:
-            FontZoom.shared.zoomIn()
-        case .zoomOut:
-            FontZoom.shared.zoomOut()
-        case .zoomReset:
-            FontZoom.shared.reset()
-        case .pasteIntoTerminal:
-            break // handled in handleKeyDown
-        case .focusAgentAttention:
-            jumpToNextAttentionTab()
-        }
-    }
-
     /// Cmd+Shift+J: cycles through tabs whose agent wants attention, most
     /// urgent state first — needs-input tabs, then finished ones, then
     /// working ones. Repeated presses walk all tabs in that state.
@@ -1409,7 +1235,7 @@ extension MainWindowController {
         }
     }
 
-    private func cycleTabs(forward: Bool) {
+    func cycleTabs(forward: Bool) {
         guard tabs.count > 1 else { return }
 
         if forward {
@@ -1434,7 +1260,7 @@ extension MainWindowController {
         updateSidebarLayout()
     }
 
-    private func togglePanel(_ panel: SidebarPanel) {
+    func togglePanel(_ panel: SidebarPanel) {
         if sidebarContainerView.visible && sidebarContainerView.currentPanel == panel {
             sidebarContainerView.setVisible(false)
             updateSidebarLayout()
@@ -1580,6 +1406,71 @@ extension MainWindowController: AutomationHost {
     func automationSetActiveTabAgentState(_ state: AgentState) {
         guard let tab = tabs[safe: activeTabIndex] else { return }
         applyAgentState(state, to: tab)
+    }
+}
+
+// MARK: - PaletteCommandHost
+extension MainWindowController: PaletteCommandHost {
+    var paletteHostWindow: NSWindow? { window }
+
+    func createNewTabFromCommand() {
+        createNewTab()
+    }
+
+    func selectTab(index: Int) {
+        switchToTab(index: index)
+    }
+
+    func closeActiveTab() {
+        closeTab(index: activeTabIndex)
+    }
+
+    func focusAgentAttentionTab() {
+        jumpToNextAttentionTab()
+    }
+
+    func splitActivePane(direction: SplitDirection) {
+        currentPaneSplitController?.splitPane(direction: direction)
+    }
+
+    func focusAdjacentPane(forward: Bool) {
+        forward ? currentPaneSplitController?.focusNextPane() : currentPaneSplitController?.focusPreviousPane()
+    }
+
+    func jumpToPrompt(previous: Bool) {
+        guard let terminal = tabs[safe: activeTabIndex]?.activePane?.terminalViewController else { return }
+        if previous {
+            terminal.scrollToPreviousPrompt()
+        } else {
+            terminal.scrollToNextPrompt()
+        }
+    }
+
+    func findInActiveTerminal() {
+        tabs[safe: activeTabIndex]?.activePane?.terminalViewController?.showFindBar()
+    }
+}
+
+// MARK: - WorktreeFlowHost
+extension MainWindowController: WorktreeFlowHost {
+    var worktreeWindow: NSWindow? { window }
+    var worktreeTabs: [TabModel] { tabs }
+
+    func worktreeWorkingDirectory() -> String? {
+        tabController.currentWorkingDirectoryForNewTerminal()
+    }
+
+    func worktreeSwitchToTab(index: Int) {
+        switchToTab(index: index)
+    }
+
+    @discardableResult
+    func worktreeCreateTab(workingDirectory: String?, command: [String]?) -> Bool {
+        createNewTab(workingDirectory: workingDirectory, command: command)
+    }
+
+    func worktreeRefreshPanel() {
+        sidebarContainerView.refreshWorktrees()
     }
 }
 

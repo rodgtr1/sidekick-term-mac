@@ -131,16 +131,50 @@ class PreferencesWindowController: NSWindowController {
         contentView.addSubview(tabView)
     }
 
-    private func setupGeneralTab() {
-        let generalView = NSView()
-        generalView.wantsLayer = true
-        generalView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+    /// A themed, layer-backed container for one preference pane.
+    private func makePaneView() -> NSView {
+        let view = NSView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        return view
+    }
 
-        // Window opacity
-        let opacityTitleLabel = NSTextField(labelWithString: "Window Opacity:")
-        opacityTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        opacityTitleLabel.textColor = AppTheme.primaryText
-        opacityTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+    /// Wrap a built pane view in a tab and append it. Call order here (in
+    /// setupUI) is the visible tab order.
+    private func addTab(_ view: NSView, identifier: String, label: String) {
+        let item = NSTabViewItem(identifier: identifier)
+        item.label = label
+        item.view = view
+        tabView.addTabViewItem(item)
+    }
+
+    /// The right-aligned monospaced value label paired with a slider.
+    private static func valueLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        label.textColor = AppTheme.secondaryText
+        label.alignment = .right
+        return label
+    }
+
+    /// A secondary wrapping help/status label. `preferredWidth` opts into the
+    /// low horizontal compression resistance the wide help blurbs need.
+    private static func wrappingLabel(_ text: String, fontSize: CGFloat, maxLines: Int, preferredWidth: CGFloat? = nil) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = NSFont.systemFont(ofSize: fontSize)
+        label.textColor = AppTheme.secondaryText
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = maxLines
+        if let preferredWidth {
+            label.preferredMaxLayoutWidth = preferredWidth
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        return label
+    }
+
+    private func setupGeneralTab() {
+        let generalView = makePaneView()
+        let form = PreferencesFormBuilder(container: generalView)
 
         opacitySlider = NSSlider()
         opacitySlider.minValue = 0.3
@@ -149,18 +183,11 @@ class PreferencesWindowController: NSWindowController {
         opacitySlider.allowsTickMarkValuesOnly = false
         opacitySlider.target = self
         opacitySlider.action = #selector(opacitySliderChanged(_:))
-        opacitySlider.translatesAutoresizingMaskIntoConstraints = false
 
-        opacityLabel = NSTextField(labelWithString: "100%")
-        opacityLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        opacityLabel.textColor = AppTheme.secondaryText
-        opacityLabel.alignment = .right
-        opacityLabel.translatesAutoresizingMaskIntoConstraints = false
+        opacityLabel = Self.valueLabel("100%")
 
-        // Background blur checkbox
         blurCheckbox = NSButton(checkboxWithTitle: "Enable background blur", target: self, action: #selector(blurCheckboxChanged(_:)))
         blurCheckbox.font = NSFont.systemFont(ofSize: 13)
-        blurCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
         restoreSessionCheckbox = NSButton(
             checkboxWithTitle: "Reopen previous tabs on launch (off starts with one tab at ~/)",
@@ -168,78 +195,28 @@ class PreferencesWindowController: NSWindowController {
             action: #selector(restoreSessionChanged(_:))
         )
         restoreSessionCheckbox.font = NSFont.systemFont(ofSize: 13)
-        restoreSessionCheckbox.translatesAutoresizingMaskIntoConstraints = false
-
-        let rawConfigLabel = NSTextField(labelWithString: "Raw Config File:")
-        rawConfigLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        rawConfigLabel.textColor = AppTheme.primaryText
-        rawConfigLabel.translatesAutoresizingMaskIntoConstraints = false
 
         rawConfigButton = NSButton(title: "View/Edit Raw Config...", target: self, action: #selector(rawConfigButtonClicked(_:)))
         rawConfigButton.bezelStyle = .rounded
-        rawConfigButton.translatesAutoresizingMaskIntoConstraints = false
 
-        generalView.addSubview(opacityTitleLabel)
-        generalView.addSubview(opacitySlider)
-        generalView.addSubview(opacityLabel)
-        generalView.addSubview(blurCheckbox)
-        generalView.addSubview(restoreSessionCheckbox)
-        generalView.addSubview(rawConfigLabel)
-        generalView.addSubview(rawConfigButton)
+        form.fieldLabel("Window Opacity:", gapAbove: 30)
+        form.sliderRow(opacitySlider, valueLabel: opacityLabel, gapAbove: 10)
+        form.checkbox(blurCheckbox, gapAbove: 20)
+        form.checkbox(restoreSessionCheckbox, gapAbove: 12)
+        form.fieldLabel("Raw Config File:", gapAbove: 30)
+        form.leadingControl(rawConfigButton, gapAbove: 10)
 
-        NSLayoutConstraint.activate([
-            opacityTitleLabel.topAnchor.constraint(equalTo: generalView.topAnchor, constant: 30),
-            opacityTitleLabel.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
-
-            opacitySlider.topAnchor.constraint(equalTo: opacityTitleLabel.bottomAnchor, constant: 10),
-            opacitySlider.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
-            opacitySlider.trailingAnchor.constraint(equalTo: opacityLabel.leadingAnchor, constant: -10),
-
-            opacityLabel.topAnchor.constraint(equalTo: opacitySlider.topAnchor),
-            opacityLabel.trailingAnchor.constraint(equalTo: generalView.trailingAnchor, constant: -20),
-            opacityLabel.widthAnchor.constraint(equalToConstant: 50),
-
-            blurCheckbox.topAnchor.constraint(equalTo: opacitySlider.bottomAnchor, constant: 20),
-            blurCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
-
-            restoreSessionCheckbox.topAnchor.constraint(equalTo: blurCheckbox.bottomAnchor, constant: 12),
-            restoreSessionCheckbox.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
-
-            rawConfigLabel.topAnchor.constraint(equalTo: restoreSessionCheckbox.bottomAnchor, constant: 30),
-            rawConfigLabel.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20),
-
-            rawConfigButton.topAnchor.constraint(equalTo: rawConfigLabel.bottomAnchor, constant: 10),
-            rawConfigButton.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 20)
-        ])
-
-        let generalTabItem = NSTabViewItem(identifier: "general")
-        generalTabItem.label = "General"
-        generalTabItem.view = generalView
-        tabView.addTabViewItem(generalTabItem)
+        addTab(generalView, identifier: "general", label: "General")
     }
 
     private func setupTerminalTab() {
-        let terminalView = NSView()
-        terminalView.wantsLayer = true
-        terminalView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-
-        // Font family
-        let fontFamilyLabel = NSTextField(labelWithString: "Font Family:")
-        fontFamilyLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        fontFamilyLabel.textColor = AppTheme.primaryText
-        fontFamilyLabel.translatesAutoresizingMaskIntoConstraints = false
+        let terminalView = makePaneView()
+        let form = PreferencesFormBuilder(container: terminalView)
 
         fontFamilyPopup = NSPopUpButton()
         fontFamilyPopup.addItems(withTitles: terminalFontFamilies())
         fontFamilyPopup.target = self
         fontFamilyPopup.action = #selector(fontFamilyChanged(_:))
-        fontFamilyPopup.translatesAutoresizingMaskIntoConstraints = false
-
-        // Font size
-        let fontSizeTitleLabel = NSTextField(labelWithString: "Font Size:")
-        fontSizeTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        fontSizeTitleLabel.textColor = AppTheme.primaryText
-        fontSizeTitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         fontSizeSlider = NSSlider()
         fontSizeSlider.minValue = 8
@@ -248,28 +225,15 @@ class PreferencesWindowController: NSWindowController {
         fontSizeSlider.allowsTickMarkValuesOnly = true
         fontSizeSlider.target = self
         fontSizeSlider.action = #selector(fontSizeSliderChanged(_:))
-        fontSizeSlider.translatesAutoresizingMaskIntoConstraints = false
 
-        fontSizeLabel = NSTextField(labelWithString: "13pt")
-        fontSizeLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        fontSizeLabel.textColor = AppTheme.secondaryText
-        fontSizeLabel.alignment = .right
-        fontSizeLabel.translatesAutoresizingMaskIntoConstraints = false
+        fontSizeLabel = Self.valueLabel("13pt")
 
-        // Bold-is-bright
         boldIsBrightCheckbox = NSButton(
             checkboxWithTitle: "Use bright colors for bold text",
             target: self,
             action: #selector(boldIsBrightChanged(_:))
         )
         boldIsBrightCheckbox.font = NSFont.systemFont(ofSize: 13)
-        boldIsBrightCheckbox.translatesAutoresizingMaskIntoConstraints = false
-
-        // Window padding
-        let paddingTitleLabel = NSTextField(labelWithString: "Content Padding:")
-        paddingTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        paddingTitleLabel.textColor = AppTheme.primaryText
-        paddingTitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         paddingSlider = NSSlider()
         paddingSlider.minValue = 0
@@ -278,26 +242,10 @@ class PreferencesWindowController: NSWindowController {
         paddingSlider.allowsTickMarkValuesOnly = true
         paddingSlider.target = self
         paddingSlider.action = #selector(paddingSliderChanged(_:))
-        paddingSlider.translatesAutoresizingMaskIntoConstraints = false
 
-        paddingLabel = NSTextField(labelWithString: "8px")
-        paddingLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        paddingLabel.textColor = AppTheme.secondaryText
-        paddingLabel.alignment = .right
-        paddingLabel.translatesAutoresizingMaskIntoConstraints = false
+        paddingLabel = Self.valueLabel("8px")
 
-        // Shell integration
-        let shellIntegrationTitleLabel = NSTextField(labelWithString: "Shell Integration:")
-        shellIntegrationTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        shellIntegrationTitleLabel.textColor = AppTheme.primaryText
-        shellIntegrationTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        shellIntegrationStatusLabel = NSTextField(labelWithString: "")
-        shellIntegrationStatusLabel.font = NSFont.systemFont(ofSize: 12)
-        shellIntegrationStatusLabel.textColor = AppTheme.secondaryText
-        shellIntegrationStatusLabel.lineBreakMode = .byWordWrapping
-        shellIntegrationStatusLabel.maximumNumberOfLines = 3
-        shellIntegrationStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        shellIntegrationStatusLabel = Self.wrappingLabel("", fontSize: 12, maxLines: 3)
 
         shellIntegrationButton = NSButton(
             title: "Install for zsh…",
@@ -305,107 +253,34 @@ class PreferencesWindowController: NSWindowController {
             action: #selector(installShellIntegrationClicked(_:))
         )
         shellIntegrationButton.bezelStyle = .rounded
-        shellIntegrationButton.translatesAutoresizingMaskIntoConstraints = false
 
-        terminalView.addSubview(fontFamilyLabel)
-        terminalView.addSubview(fontFamilyPopup)
-        terminalView.addSubview(fontSizeTitleLabel)
-        terminalView.addSubview(fontSizeSlider)
-        terminalView.addSubview(fontSizeLabel)
-        terminalView.addSubview(boldIsBrightCheckbox)
-        terminalView.addSubview(paddingTitleLabel)
-        terminalView.addSubview(paddingSlider)
-        terminalView.addSubview(paddingLabel)
-        terminalView.addSubview(shellIntegrationTitleLabel)
-        terminalView.addSubview(shellIntegrationStatusLabel)
-        terminalView.addSubview(shellIntegrationButton)
+        form.fieldLabel("Font Family:", gapAbove: 30)
+        form.leadingControl(fontFamilyPopup, gapAbove: 10, width: 200)
+        form.fieldLabel("Font Size:", gapAbove: 30)
+        form.sliderRow(fontSizeSlider, valueLabel: fontSizeLabel, gapAbove: 10)
+        form.checkbox(boldIsBrightCheckbox, gapAbove: 24)
+        form.fieldLabel("Content Padding:", gapAbove: 24)
+        form.sliderRow(paddingSlider, valueLabel: paddingLabel, gapAbove: 10)
+        form.fieldLabel("Shell Integration:", gapAbove: 30)
+        form.fullWidth(shellIntegrationStatusLabel, gapAbove: 6)
+        form.leadingControl(shellIntegrationButton, gapAbove: 10)
 
-        NSLayoutConstraint.activate([
-            boldIsBrightCheckbox.topAnchor.constraint(equalTo: fontSizeSlider.bottomAnchor, constant: 24),
-            boldIsBrightCheckbox.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
-
-            paddingTitleLabel.topAnchor.constraint(equalTo: boldIsBrightCheckbox.bottomAnchor, constant: 24),
-            paddingTitleLabel.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
-
-            paddingSlider.topAnchor.constraint(equalTo: paddingTitleLabel.bottomAnchor, constant: 10),
-            paddingSlider.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
-            paddingSlider.trailingAnchor.constraint(equalTo: paddingLabel.leadingAnchor, constant: -10),
-
-            paddingLabel.topAnchor.constraint(equalTo: paddingSlider.topAnchor),
-            paddingLabel.trailingAnchor.constraint(equalTo: terminalView.trailingAnchor, constant: -20),
-            paddingLabel.widthAnchor.constraint(equalToConstant: 50),
-
-            shellIntegrationTitleLabel.topAnchor.constraint(equalTo: paddingSlider.bottomAnchor, constant: 30),
-            shellIntegrationTitleLabel.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
-
-            shellIntegrationStatusLabel.topAnchor.constraint(equalTo: shellIntegrationTitleLabel.bottomAnchor, constant: 6),
-            shellIntegrationStatusLabel.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
-            shellIntegrationStatusLabel.trailingAnchor.constraint(equalTo: terminalView.trailingAnchor, constant: -20),
-
-            shellIntegrationButton.topAnchor.constraint(equalTo: shellIntegrationStatusLabel.bottomAnchor, constant: 10),
-            shellIntegrationButton.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
-        ])
-
-        NSLayoutConstraint.activate([
-            fontFamilyLabel.topAnchor.constraint(equalTo: terminalView.topAnchor, constant: 30),
-            fontFamilyLabel.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
-
-            fontFamilyPopup.topAnchor.constraint(equalTo: fontFamilyLabel.bottomAnchor, constant: 10),
-            fontFamilyPopup.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
-            fontFamilyPopup.widthAnchor.constraint(equalToConstant: 200),
-
-            fontSizeTitleLabel.topAnchor.constraint(equalTo: fontFamilyPopup.bottomAnchor, constant: 30),
-            fontSizeTitleLabel.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
-
-            fontSizeSlider.topAnchor.constraint(equalTo: fontSizeTitleLabel.bottomAnchor, constant: 10),
-            fontSizeSlider.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor, constant: 20),
-            fontSizeSlider.trailingAnchor.constraint(equalTo: fontSizeLabel.leadingAnchor, constant: -10),
-
-            fontSizeLabel.topAnchor.constraint(equalTo: fontSizeSlider.topAnchor),
-            fontSizeLabel.trailingAnchor.constraint(equalTo: terminalView.trailingAnchor, constant: -20),
-            fontSizeLabel.widthAnchor.constraint(equalToConstant: 50)
-        ])
-
-        let terminalTabItem = NSTabViewItem(identifier: "terminal")
-        terminalTabItem.label = "Terminal"
-        terminalTabItem.view = terminalView
-        tabView.addTabViewItem(terminalTabItem)
+        addTab(terminalView, identifier: "terminal", label: "Terminal")
     }
 
     private func setupAgentsTab() {
-        let agentsView = NSView()
-        agentsView.wantsLayer = true
-        agentsView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        let agentsView = makePaneView()
+        let form = PreferencesFormBuilder(container: agentsView)
 
-        let blurbLabel = NSTextField(
-            labelWithString: "Wire up agent CLIs to report Working / Needs input / Done to the agents panel. Detected from each tool's config directory; safe to re-run."
+        let blurbLabel = Self.wrappingLabel(
+            "Wire up agent CLIs to report Working / Needs input / Done to the agents panel. Detected from each tool's config directory; safe to re-run.",
+            fontSize: 12,
+            maxLines: 3
         )
-        blurbLabel.font = NSFont.systemFont(ofSize: 12)
-        blurbLabel.textColor = AppTheme.secondaryText
-        blurbLabel.lineBreakMode = .byWordWrapping
-        blurbLabel.maximumNumberOfLines = 3
-        blurbLabel.translatesAutoresizingMaskIntoConstraints = false
-        agentsView.addSubview(blurbLabel)
+        form.fullWidth(blurbLabel, gapAbove: 20)
 
-        NSLayoutConstraint.activate([
-            blurbLabel.topAnchor.constraint(equalTo: agentsView.topAnchor, constant: 20),
-            blurbLabel.leadingAnchor.constraint(equalTo: agentsView.leadingAnchor, constant: 20),
-            blurbLabel.trailingAnchor.constraint(equalTo: agentsView.trailingAnchor, constant: -20)
-        ])
-
-        var previousAnchor = blurbLabel.bottomAnchor
         for (index, agent) in AgentIntegrationInstaller.AgentID.allCases.enumerated() {
-            let nameLabel = NSTextField(labelWithString: agent.displayName)
-            nameLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-            nameLabel.textColor = AppTheme.primaryText
-            nameLabel.translatesAutoresizingMaskIntoConstraints = false
-
-            let statusLabel = NSTextField(labelWithString: "")
-            statusLabel.font = NSFont.systemFont(ofSize: 12)
-            statusLabel.textColor = AppTheme.secondaryText
-            statusLabel.lineBreakMode = .byWordWrapping
-            statusLabel.maximumNumberOfLines = 2
-            statusLabel.translatesAutoresizingMaskIntoConstraints = false
+            let statusLabel = Self.wrappingLabel("", fontSize: 12, maxLines: 2)
 
             let installButton = NSButton(
                 title: "Install",
@@ -414,48 +289,21 @@ class PreferencesWindowController: NSWindowController {
             )
             installButton.bezelStyle = .rounded
             installButton.tag = index
-            installButton.translatesAutoresizingMaskIntoConstraints = false
 
-            agentsView.addSubview(nameLabel)
-            agentsView.addSubview(statusLabel)
-            agentsView.addSubview(installButton)
-
-            NSLayoutConstraint.activate([
-                nameLabel.topAnchor.constraint(equalTo: previousAnchor, constant: 22),
-                nameLabel.leadingAnchor.constraint(equalTo: agentsView.leadingAnchor, constant: 20),
-
-                installButton.centerYAnchor.constraint(equalTo: nameLabel.centerYAnchor),
-                installButton.trailingAnchor.constraint(equalTo: agentsView.trailingAnchor, constant: -20),
-                installButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
-
-                statusLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 4),
-                statusLabel.leadingAnchor.constraint(equalTo: agentsView.leadingAnchor, constant: 20),
-                statusLabel.trailingAnchor.constraint(equalTo: agentsView.trailingAnchor, constant: -20)
-            ])
+            form.agentRow(name: agent.displayName, statusLabel: statusLabel, button: installButton, gapAbove: 22)
 
             agentStatusLabels[agent] = statusLabel
             agentInstallButtons[agent] = installButton
-            previousAnchor = statusLabel.bottomAnchor
         }
 
         updateAgentIntegrationStatuses()
 
-        let agentsTabItem = NSTabViewItem(identifier: "agents")
-        agentsTabItem.label = "Agents"
-        agentsTabItem.view = agentsView
-        tabView.addTabViewItem(agentsTabItem)
+        addTab(agentsView, identifier: "agents", label: "Agents")
     }
 
     private func setupApprovalsTab() {
-        let approvalsView = NSView()
-        approvalsView.wantsLayer = true
-        approvalsView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-
-        // Mode
-        let modeLabel = NSTextField(labelWithString: "Agent Edits:")
-        modeLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        modeLabel.textColor = AppTheme.primaryText
-        modeLabel.translatesAutoresizingMaskIntoConstraints = false
+        let approvalsView = makePaneView()
+        let form = PreferencesFormBuilder(container: approvalsView)
 
         approvalModePopup = NSPopUpButton()
         approvalModePopup.addItems(withTitles: [
@@ -465,116 +313,51 @@ class PreferencesWindowController: NSWindowController {
         ])
         approvalModePopup.target = self
         approvalModePopup.action = #selector(approvalModeChanged(_:))
-        approvalModePopup.translatesAutoresizingMaskIntoConstraints = false
 
-        let modeHelp = NSTextField(
-            labelWithString: "Edits are applied without prompting; risky commands still ask. \"Everything\" skips all prompts. Applies to new agents — toggle per session with ⇧⌘A."
+        let modeHelp = Self.wrappingLabel(
+            "Edits are applied without prompting; risky commands still ask. \"Everything\" skips all prompts. Applies to new agents — toggle per session with ⇧⌘A.",
+            fontSize: 11,
+            maxLines: 6,
+            preferredWidth: 420
         )
-        modeHelp.font = NSFont.systemFont(ofSize: 11)
-        modeHelp.textColor = AppTheme.secondaryText
-        modeHelp.lineBreakMode = .byWordWrapping
-        modeHelp.maximumNumberOfLines = 6
-        modeHelp.preferredMaxLayoutWidth = 420
-        modeHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        modeHelp.translatesAutoresizingMaskIntoConstraints = false
-
-        // Auto-allow globs
-        let autoAllowLabel = NSTextField(labelWithString: "Always Allow (comma-separated globs):")
-        autoAllowLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        autoAllowLabel.textColor = AppTheme.primaryText
-        autoAllowLabel.translatesAutoresizingMaskIntoConstraints = false
 
         autoAllowField = NSTextField()
         autoAllowField.placeholderString = "Sources/**, docs/**"
         autoAllowField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         autoAllowField.target = self
         autoAllowField.action = #selector(autoAllowChanged(_:))
-        autoAllowField.translatesAutoresizingMaskIntoConstraints = false
 
-        let autoAllowHelp = NSTextField(
-            labelWithString: "Approved silently in ask mode. Ignored when auto-approving everything."
+        let autoAllowHelp = Self.wrappingLabel(
+            "Approved silently in ask mode. Ignored when auto-approving everything.",
+            fontSize: 11,
+            maxLines: 2,
+            preferredWidth: 420
         )
-        autoAllowHelp.font = NSFont.systemFont(ofSize: 11)
-        autoAllowHelp.textColor = AppTheme.secondaryText
-        autoAllowHelp.lineBreakMode = .byWordWrapping
-        autoAllowHelp.maximumNumberOfLines = 2
-        autoAllowHelp.preferredMaxLayoutWidth = 420
-        autoAllowHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        autoAllowHelp.translatesAutoresizingMaskIntoConstraints = false
-
-        // Always-ask globs
-        let alwaysAskLabel = NSTextField(labelWithString: "Always Ask (comma-separated globs):")
-        alwaysAskLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        alwaysAskLabel.textColor = AppTheme.primaryText
-        alwaysAskLabel.translatesAutoresizingMaskIntoConstraints = false
 
         alwaysAskField = NSTextField()
         alwaysAskField.placeholderString = ".env, **/secrets/**, *.pem"
         alwaysAskField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         alwaysAskField.target = self
         alwaysAskField.action = #selector(alwaysAskChanged(_:))
-        alwaysAskField.translatesAutoresizingMaskIntoConstraints = false
 
-        let alwaysAskHelp = NSTextField(
-            labelWithString: "Always prompts, even when auto-approving. Highest precedence — use for secrets."
+        let alwaysAskHelp = Self.wrappingLabel(
+            "Always prompts, even when auto-approving. Highest precedence — use for secrets.",
+            fontSize: 11,
+            maxLines: 2,
+            preferredWidth: 420
         )
-        alwaysAskHelp.font = NSFont.systemFont(ofSize: 11)
-        alwaysAskHelp.textColor = AppTheme.secondaryText
-        alwaysAskHelp.lineBreakMode = .byWordWrapping
-        alwaysAskHelp.maximumNumberOfLines = 2
-        alwaysAskHelp.preferredMaxLayoutWidth = 420
-        alwaysAskHelp.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        alwaysAskHelp.translatesAutoresizingMaskIntoConstraints = false
 
-        approvalsView.addSubview(modeLabel)
-        approvalsView.addSubview(approvalModePopup)
-        approvalsView.addSubview(modeHelp)
-        approvalsView.addSubview(autoAllowLabel)
-        approvalsView.addSubview(autoAllowField)
-        approvalsView.addSubview(autoAllowHelp)
-        approvalsView.addSubview(alwaysAskLabel)
-        approvalsView.addSubview(alwaysAskField)
-        approvalsView.addSubview(alwaysAskHelp)
+        form.fieldLabel("Agent Edits:", gapAbove: 30)
+        form.leadingControl(approvalModePopup, gapAbove: 10, width: 220)
+        form.fullWidth(modeHelp, gapAbove: 6)
+        form.fieldLabel("Always Allow (comma-separated globs):", gapAbove: 22)
+        form.fullWidth(autoAllowField, gapAbove: 8)
+        form.fullWidth(autoAllowHelp, gapAbove: 6)
+        form.fieldLabel("Always Ask (comma-separated globs):", gapAbove: 22)
+        form.fullWidth(alwaysAskField, gapAbove: 8)
+        form.fullWidth(alwaysAskHelp, gapAbove: 6)
 
-        NSLayoutConstraint.activate([
-            modeLabel.topAnchor.constraint(equalTo: approvalsView.topAnchor, constant: 30),
-            modeLabel.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
-
-            approvalModePopup.topAnchor.constraint(equalTo: modeLabel.bottomAnchor, constant: 10),
-            approvalModePopup.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
-            approvalModePopup.widthAnchor.constraint(equalToConstant: 220),
-
-            modeHelp.topAnchor.constraint(equalTo: approvalModePopup.bottomAnchor, constant: 6),
-            modeHelp.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
-            modeHelp.trailingAnchor.constraint(equalTo: approvalsView.trailingAnchor, constant: -20),
-
-            autoAllowLabel.topAnchor.constraint(equalTo: modeHelp.bottomAnchor, constant: 22),
-            autoAllowLabel.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
-
-            autoAllowField.topAnchor.constraint(equalTo: autoAllowLabel.bottomAnchor, constant: 8),
-            autoAllowField.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
-            autoAllowField.trailingAnchor.constraint(equalTo: approvalsView.trailingAnchor, constant: -20),
-
-            autoAllowHelp.topAnchor.constraint(equalTo: autoAllowField.bottomAnchor, constant: 6),
-            autoAllowHelp.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
-            autoAllowHelp.trailingAnchor.constraint(equalTo: approvalsView.trailingAnchor, constant: -20),
-
-            alwaysAskLabel.topAnchor.constraint(equalTo: autoAllowHelp.bottomAnchor, constant: 22),
-            alwaysAskLabel.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
-
-            alwaysAskField.topAnchor.constraint(equalTo: alwaysAskLabel.bottomAnchor, constant: 8),
-            alwaysAskField.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
-            alwaysAskField.trailingAnchor.constraint(equalTo: approvalsView.trailingAnchor, constant: -20),
-
-            alwaysAskHelp.topAnchor.constraint(equalTo: alwaysAskField.bottomAnchor, constant: 6),
-            alwaysAskHelp.leadingAnchor.constraint(equalTo: approvalsView.leadingAnchor, constant: 20),
-            alwaysAskHelp.trailingAnchor.constraint(equalTo: approvalsView.trailingAnchor, constant: -20)
-        ])
-
-        let approvalsTabItem = NSTabViewItem(identifier: "approvals")
-        approvalsTabItem.label = "Approvals"
-        approvalsTabItem.view = approvalsView
-        tabView.addTabViewItem(approvalsTabItem)
+        addTab(approvalsView, identifier: "approvals", label: "Approvals")
     }
 
     // Theme picker model: every available theme, then an "Auto" entry that
@@ -590,72 +373,34 @@ class PreferencesWindowController: NSWindowController {
     }
 
     private func setupAppearanceTab() {
-        let appearanceView = NSView()
-        appearanceView.wantsLayer = true
-        appearanceView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-
-        // Theme selection
-        let themeLabel = NSTextField(labelWithString: "Color Theme:")
-        themeLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        themeLabel.textColor = AppTheme.primaryText
-        themeLabel.translatesAutoresizingMaskIntoConstraints = false
+        let appearanceView = makePaneView()
+        let form = PreferencesFormBuilder(container: appearanceView)
 
         themePopup = NSPopUpButton()
         themePopup.addItems(withTitles: themeMenuTitles)
         themePopup.target = self
         themePopup.action = #selector(themeChanged(_:))
-        themePopup.translatesAutoresizingMaskIntoConstraints = false
 
-        appearanceView.addSubview(themeLabel)
-        appearanceView.addSubview(themePopup)
+        form.fieldLabel("Color Theme:", gapAbove: 30)
+        form.leadingControl(themePopup, gapAbove: 10, width: 200)
 
-        NSLayoutConstraint.activate([
-            themeLabel.topAnchor.constraint(equalTo: appearanceView.topAnchor, constant: 30),
-            themeLabel.leadingAnchor.constraint(equalTo: appearanceView.leadingAnchor, constant: 20),
-
-            themePopup.topAnchor.constraint(equalTo: themeLabel.bottomAnchor, constant: 10),
-            themePopup.leadingAnchor.constraint(equalTo: appearanceView.leadingAnchor, constant: 20),
-            themePopup.widthAnchor.constraint(equalToConstant: 200)
-        ])
-
-        let appearanceTabItem = NSTabViewItem(identifier: "appearance")
-        appearanceTabItem.label = "Appearance"
-        appearanceTabItem.view = appearanceView
-        tabView.addTabViewItem(appearanceTabItem)
+        addTab(appearanceView, identifier: "appearance", label: "Appearance")
     }
 
     private func setupEditorTab() {
-        let editorView = NSView()
-        editorView.wantsLayer = true
-        editorView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-
-        let fileOpenModeLabel = NSTextField(labelWithString: "File Tree Opens:")
-        fileOpenModeLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        fileOpenModeLabel.textColor = AppTheme.primaryText
-        fileOpenModeLabel.translatesAutoresizingMaskIntoConstraints = false
+        let editorView = makePaneView()
+        let form = PreferencesFormBuilder(container: editorView)
 
         fileOpenModePopup = NSPopUpButton()
         fileOpenModePopup.addItems(withTitles: ["Terminal Editor", "Built-in Editor"])
         fileOpenModePopup.target = self
         fileOpenModePopup.action = #selector(fileOpenModeChanged(_:))
-        fileOpenModePopup.translatesAutoresizingMaskIntoConstraints = false
-
-        let editorFontFamilyLabel = NSTextField(labelWithString: "Font Family:")
-        editorFontFamilyLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        editorFontFamilyLabel.textColor = AppTheme.primaryText
-        editorFontFamilyLabel.translatesAutoresizingMaskIntoConstraints = false
 
         editorFontFamilyPopup = NSPopUpButton()
         editorFontFamilyPopup.addItem(withTitle: Self.systemDefaultFontTitle)
         editorFontFamilyPopup.addItems(withTitles: terminalFontFamilies())
         editorFontFamilyPopup.target = self
         editorFontFamilyPopup.action = #selector(editorFontFamilyChanged(_:))
-        editorFontFamilyPopup.translatesAutoresizingMaskIntoConstraints = false
-
-        let editorFontSizeTitleLabel = NSTextField(labelWithString: "Text Size:")
-        editorFontSizeTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        editorFontSizeTitleLabel.textColor = AppTheme.primaryText
-        editorFontSizeTitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         editorFontSizeSlider = NSSlider()
         editorFontSizeSlider.minValue = 8
@@ -664,17 +409,11 @@ class PreferencesWindowController: NSWindowController {
         editorFontSizeSlider.allowsTickMarkValuesOnly = true
         editorFontSizeSlider.target = self
         editorFontSizeSlider.action = #selector(editorFontSizeChanged(_:))
-        editorFontSizeSlider.translatesAutoresizingMaskIntoConstraints = false
 
-        editorFontSizeLabel = NSTextField(labelWithString: "13pt")
-        editorFontSizeLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        editorFontSizeLabel.textColor = AppTheme.secondaryText
-        editorFontSizeLabel.alignment = .right
-        editorFontSizeLabel.translatesAutoresizingMaskIntoConstraints = false
+        editorFontSizeLabel = Self.valueLabel("13pt")
 
         wordWrapCheckbox = NSButton(checkboxWithTitle: "Wrap long lines", target: self, action: #selector(wordWrapChanged(_:)))
         wordWrapCheckbox.font = NSFont.systemFont(ofSize: 13)
-        wordWrapCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
         showHiddenFilesCheckbox = NSButton(
             checkboxWithTitle: "Show hidden files in file tree (dimmed)",
@@ -682,55 +421,17 @@ class PreferencesWindowController: NSWindowController {
             action: #selector(showHiddenFilesChanged(_:))
         )
         showHiddenFilesCheckbox.font = NSFont.systemFont(ofSize: 13)
-        showHiddenFilesCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
-        editorView.addSubview(fileOpenModeLabel)
-        editorView.addSubview(fileOpenModePopup)
-        editorView.addSubview(editorFontFamilyLabel)
-        editorView.addSubview(editorFontFamilyPopup)
-        editorView.addSubview(editorFontSizeTitleLabel)
-        editorView.addSubview(editorFontSizeSlider)
-        editorView.addSubview(editorFontSizeLabel)
-        editorView.addSubview(wordWrapCheckbox)
-        editorView.addSubview(showHiddenFilesCheckbox)
+        form.fieldLabel("File Tree Opens:", gapAbove: 30)
+        form.leadingControl(fileOpenModePopup, gapAbove: 10, width: 200)
+        form.fieldLabel("Font Family:", gapAbove: 24)
+        form.leadingControl(editorFontFamilyPopup, gapAbove: 10, width: 200)
+        form.fieldLabel("Text Size:", gapAbove: 24)
+        form.sliderRow(editorFontSizeSlider, valueLabel: editorFontSizeLabel, gapAbove: 10)
+        form.checkbox(wordWrapCheckbox, gapAbove: 24)
+        form.checkbox(showHiddenFilesCheckbox, gapAbove: 12)
 
-        NSLayoutConstraint.activate([
-            fileOpenModeLabel.topAnchor.constraint(equalTo: editorView.topAnchor, constant: 30),
-            fileOpenModeLabel.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
-
-            fileOpenModePopup.topAnchor.constraint(equalTo: fileOpenModeLabel.bottomAnchor, constant: 10),
-            fileOpenModePopup.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
-            fileOpenModePopup.widthAnchor.constraint(equalToConstant: 200),
-
-            editorFontFamilyLabel.topAnchor.constraint(equalTo: fileOpenModePopup.bottomAnchor, constant: 24),
-            editorFontFamilyLabel.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
-
-            editorFontFamilyPopup.topAnchor.constraint(equalTo: editorFontFamilyLabel.bottomAnchor, constant: 10),
-            editorFontFamilyPopup.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
-            editorFontFamilyPopup.widthAnchor.constraint(equalToConstant: 200),
-
-            editorFontSizeTitleLabel.topAnchor.constraint(equalTo: editorFontFamilyPopup.bottomAnchor, constant: 24),
-            editorFontSizeTitleLabel.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
-
-            editorFontSizeSlider.topAnchor.constraint(equalTo: editorFontSizeTitleLabel.bottomAnchor, constant: 10),
-            editorFontSizeSlider.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
-            editorFontSizeSlider.trailingAnchor.constraint(equalTo: editorFontSizeLabel.leadingAnchor, constant: -10),
-
-            editorFontSizeLabel.topAnchor.constraint(equalTo: editorFontSizeSlider.topAnchor),
-            editorFontSizeLabel.trailingAnchor.constraint(equalTo: editorView.trailingAnchor, constant: -20),
-            editorFontSizeLabel.widthAnchor.constraint(equalToConstant: 50),
-
-            wordWrapCheckbox.topAnchor.constraint(equalTo: editorFontSizeSlider.bottomAnchor, constant: 24),
-            wordWrapCheckbox.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20),
-
-            showHiddenFilesCheckbox.topAnchor.constraint(equalTo: wordWrapCheckbox.bottomAnchor, constant: 12),
-            showHiddenFilesCheckbox.leadingAnchor.constraint(equalTo: editorView.leadingAnchor, constant: 20)
-        ])
-
-        let editorTabItem = NSTabViewItem(identifier: "editor")
-        editorTabItem.label = "Editor"
-        editorTabItem.view = editorView
-        tabView.addTabViewItem(editorTabItem)
+        addTab(editorView, identifier: "editor", label: "Editor")
     }
 
     private func layoutViews() {
