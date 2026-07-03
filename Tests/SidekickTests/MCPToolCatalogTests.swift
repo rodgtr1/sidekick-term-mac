@@ -39,6 +39,9 @@ final class MCPToolCatalogTests: XCTestCase {
         "sidekick_pane_read": "pane_read",
         "sidekick_wait_agent_status": "wait_agent_status",
         "sidekick_wait_output": "wait_output",
+        "sidekick_worktree_list": "worktree_list",
+        "sidekick_worktree_remove": "worktree_remove",
+        "sidekick_worktree_prune": "worktree_prune",
     ]
 
     /// Minimal valid arguments per tool that the server's decoder will accept.
@@ -63,6 +66,10 @@ final class MCPToolCatalogTests: XCTestCase {
             return ["pane_id": paneID, "status": "idle"]
         case "sidekick_wait_output":
             return ["pane_id": paneID, "match": "done"]
+        case "sidekick_worktree_list", "sidekick_worktree_prune":
+            return [:]
+        case "sidekick_worktree_remove":
+            return ["branch": "feature/x"]
         default:
             return [:]
         }
@@ -194,6 +201,36 @@ final class MCPToolCatalogTests: XCTestCase {
         XCTAssertEqual(withJSON["format"] as? String, "json")
         let withoutJSON = try tool("sidekick_pane_read").buildRequest(["pane_id": UUID().uuidString])
         XCTAssertNil(withoutJSON["format"], "format should be absent (server defaults to text) when json isn't set")
+    }
+
+    // MARK: - worktree lifecycle
+
+    func testWorktreeRemoveMapsBranchToWorktreeAndOmitsForceByDefault() throws {
+        let request = try tool("sidekick_worktree_remove").buildRequest(["branch": "feature/x"])
+        XCTAssertEqual(request["action"] as? String, "worktree_remove")
+        XCTAssertEqual(request["worktree"] as? String, "feature/x",
+                       "the server reads the branch from the `worktree` key")
+        XCTAssertNil(request["force"], "force stays absent (server defaults to false) unless set")
+    }
+
+    func testWorktreeRemoveForwardsForceWhenSet() throws {
+        let request = try tool("sidekick_worktree_remove").buildRequest(["branch": "feature/x", "force": true])
+        XCTAssertEqual(request["force"] as? Bool, true)
+    }
+
+    func testWorktreeListAndPruneOmitCwdWhenAbsent() throws {
+        for name in ["sidekick_worktree_list", "sidekick_worktree_prune"] {
+            let request = try tool(name).buildRequest([:])
+            XCTAssertNil(request["cwd"], "\(name) must not emit an empty cwd — the server resolves it")
+        }
+    }
+
+    func testWorktreeListRendersWorktreesArray() {
+        let rendered = tool("sidekick_worktree_list").render([
+            "worktrees": [["path": "/repo", "branch": "main", "head": "abc123"]]
+        ])
+        XCTAssertTrue(rendered.contains("\"branch\""))
+        XCTAssertTrue(rendered.contains("main"))
     }
 
     // MARK: - wait_event

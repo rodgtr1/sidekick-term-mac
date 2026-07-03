@@ -300,232 +300,356 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         didReceiveCommand command: IPCCommandType,
         completion: @escaping @Sendable (IPCResponse) -> Void
     ) {
+        // Each verb has a focused handler below. They all run on the main thread
+        // (the server hops here before invoking the delegate) and may either
+        // reply synchronously or hold `completion` for a deferred answer (diff
+        // approval, waits, worktree git shell-outs).
         switch command {
         case .ping:
-            completion(IPCResponse(ok: true))
-
+            handlePing(completion: completion)
         case .newTab(let cwd):
-            if host?.automationCreateNewTab(workingDirectory: cwd) == true {
-                completion(IPCResponse(ok: true))
-            } else {
-                completion(IPCResponse(ok: false, error: "Tab limit (\(Limits.maxTabs)) reached; close a tab first"))
-            }
-
+            handleNewTab(cwd: cwd, completion: completion)
         case .showDiff(let paneID, let path, let old, let new):
-            if old.isEmpty && new.isEmpty {
-                // `sidekick-ctl open-diff <file>`: just view the file.
-                host?.automationOpenFile(URL(fileURLWithPath: path))
-                completion(IPCResponse(ok: true))
-            } else {
-                diffApproval.requestApproval(paneID: paneID, path: path, old: old, new: new) { accepted in
-                    completion(IPCResponse(ok: true, accepted: accepted))
-                }
-            }
-
+            handleShowDiff(paneID: paneID, path: path, old: old, new: new, completion: completion)
         case .agentReady:
-            host?.automationSetActiveTabAgentState(.ready)
-            completion(IPCResponse(ok: true))
-
+            handleSetAgentState(.ready, completion: completion)
         case .agentBusy:
-            host?.automationSetActiveTabAgentState(.working)
-            completion(IPCResponse(ok: true))
-
+            handleSetAgentState(.working, completion: completion)
         case .agentDone:
-            host?.automationSetActiveTabAgentState(.done)
-            completion(IPCResponse(ok: true))
-
+            handleSetAgentState(.done, completion: completion)
         case .agentIdle:
-            host?.automationSetActiveTabAgentState(.idle)
-            completion(IPCResponse(ok: true))
-
+            handleSetAgentState(.idle, completion: completion)
         case .paneList:
-            completion(IPCResponse(result: IPCResult(panes: allAutomationPaneInfo())))
-
+            handlePaneList(completion: completion)
         case .paneCurrent(let requestedPaneID):
-            let context = requestedPaneID.map { automationPane(id: $0) } ?? activeAutomationContext()
-            guard let context else {
-                completion(IPCResponse(ok: false, error: "Pane not found"))
-                return
-            }
-            completion(IPCResponse(result: IPCResult(
-                pane: automationPaneInfo(tab: context.tab, pane: context.pane, controller: context.controller)
-            )))
-
+            handlePaneCurrent(paneID: requestedPaneID, completion: completion)
         case .paneSplit(let paneID, let direction, let cwd, let command, let focus, let worktree):
-            guard let context = automationPane(id: paneID) else {
-                completion(IPCResponse(ok: false, error: "Pane not found"))
-                return
-            }
-            guard let branch = worktree else {
-                completeSplit(paneID: paneID, direction: direction, cwd: cwd, command: command, focus: focus, completion: completion)
-                return
-            }
-            // Creating the worktree shells out to git (checks out files), so do
-            // it off the main thread, then hop back to perform the UI split in
-            // the resulting directory.
-            let repoDirectory = context.pane.resolvedWorkingDirectory()
-                ?? cwd ?? FileManager.default.currentDirectoryPath
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                let result = Result { try WorktreeService().ensureWorktree(forBranch: branch, directory: repoDirectory) }
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success(let worktreePath):
-                        // If the coordinator deallocated (window closed mid-
-                        // checkout), still answer the client — an optional-chained
-                        // no-op here would leave it blocked forever and leak its fd.
-                        guard let self else {
-                            completion(IPCResponse(ok: false, error: "Window closed before split completed"))
-                            return
-                        }
-                        self.completeSplit(paneID: paneID, direction: direction, cwd: worktreePath, command: command, focus: focus, completion: completion)
-                    case .failure(let error):
-                        completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
-                    }
-                }
-            }
-
+            handlePaneSplit(paneID: paneID, direction: direction, cwd: cwd, command: command, focus: focus, worktree: worktree, completion: completion)
         case .paneFocus(let paneID):
-            guard let context = automationPane(id: paneID), context.controller.focusPane(id: paneID) else {
-                completion(IPCResponse(ok: false, error: "Pane not found"))
-                return
-            }
-            completion(IPCResponse(result: IPCResult(
-                pane: automationPaneInfo(tab: context.tab, pane: context.pane, controller: context.controller)
-            )))
-
+            handlePaneFocus(paneID: paneID, completion: completion)
         case .paneClose(let paneID):
-            guard let context = automationPane(id: paneID), context.controller.closePane(id: paneID) else {
-                completion(IPCResponse(ok: false, error: "Pane not found or cannot close the last pane"))
-                return
-            }
-            completion(IPCResponse())
-
+            handlePaneClose(paneID: paneID, completion: completion)
         case .paneSendText(let paneID, let text):
-            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
-                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
-                return
-            }
-            terminal.send(text: text)
-            completion(IPCResponse())
-
+            handlePaneSendText(paneID: paneID, text: text, completion: completion)
         case .paneRun(let paneID, let text):
-            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
-                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
-                return
-            }
-            terminal.send(text: text)
-            // TUIs that treat a burst of stdin as a paste (Claude Code, Codex)
-            // swallow a carriage return delivered in the same chunk, leaving
-            // the text sitting in the input box unsubmitted. Deliver Enter as
-            // its own write once the paste settles so it registers as a real
-            // keypress; shells execute on it either way.
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
-                terminal.send(key: "enter")
-                completion(IPCResponse())
-            }
-
+            handlePaneRun(paneID: paneID, text: text, completion: completion)
         case .paneSendKey(let paneID, let key):
-            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
-                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
-                return
-            }
-            guard terminal.send(key: key) else {
-                completion(IPCResponse(ok: false, error: "Unsupported key: \(key)"))
-                return
-            }
-            completion(IPCResponse())
-
+            handlePaneSendKey(paneID: paneID, key: key, completion: completion)
         case .paneRead(let paneID, let source, let lines, let json):
-            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
-                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
-                return
-            }
-            if json {
-                let records = terminal.recentCommandRecords(limit: lines).map {
-                    IPCCommandRecord(command: $0.command, exitCode: $0.exitCode, duration: $0.duration, output: $0.output)
-                }
-                completion(IPCResponse(result: IPCResult(commands: records)))
-            } else {
-                let text = source == "recent"
-                    ? terminal.recentOutputText(lineLimit: lines)
-                    : terminal.visibleScreenText(lineLimit: lines)
-                completion(IPCResponse(result: IPCResult(text: text)))
-            }
-
+            handlePaneRead(paneID: paneID, source: source, lines: lines, json: json, completion: completion)
         case .waitAgentStatus(let paneID, let status, let timeoutMS):
-            guard automationPane(id: paneID) != nil else {
-                completion(IPCResponse(ok: false, error: "Pane not found"))
-                return
-            }
-            waitForAgentStatus(paneID: paneID, target: status, timeoutMS: timeoutMS) { matched in
-                completion(IPCResponse(result: IPCResult(matched: matched)))
-            }
-
+            handleWaitAgentStatus(paneID: paneID, status: status, timeoutMS: timeoutMS, completion: completion)
         case .waitOutput(let paneID, let match, let timeoutMS):
-            guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
-                completion(IPCResponse(ok: false, error: "Terminal pane not found"))
-                return
-            }
-            waitForOutput(terminal: terminal, match: match, timeoutMS: timeoutMS) { matched in
-                completion(IPCResponse(result: IPCResult(matched: matched)))
-            }
-
+            handleWaitOutput(paneID: paneID, match: match, timeoutMS: timeoutMS, completion: completion)
+        case .worktreeList(let cwd):
+            handleWorktreeList(cwd: cwd, completion: completion)
         case .worktreeRemove(let branch, let cwd, let force):
-            let directory = worktreeDirectory(cwd: cwd)
-            DispatchQueue.global(qos: .userInitiated).async {
-                let result = Result { try WorktreeService().removeWorktree(forBranch: branch, directory: directory, force: force) }
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success:
-                        completion(IPCResponse(ok: true))
-                    case .failure(let error):
-                        completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
-                    }
-                }
-            }
-
-        case .reportTelemetry(let paneID, let usage):
-            // Store the latest per-pane usage. Keep it even for a pane we can't
-            // currently resolve — it may be mid-churn.
-            paneTelemetry[paneID] = usage
-            pruneStaleTelemetry(keeping: paneID)
-            let cost = usage.estimatedCostUSD(rates: telemetryRates).map { String(format: "$%.4f", $0) } ?? "n/a"
-            Log.debug("telemetry pane=\(paneID.uuidString.prefix(8)) model=\(usage.model ?? "?") in=\(usage.totalInputTokens) out=\(usage.outputTokens) est=\(cost)", category: "telemetry")
-            // Surface it on the owning tab so the agents-panel dashboard can read
-            // it, and nudge the panel to refresh.
-            let tab = automationPane(id: paneID)?.tab
-            tab.map(updateTabTelemetry)
-            NotificationCenter.default.post(name: .paneTelemetryChanged, object: tab)
-            emitTelemetryEvent(paneID: paneID, tab: tab, usage: usage)
-            completion(IPCResponse(ok: true))
-
-        case .resetTelemetry(let paneID):
-            // A new session started in this pane (SessionStart hook after
-            // startup or /clear): the previous session's usage no longer
-            // describes it, so blank the dashboard row instead of showing the
-            // old context bar until the first turn of the new session ends.
-            paneTelemetry.removeValue(forKey: paneID)
-            Log.debug("telemetry reset pane=\(paneID.uuidString.prefix(8))", category: "telemetry")
-            let tab = automationPane(id: paneID)?.tab
-            tab.map(updateTabTelemetry)
-            NotificationCenter.default.post(name: .paneTelemetryChanged, object: tab)
-            emitTelemetryEvent(paneID: paneID, tab: tab, usage: TranscriptUsage())
-            completion(IPCResponse(ok: true))
-
+            handleWorktreeRemove(branch: branch, cwd: cwd, force: force, completion: completion)
         case .worktreePrune(let cwd):
-            let directory = worktreeDirectory(cwd: cwd)
-            DispatchQueue.global(qos: .userInitiated).async {
-                let result = Result { try WorktreeService().pruneWorktrees(directory: directory) }
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success(let output):
-                        completion(IPCResponse(ok: true, result: IPCResult(text: output)))
-                    case .failure(let error):
-                        completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
+            handleWorktreePrune(cwd: cwd, completion: completion)
+        case .reportTelemetry(let paneID, let usage):
+            handleReportTelemetry(paneID: paneID, usage: usage, completion: completion)
+        case .resetTelemetry(let paneID):
+            handleResetTelemetry(paneID: paneID, completion: completion)
+        }
+    }
+
+    // MARK: - Per-command handlers
+
+    private func handlePing(completion: @escaping @Sendable (IPCResponse) -> Void) {
+        completion(IPCResponse(ok: true))
+    }
+
+    private func handleNewTab(cwd: String?, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        if host?.automationCreateNewTab(workingDirectory: cwd) == true {
+            completion(IPCResponse(ok: true))
+        } else {
+            completion(IPCResponse(ok: false, error: "Tab limit (\(Limits.maxTabs)) reached; close a tab first"))
+        }
+    }
+
+    private func handleShowDiff(
+        paneID: UUID?,
+        path: String,
+        old: String,
+        new: String,
+        completion: @escaping @Sendable (IPCResponse) -> Void
+    ) {
+        if old.isEmpty && new.isEmpty {
+            // `sidekick-ctl open-diff <file>`: just view the file.
+            host?.automationOpenFile(URL(fileURLWithPath: path))
+            completion(IPCResponse(ok: true))
+        } else {
+            diffApproval.requestApproval(paneID: paneID, path: path, old: old, new: new) { accepted in
+                completion(IPCResponse(ok: true, accepted: accepted))
+            }
+        }
+    }
+
+    private func handleSetAgentState(_ state: AgentState, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        host?.automationSetActiveTabAgentState(state)
+        completion(IPCResponse(ok: true))
+    }
+
+    private func handlePaneList(completion: @escaping @Sendable (IPCResponse) -> Void) {
+        completion(IPCResponse(result: IPCResult(panes: allAutomationPaneInfo())))
+    }
+
+    private func handlePaneCurrent(paneID: UUID?, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        let context = paneID.map { automationPane(id: $0) } ?? activeAutomationContext()
+        guard let context else {
+            completion(IPCResponse(ok: false, error: "Pane not found"))
+            return
+        }
+        completion(IPCResponse(result: IPCResult(
+            pane: automationPaneInfo(tab: context.tab, pane: context.pane, controller: context.controller)
+        )))
+    }
+
+    private func handlePaneSplit(
+        paneID: UUID,
+        direction: SplitDirection,
+        cwd: String?,
+        command: [String]?,
+        focus: Bool,
+        worktree: String?,
+        completion: @escaping @Sendable (IPCResponse) -> Void
+    ) {
+        guard let context = automationPane(id: paneID) else {
+            completion(IPCResponse(ok: false, error: "Pane not found"))
+            return
+        }
+        guard let branch = worktree else {
+            completeSplit(paneID: paneID, direction: direction, cwd: cwd, command: command, focus: focus, completion: completion)
+            return
+        }
+        // Creating the worktree shells out to git (checks out files), so do
+        // it off the main thread, then hop back to perform the UI split in
+        // the resulting directory.
+        let repoDirectory = context.pane.resolvedWorkingDirectory()
+            ?? cwd ?? FileManager.default.currentDirectoryPath
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try WorktreeService().ensureWorktree(forBranch: branch, directory: repoDirectory) }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let worktreePath):
+                    // If the coordinator deallocated (window closed mid-
+                    // checkout), still answer the client — an optional-chained
+                    // no-op here would leave it blocked forever and leak its fd.
+                    guard let self else {
+                        completion(IPCResponse(ok: false, error: "Window closed before split completed"))
+                        return
                     }
+                    self.completeSplit(paneID: paneID, direction: direction, cwd: worktreePath, command: command, focus: focus, completion: completion)
+                case .failure(let error):
+                    completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
                 }
             }
         }
+    }
+
+    private func handlePaneFocus(paneID: UUID, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        guard let context = automationPane(id: paneID), context.controller.focusPane(id: paneID) else {
+            completion(IPCResponse(ok: false, error: "Pane not found"))
+            return
+        }
+        completion(IPCResponse(result: IPCResult(
+            pane: automationPaneInfo(tab: context.tab, pane: context.pane, controller: context.controller)
+        )))
+    }
+
+    private func handlePaneClose(paneID: UUID, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        guard let context = automationPane(id: paneID), context.controller.closePane(id: paneID) else {
+            completion(IPCResponse(ok: false, error: "Pane not found or cannot close the last pane"))
+            return
+        }
+        completion(IPCResponse())
+    }
+
+    private func handlePaneSendText(paneID: UUID, text: String, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
+            completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+            return
+        }
+        terminal.send(text: text)
+        completion(IPCResponse())
+    }
+
+    private func handlePaneRun(paneID: UUID, text: String, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
+            completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+            return
+        }
+        terminal.send(text: text)
+        // TUIs that treat a burst of stdin as a paste (Claude Code, Codex)
+        // swallow a carriage return delivered in the same chunk, leaving
+        // the text sitting in the input box unsubmitted. Deliver Enter as
+        // its own write once the paste settles so it registers as a real
+        // keypress; shells execute on it either way.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
+            terminal.send(key: "enter")
+            completion(IPCResponse())
+        }
+    }
+
+    private func handlePaneSendKey(paneID: UUID, key: String, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
+            completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+            return
+        }
+        guard terminal.send(key: key) else {
+            completion(IPCResponse(ok: false, error: "Unsupported key: \(key)"))
+            return
+        }
+        completion(IPCResponse())
+    }
+
+    private func handlePaneRead(
+        paneID: UUID,
+        source: String,
+        lines: Int?,
+        json: Bool,
+        completion: @escaping @Sendable (IPCResponse) -> Void
+    ) {
+        guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
+            completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+            return
+        }
+        if json {
+            let records = terminal.recentCommandRecords(limit: lines).map {
+                IPCCommandRecord(command: $0.command, exitCode: $0.exitCode, duration: $0.duration, output: $0.output)
+            }
+            completion(IPCResponse(result: IPCResult(commands: records)))
+        } else {
+            let text = source == "recent"
+                ? terminal.recentOutputText(lineLimit: lines)
+                : terminal.visibleScreenText(lineLimit: lines)
+            completion(IPCResponse(result: IPCResult(text: text)))
+        }
+    }
+
+    private func handleWaitAgentStatus(
+        paneID: UUID,
+        status: AgentState,
+        timeoutMS: Int,
+        completion: @escaping @Sendable (IPCResponse) -> Void
+    ) {
+        guard automationPane(id: paneID) != nil else {
+            completion(IPCResponse(ok: false, error: "Pane not found"))
+            return
+        }
+        waitForAgentStatus(paneID: paneID, target: status, timeoutMS: timeoutMS) { matched in
+            completion(IPCResponse(result: IPCResult(matched: matched)))
+        }
+    }
+
+    private func handleWaitOutput(
+        paneID: UUID,
+        match: String,
+        timeoutMS: Int,
+        completion: @escaping @Sendable (IPCResponse) -> Void
+    ) {
+        guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
+            completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+            return
+        }
+        waitForOutput(terminal: terminal, match: match, timeoutMS: timeoutMS) { matched in
+            completion(IPCResponse(result: IPCResult(matched: matched)))
+        }
+    }
+
+    private func handleWorktreeList(cwd: String?, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        let directory = worktreeDirectory(cwd: cwd)
+        // Listing runs `git worktree list --porcelain`, so shell out off the
+        // main thread and hop back to reply, matching the other worktree verbs.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { () throws -> [IPCWorktreeInfo] in
+                guard let repoRoot = GitService().repositoryRoot(from: directory) else {
+                    throw WorktreeService.WorktreeError.notAGitRepository
+                }
+                return try WorktreeService().listWorktrees(repoRoot: repoRoot).map {
+                    IPCWorktreeInfo(path: $0.path, branch: $0.branch, head: $0.head,
+                                    detached: $0.isDetached, locked: $0.isLocked, bare: $0.isBare)
+                }
+            }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let worktrees):
+                    completion(IPCResponse(result: IPCResult(worktrees: worktrees)))
+                case .failure(let error):
+                    completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
+                }
+            }
+        }
+    }
+
+    private func handleWorktreeRemove(
+        branch: String,
+        cwd: String?,
+        force: Bool,
+        completion: @escaping @Sendable (IPCResponse) -> Void
+    ) {
+        let directory = worktreeDirectory(cwd: cwd)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try WorktreeService().removeWorktree(forBranch: branch, directory: directory, force: force) }
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    completion(IPCResponse(ok: true))
+                case .failure(let error):
+                    completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
+                }
+            }
+        }
+    }
+
+    private func handleWorktreePrune(cwd: String?, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        let directory = worktreeDirectory(cwd: cwd)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try WorktreeService().pruneWorktrees(directory: directory) }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let output):
+                    completion(IPCResponse(ok: true, result: IPCResult(text: output)))
+                case .failure(let error):
+                    completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
+                }
+            }
+        }
+    }
+
+    private func handleReportTelemetry(
+        paneID: UUID,
+        usage: TranscriptUsage,
+        completion: @escaping @Sendable (IPCResponse) -> Void
+    ) {
+        // Store the latest per-pane usage. Keep it even for a pane we can't
+        // currently resolve — it may be mid-churn.
+        paneTelemetry[paneID] = usage
+        pruneStaleTelemetry(keeping: paneID)
+        let cost = usage.estimatedCostUSD(rates: telemetryRates).map { String(format: "$%.4f", $0) } ?? "n/a"
+        Log.debug("telemetry pane=\(paneID.uuidString.prefix(8)) model=\(usage.model ?? "?") in=\(usage.totalInputTokens) out=\(usage.outputTokens) est=\(cost)", category: "telemetry")
+        // Surface it on the owning tab so the agents-panel dashboard can read
+        // it, and nudge the panel to refresh.
+        let tab = automationPane(id: paneID)?.tab
+        tab.map(updateTabTelemetry)
+        NotificationCenter.default.post(name: .paneTelemetryChanged, object: tab)
+        emitTelemetryEvent(paneID: paneID, tab: tab, usage: usage)
+        completion(IPCResponse(ok: true))
+    }
+
+    private func handleResetTelemetry(paneID: UUID, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        // A new session started in this pane (SessionStart hook after
+        // startup or /clear): the previous session's usage no longer
+        // describes it, so blank the dashboard row instead of showing the
+        // old context bar until the first turn of the new session ends.
+        paneTelemetry.removeValue(forKey: paneID)
+        Log.debug("telemetry reset pane=\(paneID.uuidString.prefix(8))", category: "telemetry")
+        let tab = automationPane(id: paneID)?.tab
+        tab.map(updateTabTelemetry)
+        NotificationCenter.default.post(name: .paneTelemetryChanged, object: tab)
+        emitTelemetryEvent(paneID: paneID, tab: tab, usage: TranscriptUsage())
+        completion(IPCResponse(ok: true))
     }
 
     /// Effective rate card (config overrides over defaults), via the host.
