@@ -497,6 +497,10 @@ nonisolated final class IPCServer: @unchecked Sendable {
             Log.debug("IPCServer: Failed to create socket")
             return nil
         }
+        // Never let pane shells inherit IPC fds: forkpty snapshots every open
+        // descriptor, so without close-on-exec each spawned shell keeps a copy
+        // of the listener for its whole lifetime.
+        _ = fcntl(socketFD, F_SETFD, FD_CLOEXEC)
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -556,6 +560,13 @@ nonisolated final class IPCServer: @unchecked Sendable {
                 close(clientFD)
                 continue
             }
+
+            // Close-on-exec, or a pane shell forked while this connection is
+            // in flight (pane_split / new_tab spawning their own pane's shell)
+            // inherits the fd and holds the socket open for the pane's whole
+            // lifetime — the client waiting on EOF then blocks until that
+            // unrelated pane closes, which reads as a hung split.
+            _ = fcntl(clientFD, F_SETFD, FD_CLOEXEC)
 
             // Responses can be deferred (diff approval), so the client may be
             // gone by the time we write. Without this, write() to a closed

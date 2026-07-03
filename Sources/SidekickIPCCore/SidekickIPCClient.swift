@@ -79,10 +79,13 @@ public final class SidekickIPCClient {
         return fd
     }
 
-    /// One request → one reply. Reads to EOF (the server closes after a single
-    /// response) rather than stopping at the first newline, so a reply containing
-    /// embedded newlines — e.g. `pane_read` output split across reads — isn't
-    /// truncated. Returns the parsed JSON object, or nil if unreachable/invalid.
+    /// One request → one reply. The protocol is line-delimited: the server
+    /// writes one JSON object (JSON escapes embedded newlines, so the payload
+    /// itself never contains a raw one) terminated by "\n". Stop at that
+    /// newline rather than waiting for EOF — EOF only arrives once *every*
+    /// copy of the fd closes, and a pane shell forked while the request was in
+    /// flight can hold an inherited copy for its whole lifetime, which would
+    /// block the read here long after the reply fully arrived.
     public func send(_ command: [String: Any]) -> [String: Any]? {
         guard let fd = openConnection(command, halfCloseWrite: true) else { return nil }
         defer { close(fd) }
@@ -91,8 +94,9 @@ public final class SidekickIPCClient {
         var buffer = [UInt8](repeating: 0, count: 4096)
         while response.count < 16 * 1024 * 1024 {
             let count = read(fd, &buffer, buffer.count)
-            if count <= 0 { break }   // EOF: the server closed after its single reply.
+            if count <= 0 { break }   // EOF or error before the newline: parse what arrived.
             response.append(contentsOf: buffer[0..<count])
+            if buffer[0..<count].contains(UInt8(ascii: "\n")) { break }
         }
         return try? JSONSerialization.jsonObject(with: response) as? [String: Any]
     }
