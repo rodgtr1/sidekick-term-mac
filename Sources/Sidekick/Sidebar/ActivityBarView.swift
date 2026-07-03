@@ -11,8 +11,8 @@ enum SidebarPanel: String, CaseIterable {
     case search = "Search"
     case git = "Git"
     case worktrees = "Worktrees"
-    case commands = "Commands"
     case hosts = "Hosts"
+    case commands = "Commands"
 
     var icon: String {
         switch self {
@@ -49,7 +49,7 @@ enum SidebarPanel: String, CaseIterable {
         case .agents: return "sparkle"
         case .hosts: return "server"
         case .worktrees: return "source-control"   // unused: falls back to SF Symbol
-        case .commands: return "list-flat"          // unused: falls back to SF Symbol
+        case .commands: return "output"
         }
     }
 
@@ -57,7 +57,7 @@ enum SidebarPanel: String, CaseIterable {
     /// to `icon` (an SF Symbol) — used for Agents and Worktrees, which keep
     /// their SF Symbol rather than a Codicon.
     func customImage(pointSize: CGFloat) -> NSImage? {
-        if self == .agents || self == .worktrees || self == .commands { return nil }
+        if self == .agents || self == .worktrees { return nil }
         return SidebarIcons.codicon(codiconName, pointSize: pointSize)
     }
 }
