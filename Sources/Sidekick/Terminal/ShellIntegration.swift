@@ -112,6 +112,21 @@ if [[ -n "$SIDEKICK_CLAUDE_PERMISSION_MODE" ]]; then
         command claude --permission-mode "$SIDEKICK_CLAUDE_PERMISSION_MODE" "$@"
     }
 fi
+
+# Same, scoped to codex sessions started in a Sidekick pane. A caller's own
+# approval/sandbox flag wins. (${=VAR} splits the flags into words in zsh.)
+if [[ -n "$SIDEKICK_CODEX_APPROVAL_ARGS" ]]; then
+    codex() {
+        local arg
+        for arg in "$@"; do
+            case "$arg" in
+                --sandbox|--sandbox=*|-s|--ask-for-approval|--ask-for-approval=*|-a|--full-auto|--dangerously-bypass-approvals-and-sandbox)
+                    command codex "$@"; return ;;
+            esac
+        done
+        command codex ${=SIDEKICK_CODEX_APPROVAL_ARGS} "$@"
+    }
+fi
 """#
 
     private static let bashScript = #"""
@@ -163,6 +178,21 @@ if [[ -n "$SIDEKICK_CLAUDE_PERMISSION_MODE" ]]; then
             esac
         done
         command claude --permission-mode "$SIDEKICK_CLAUDE_PERMISSION_MODE" "$@"
+    }
+fi
+
+# Same, scoped to codex sessions started in a Sidekick pane. A caller's own
+# approval/sandbox flag wins. (Unquoted $VAR word-splits the flags in bash.)
+if [[ -n "$SIDEKICK_CODEX_APPROVAL_ARGS" ]]; then
+    codex() {
+        local arg
+        for arg in "$@"; do
+            case "$arg" in
+                --sandbox|--sandbox=*|-s|--ask-for-approval|--ask-for-approval=*|-a|--full-auto|--dangerously-bypass-approvals-and-sandbox)
+                    command codex "$@"; return ;;
+            esac
+        done
+        command codex $SIDEKICK_CODEX_APPROVAL_ARGS "$@"
     }
 fi
 """#

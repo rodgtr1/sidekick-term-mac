@@ -175,17 +175,20 @@ show_hidden_files = false
 
 [approval]
 # mode: whether agents launched in panes prompt before applying file edits.
-# Sidekick passes Claude Code's --permission-mode only to claude sessions started
-# inside Sidekick (interactive panes via the shell-integration wrapper, launched
-# workers via the argv) — it no longer touches global ~/.claude/settings.json, so
-# claude run outside Sidekick is unaffected. Applies to the next agent started in a
-# pane, not running ones.
-#   "ask"    — leave Claude Code's normal per-edit prompting in place (default)
-#   "auto"   — --permission-mode acceptEdits: file edits apply without a prompt
-#              (risky Bash like `git push` still prompts). Works even on
-#              corporate machines that disable bypass mode.
-#   "bypass" — --permission-mode bypassPermissions: no prompts at all. Falls back
-#              to "acceptEdits" when a managed policy disables bypass mode.
+# Sidekick passes the matching flags only to claude/codex sessions started inside
+# Sidekick (interactive panes via the shell-integration wrapper, launched workers
+# via the argv) — it no longer touches global ~/.claude/settings.json or
+# ~/.codex/config.toml, so agents run outside Sidekick are unaffected. Applies to
+# the next agent started in a pane, not running ones.
+#   "ask"    — leave the agent's normal per-edit prompting in place (default)
+#   "auto"   — Claude: --permission-mode acceptEdits; Codex: --sandbox
+#              workspace-write --ask-for-approval on-request. File edits apply
+#              without a prompt (risky Bash like `git push` still prompts). Works
+#              even on corporate machines that disable bypass mode.
+#   "bypass" — Claude: --permission-mode bypassPermissions; Codex: --sandbox
+#              danger-full-access --ask-for-approval never. No prompts at all.
+#              Claude falls back to "acceptEdits" when a managed policy disables
+#              bypass mode; Codex downgrades itself under a requirements.toml policy.
 #   A managed/enterprise policy that pins defaultMode wins regardless, so on a
 #   fully locked-down machine prompts may remain. Unrecognized values fall back
 #   to "ask". Also toggle per session from the menu — View ▸ Auto-approve Agent

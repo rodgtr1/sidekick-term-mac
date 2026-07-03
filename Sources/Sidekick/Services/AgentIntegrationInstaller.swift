@@ -92,6 +92,9 @@ enum AgentIntegrationInstaller {
                 encoding: .utf8
             )) ?? ""
             guard config.contains("sidekick-agent-status") else { return .available }
+            // A pre-PreToolUse install lacks the busy-refinement hook; prompt a
+            // reinstall so installCodex idempotently adds it.
+            guard config.contains("[[hooks.PreToolUse]]") else { return .available }
             return telemetryFullyInstalled(in: config) ? .installed : .available
         case .pi:
             guard directoryExists(home.appendingPathComponent(".pi/agent")) else { return .notDetected }
@@ -140,23 +143,27 @@ enum AgentIntegrationInstaller {
         ("Stop", "done")
     ]
 
-    /// Claude-only refinements (Codex doesn't expose these events).
+    /// Refinements exposed by BOTH Claude Code and Codex (0.142+). PreToolUse
+    /// marks the pane busy the instant a tool starts; PermissionRequest fires the
+    /// instant an interactive approval prompt waits on the user — the correct
+    /// "needs input" signal, and the only hook that fires for an inline prompt.
+    /// (An earlier version of this file wrongly believed Codex exposed neither
+    /// and gave it only a PermissionRequest hook; its hook schema mirrors Claude
+    /// Code's, PreToolUse included.)
+    private static let sharedRefinementHooks: [(event: String, state: String)] = [
+        ("PreToolUse", "busy"),         // tool about to run (overridden by ready if it prompts)
+        ("PermissionRequest", "ready")
+    ]
+
+    /// Refinements only Claude Code exposes. Codex has no Notification or
+    /// SessionEnd event: a Codex pane instead clears from the agents panel when
+    /// its root process exits (TerminalViewController.handleProcessTerminated ->
+    /// AgentStateDetector.reset -> .idle), so the session-end signal isn't lost.
     private static let claudeOnlyStatusHooks: [(event: String, state: String)] = [
-        // PermissionRequest fires the instant an interactive permission prompt
-        // is waiting on the user — the correct "needs input" signal. (An earlier
-        // version wrongly believed Claude Code had no such event and removed it;
-        // it does, and is the only hook that fires for an inline prompt.)
-        ("PermissionRequest", "ready"),
         // Notification is kept as a secondary trigger for the idle/gated case;
         // the helper suppresses its "waiting for your input" idle reminder.
         ("Notification", "ready"),
-        ("PreToolUse", "busy"),     // tool about to run (overridden by ready if it prompts)
-        ("SessionEnd", "idle")      // clears the tab from the agents panel
-    ]
-
-    /// Ready hook for Codex, whose permission event isn't the shared trio.
-    private static let codexOnlyStatusHooks: [(event: String, state: String)] = [
-        ("PermissionRequest", "ready")
+        ("SessionEnd", "idle")          // clears the tab from the agents panel
     ]
 
     /// Claude Code's auto-approve-edits permission mode: silences the prompt for
@@ -277,26 +284,57 @@ enum AgentIntegrationInstaller {
 
     // MARK: - Codex auto-approve
 
-    /// Reflects a Sidekick approval level into Codex's own config by writing the
-    /// top-level `approval_policy` + `sandbox_mode` keys in `~/.codex/config.toml`.
-    /// Codex re-reads the file per launch, so this affects the next `codex`
-    /// started in a pane — the same model as the Claude path.
+    /// The `codex` CLI flags to apply to Codex sessions launched from within
+    /// Sidekick for a Sidekick approval level, or `[]` for normal prompting. This
+    /// is the *scoped* replacement for writing `approval_policy` + `sandbox_mode`
+    /// globally into `~/.codex/config.toml`: Sidekick passes these per-session
+    /// (env var + shell wrapper for interactive panes, argv flags for
+    /// Sidekick-launched workers) so they never affect `codex` run outside
+    /// Sidekick — the exact model as `claudePermissionMode`.
     ///
-    /// Codex has no exact `acceptEdits` analog: its "auto" safety comes from the
-    /// sandbox (edits confined to the workspace), not per-command gating. Mapping:
-    ///   - "auto":   sandbox `workspace-write` + approval `on-request` (= --full-auto)
-    ///   - "bypass": sandbox `danger-full-access` + approval `never` (= --yolo)
-    ///   - "ask":    remove the keys we manage, restoring Codex's own behavior.
+    /// Codex has no per-command `acceptEdits` analog: its "auto" safety comes from
+    /// the sandbox (edits confined to the workspace), not per-command gating.
+    ///   - "auto":   `--sandbox workspace-write --ask-for-approval on-request`
+    ///   - "bypass": `--sandbox danger-full-access --ask-for-approval never`
+    ///   - "ask":    no flags, leaving Codex's own config/behavior in place.
     ///
-    /// No-ops when Codex isn't present. A managed `requirements.toml` policy that
-    /// disallows a value makes Codex silently downgrade to a permitted one and
-    /// notify the user, so locked-down machines degrade gracefully on their own.
-    static func syncCodexAutoApprove(forMode mode: String) throws {
+    /// Fallback spirit of `claudePermissionMode`: a managed `requirements.toml`
+    /// policy that disallows a requested value makes Codex silently downgrade to a
+    /// permitted one and notify the user, so a locked-down machine degrades
+    /// gracefully on its own without Sidekick pre-checking the policy.
+    static func codexApprovalFlags(forApprovalMode mode: String) -> [String] {
+        switch mode.lowercased() {
+        case "auto":
+            return ["--sandbox", codexAutoSettings.sandbox, "--ask-for-approval", codexAutoSettings.approval]
+        case "bypass":
+            return ["--sandbox", codexBypassSettings.sandbox, "--ask-for-approval", codexBypassSettings.approval]
+        default:
+            return []
+        }
+    }
+
+    /// Codex approval/sandbox flags recognized as a caller's own choice; when one
+    /// is already present Sidekick leaves the command untouched (its scoped flags
+    /// would otherwise be redundant or conflict). Mirrors the `--permission-mode`
+    /// guard on the Claude path.
+    static let codexApprovalFlagNames: Set<String> = [
+        "--sandbox", "-s", "--ask-for-approval", "-a",
+        "--full-auto", "--dangerously-bypass-approvals-and-sandbox"
+    ]
+
+    /// Removes any Sidekick-managed `approval_policy` + `sandbox_mode` combo an
+    /// older version wrote into the global `~/.codex/config.toml`, which changed
+    /// prompting for *every* `codex` session machine-wide. Approval is now scoped
+    /// to Sidekick sessions via `codexApprovalFlags`, so this migrates old global
+    /// state back to clean, leaving a user's own hand-picked policy intact.
+    /// No-ops when Codex isn't present.
+    static func clearManagedCodexAutoApprove() throws {
         guard directoryExists(home.appendingPathComponent(".codex")) else { return }
 
         let configURL = home.appendingPathComponent(".codex/config.toml")
         let original = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
-        let updated = applyCodexAutoApprove(to: original, mode: mode)
+        // mode "ask" clears only a combo we'd have written; a user's own pick stays.
+        let updated = applyCodexAutoApprove(to: original, mode: "ask")
         guard updated != original else { return }
 
         try FileManager.default.createDirectory(
@@ -306,12 +344,16 @@ enum AgentIntegrationInstaller {
         try updated.write(to: configURL, atomically: true, encoding: .utf8)
     }
 
-    /// Codex (sandbox_mode, approval_policy) pairs Sidekick writes per level.
+    /// Codex (sandbox_mode, approval_policy) pairs per level — the config-key form
+    /// of `codexApprovalFlags`, shared with the legacy-state cleaner.
     private static let codexAutoSettings = (sandbox: "workspace-write", approval: "on-request")
     private static let codexBypassSettings = (sandbox: "danger-full-access", approval: "never")
 
-    /// Pure core of `syncCodexAutoApprove`: returns the config text with our two
-    /// keys set (auto/bypass) or removed (ask). Internal for tests.
+    /// Pure config-text form of the Codex approval mapping: returns the config
+    /// with our two keys set (auto/bypass) or removed (ask). The "ask" branch
+    /// backs `clearManagedCodexAutoApprove`'s legacy-state migration; auto/bypass
+    /// document the (now scoped) key mapping and are covered by tests. Internal
+    /// for tests.
     static func applyCodexAutoApprove(to config: String, mode: String) -> String {
         switch mode.lowercased() {
         case "auto":
@@ -407,7 +449,7 @@ enum AgentIntegrationInstaller {
         }
 
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
-        for (event, state) in statusHooks + claudeOnlyStatusHooks {
+        for (event, state) in statusHooks + sharedRefinementHooks + claudeOnlyStatusHooks {
             addClaudeHook(
                 to: &hooks, event: event,
                 command: "\(shellQuotedIfNeeded(statusBinary.path)) \(state)"
@@ -513,7 +555,16 @@ enum AgentIntegrationInstaller {
 
         config = ensureCodexHooksEnabled(in: config)
 
-        for (event, state) in statusHooks + codexOnlyStatusHooks {
+        // Codex's PreToolUse hook can carry a permission decision, so in
+        // principle it could feed Sidekick's in-app diff-approval queue the way
+        // the retired Claude edit hook once tried to. It stays in-terminal:
+        // Codex already renders the diff and the approve/deny prompt in its own
+        // TUI, and reproducing that in Sidekick would mean reconstructing each
+        // file's before/after from the apply_patch payload and blocking the hook
+        // on an IPC round-trip — duplicating a prompt Codex shows well already.
+        // The PermissionRequest -> "ready" hook still surfaces the wait in the
+        // agents panel, so the pane flags that it needs input either way.
+        for (event, state) in statusHooks + sharedRefinementHooks {
             let command = "\(shellQuotedIfNeeded(statusBinary.path)) \(state)"
             let signature = "sidekick-agent-status \(state)"
             if (config.contains(signature) || config.contains(command))

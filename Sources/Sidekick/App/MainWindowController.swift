@@ -237,10 +237,15 @@ class MainWindowController: NSWindowController {
         } catch {
             Log.debug("Failed to clear legacy Claude defaultMode: \(error)", category: "app")
         }
+        // Scope Codex's approval/sandbox flags to Sidekick-launched sessions the
+        // same way (per-session flags, not a global config.toml write), and
+        // migrate away any managed keys an older build left machine-wide.
+        AgentApprovalState.codexApprovalArgs =
+            AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: mode)
         do {
-            try AgentIntegrationInstaller.syncCodexAutoApprove(forMode: mode)
+            try AgentIntegrationInstaller.clearManagedCodexAutoApprove()
         } catch {
-            Log.debug("Failed to sync Codex auto-approve setting: \(error)", category: "app")
+            Log.debug("Failed to clear legacy Codex approval keys: \(error)", category: "app")
         }
     }
 

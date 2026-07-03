@@ -195,6 +195,42 @@ final class AgentIntegrationInstallerTests: XCTestCase {
         XCTAssertEqual(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "bypass"), "bypassPermissions")
     }
 
+    // MARK: - Codex scoped approval flags
+
+    func testCodexApprovalFlagsMapApprovalLevels() {
+        XCTAssertEqual(AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "ask"), [])
+        XCTAssertEqual(AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "unknown"), [])
+        XCTAssertEqual(
+            AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "auto"),
+            ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]
+        )
+        XCTAssertEqual(
+            AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "bypass"),
+            ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
+        )
+    }
+
+    func testCodexApprovalFlagsMatchTheConfigKeyMapping() {
+        // The scoped CLI flags and the (legacy) config-key form must agree so a
+        // pane launched with the flags behaves like the old global write did.
+        let autoConfig = AgentIntegrationInstaller.applyCodexAutoApprove(to: "", mode: "auto")
+        let autoFlags = AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "auto")
+        XCTAssertEqual(codexValue(autoConfig, "sandbox_mode"), autoFlags[1])
+        XCTAssertEqual(codexValue(autoConfig, "approval_policy"), autoFlags[3])
+    }
+
+    func testCodexApprovalFlagNamesCoverCallerOverrides() {
+        // Every flag the shell wrapper / argv injector treats as a caller's own
+        // choice must be recognized so Sidekick's flags don't double up.
+        for flag in ["--sandbox", "-s", "--ask-for-approval", "-a", "--full-auto",
+                     "--dangerously-bypass-approvals-and-sandbox"] {
+            XCTAssertTrue(
+                AgentIntegrationInstaller.codexApprovalFlagNames.contains(flag),
+                "expected \(flag) to be recognized as a caller override"
+            )
+        }
+    }
+
     func testDisableRemovesManagedAcceptEditsMode() {
         var settings: [String: Any] = ["permissions": ["defaultMode": "acceptEdits"]]
         let changed = AgentIntegrationInstaller.applyAutoApproveMode(to: &settings, desiredMode: nil)
