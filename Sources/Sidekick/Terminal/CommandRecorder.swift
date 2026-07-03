@@ -31,6 +31,10 @@ nonisolated struct TerminalCommandRecord {
     let duration: TimeInterval?
     let output: String
     let finishedAt: Date
+    /// Absolute scrollback row of the prompt that ran this command (the OSC 133
+    /// `A` mark preceding its `C`), so the timeline panel can scroll the terminal
+    /// back to it. Nil when no prompt mark was seen (e.g. the very first command).
+    let promptRow: Int?
 }
 
 /// Captures per-command records from the OSC 133 C..D windows, surfaced by
@@ -44,6 +48,7 @@ nonisolated struct CommandRecorder {
     private struct InFlightCommand {
         let command: String
         let startDate: Date
+        let promptRow: Int?
     }
     private var inFlightCommand: InFlightCommand?
     /// Output captured for the in-flight command. Kept as a standalone property
@@ -57,9 +62,11 @@ nonisolated struct CommandRecorder {
     /// running.
     var isCommandInFlight: Bool { inFlightCommand != nil }
 
-    /// OSC 133 `C`: a command started — begin capturing a new record.
-    mutating func commandStarted(command: String, at date: Date = Date()) {
-        inFlightCommand = InFlightCommand(command: command, startDate: date)
+    /// OSC 133 `C`: a command started — begin capturing a new record. `promptRow`
+    /// is the row of the prompt that launched it, carried into the record for
+    /// jump-to navigation.
+    mutating func commandStarted(command: String, promptRow: Int? = nil, at date: Date = Date()) {
+        inFlightCommand = InFlightCommand(command: command, startDate: date, promptRow: promptRow)
         inFlightOutput = ""
     }
 
@@ -83,7 +90,8 @@ nonisolated struct CommandRecorder {
                 exitCode: exitCode,
                 duration: duration,
                 output: cleanOutput,
-                finishedAt: date
+                finishedAt: date,
+                promptRow: inFlight.promptRow
             ))
             if commandRecords.count > Self.maxCommandRecords {
                 commandRecords.removeFirst(commandRecords.count - Self.maxCommandRecords)

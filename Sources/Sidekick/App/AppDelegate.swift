@@ -76,6 +76,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationWillTerminate(_ notification: Notification) {
         mainWindowController?.saveSession()
+        mainWindowController?.recordSessionCosts()
         IPCServer.shared.stop()
     }
 

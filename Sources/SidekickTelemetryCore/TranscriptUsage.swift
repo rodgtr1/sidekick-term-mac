@@ -68,6 +68,12 @@ public struct TranscriptUsage: Equatable, Codable, Sendable {
     public var totalInputTokens: Int {
         inputTokens + cacheCreationTokens + cacheReadTokens
     }
+
+    /// Every billed token this session: the full input footprint plus output.
+    /// The single number the cost roll-up sums per tab.
+    public var totalTokens: Int {
+        totalInputTokens + outputTokens
+    }
 }
 
 public enum TranscriptParser {

@@ -15,8 +15,8 @@ public struct TelemetryRate: Equatable, Sendable {
 
 public enum TelemetryRates {
     /// Current Claude API rate card (USD per 1M tokens), keyed by model-id
-    /// prefix. These drift between releases — P4 will surface them in
-    /// `config.toml` so a price change is a config edit, not a rebuild.
+    /// prefix. These drift between releases; `[telemetry.rates]` in `config.toml`
+    /// layers over them so a price change is a config edit, not a rebuild.
     public static let defaults: [String: TelemetryRate] = [
         "claude-opus-4-8": TelemetryRate(inputPerMTok: 5, outputPerMTok: 25),
         "claude-opus-4-7": TelemetryRate(inputPerMTok: 5, outputPerMTok: 25),
