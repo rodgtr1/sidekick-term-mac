@@ -162,6 +162,8 @@ class MainWindowController: NSWindowController {
     private var sessionSaveTimer: Timer?
     /// Owns IPC command translation and the hook diff-approval queue.
     private var automationCoordinator: AutomationCoordinator!
+    /// Mirrors pane attention events to native macOS notifications (opt-in).
+    private var notificationCoordinator: NotificationCoordinator!
     /// Per-session "auto-approve agent edits" toggle (menu-driven). Layered on
     /// top of the `[approval]` config mode; resets on relaunch.
     private var sessionAutoApproveEdits = false
@@ -214,6 +216,11 @@ class MainWindowController: NSWindowController {
 
         setupIPC()
         Log.debug("✅ IPC server started", category: "app")
+
+        notificationCoordinator = NotificationCoordinator(
+            host: self,
+            config: config.notifications ?? NotificationsConfig()
+        )
 
         setupConfigWatcher()
         setupSessionPersistence()
@@ -506,6 +513,7 @@ class MainWindowController: NSWindowController {
             }
         }
 
+        notificationCoordinator?.updateConfig(newConfig.notifications ?? NotificationsConfig())
         syncAgentAutoApprove()
     }
 
@@ -683,8 +691,6 @@ class MainWindowController: NSWindowController {
 
         for tab in tabs {
             if tab.panes.contains(where: { $0.id == pane.id }) {
-                notifyIfLongCommandFinished(status, tabTitle: tab.title)
-
                 // A non-zero exit in a pane the user isn't looking at joins the
                 // attention cycle; a zero exit clears any earlier mark. "Being
                 // viewed" means the active pane of the active tab. Setting the
@@ -704,24 +710,6 @@ class MainWindowController: NSWindowController {
                 break
             }
         }
-    }
-
-    /// Commands that ran longer than this notify the user when they finish
-    /// while Sidekick is in the background.
-    private static let longCommandThreshold: TimeInterval = 30
-
-    private func notifyIfLongCommandFinished(_ status: TerminalCommandStatus?, tabTitle: String) {
-        guard let status = status,
-              let duration = status.duration,
-              duration >= Self.longCommandThreshold,
-              !NSApp.isActive else { return }
-
-        NSApp.requestUserAttention(.informationalRequest)
-        postUserNotification(
-            title: status.succeeded ? "Command finished" : "Command failed",
-            body: "\(tabTitle) — \(status.summary)",
-            playSound: !status.succeeded
-        )
     }
 
     private func postUserNotification(title: String, body: String, playSound: Bool) {
@@ -760,15 +748,11 @@ class MainWindowController: NSWindowController {
         updateTabBar()
         refreshAgentsBadge()
 
+        // Dock-bounce attention stays unconditional; the actual system
+        // notification for ready/done is handled opt-in by NotificationCoordinator
+        // (observing .paneAgentStateChanged), gated by the [notifications] config.
         if state == .ready || state == .done {
             NSApp.requestUserAttention(.informationalRequest)
-            if !NSApp.isActive {
-                postUserNotification(
-                    title: state == .ready ? "Agent waiting for input" : "Agent finished",
-                    body: tab.title,
-                    playSound: state == .ready
-                )
-            }
         }
     }
 
@@ -1454,6 +1438,34 @@ extension MainWindowController: AutomationHost {
     func automationSetActiveTabAgentState(_ state: AgentState) {
         guard let tab = tabs[safe: activeTabIndex] else { return }
         applyAgentState(state, to: tab)
+    }
+}
+
+// MARK: - NotificationCoordinatorHost
+extension MainWindowController: NotificationCoordinatorHost {
+    func notificationTabTitle(forPane paneID: UUID) -> String? {
+        tabs.first(where: { $0.panes.contains(where: { $0.id == paneID }) })?.title
+    }
+
+    /// Click-to-focus: bring Sidekick forward, select the tab, and focus the
+    /// pane. This is the only place notifications activate the app — every other
+    /// path deliberately avoids stealing focus.
+    func focusPaneFromNotification(paneID: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.panes.contains(where: { $0.id == paneID }) }) else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+        let tabID = tabs[index].id
+        switchToTab(index: index)
+        automationSplitController(forTab: tabID)?.focusPane(id: paneID)
+    }
+
+    /// Check (and if never asked, request) notification permission, reporting
+    /// the effective status back so Preferences can point the user at System
+    /// Settings when Sidekick is blocked there. Invoked from Preferences when a
+    /// notification toggle is switched on, so any prompt appears on a user
+    /// action rather than at launch.
+    func ensureNotificationAuthorization(completion: @escaping @MainActor (UNAuthorizationStatus) -> Void) {
+        notificationCoordinator?.ensureAuthorization(completion: completion)
     }
 }
 

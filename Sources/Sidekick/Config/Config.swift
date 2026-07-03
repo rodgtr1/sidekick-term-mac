@@ -13,6 +13,7 @@ public struct Config: Codable {
     public var editor: EditorConfig?  // Make optional for backwards compatibility
     public var approval: ApprovalConfig?  // Make optional for backwards compatibility
     public var telemetry: TelemetryConfig?  // Make optional for backwards compatibility
+    public var notifications: NotificationsConfig?  // Make optional for backwards compatibility
 
     /// True when this value is the defaults returned because the on-disk file
     /// existed but could not be read or parsed — as opposed to a legitimate
@@ -24,7 +25,7 @@ public struct Config: Codable {
     // Only the real config sections are (de)coded; `loadDidFail` is transient
     // and its default keeps synthesized Codable happy without persisting it.
     enum CodingKeys: String, CodingKey {
-        case theme, font, cursor, window, behavior, shell, diff, editor, approval, telemetry
+        case theme, font, cursor, window, behavior, shell, diff, editor, approval, telemetry, notifications
     }
 
     public init() {
@@ -38,6 +39,7 @@ public struct Config: Codable {
         self.editor = EditorConfig()
         self.approval = ApprovalConfig()
         self.telemetry = TelemetryConfig()
+        self.notifications = NotificationsConfig()
     }
 
     public static func load(from path: String = "~/.config/sidekick/config.toml") -> Config {
@@ -223,6 +225,34 @@ worktree_auto_approve = false
 #   [telemetry.rates."claude-opus-4-8"]
 #   input = 5.0
 #   output = 25.0
+
+[notifications]
+# Native macOS notifications for pane attention events. Strictly opt-in: every
+# switch below defaults to false, so notifications stay off until you turn them
+# on. Sidekick asks for notification permission the first time you enable one,
+# never at launch. It never notifies while it's the frontmost app, and clicking a
+# notification is the only thing that brings Sidekick forward — it never steals
+# focus otherwise. No sounds; leave quiet hours to macOS Focus/Do Not Disturb.
+#
+# enabled: master switch. When false, nothing fires regardless of the toggles.
+enabled = false
+# needs_input: an agent is waiting for you (state -> ready). Fires the moment
+#   Sidekick is inactive, ignoring background_grace_seconds.
+needs_input = false
+# finished: an agent finished its run (state -> done).
+finished = false
+# command_failed: a command exited non-zero in a pane you weren't viewing.
+command_failed = false
+# long_running_command: a foreground command taking at least
+#   long_running_threshold_seconds finished.
+long_running_command = false
+# long_running_threshold_seconds: how long a command must run to count as
+#   long-running. Default 30.
+long_running_threshold_seconds = 30
+# background_grace_seconds: seconds Sidekick must have been in the background
+#   before completion/failure notifications fire (a quick tab-away shouldn't
+#   ping). Does not affect needs_input. Default 0 (fire whenever inactive).
+background_grace_seconds = 0
 """
 
         // Create directory if needed
@@ -443,6 +473,81 @@ nonisolated public struct ApprovalConfig: Codable, Sendable {
     public var autoApprove: Bool {
         let m = mode.lowercased()
         return m == "auto" || m == "bypass"
+    }
+}
+
+// MARK: - Notifications Configuration
+
+/// Native macOS notifications for pane attention events. Strictly opt-in: the
+/// master `enabled` switch and every per-trigger toggle default to `false`, so a
+/// config written before this section existed — or one that omits it — is
+/// completely silent. Sidekick never notifies while it is the frontmost app, and
+/// never activates or steals focus except when the user clicks a notification.
+nonisolated public struct NotificationsConfig: Codable, Sendable {
+    /// Master switch. When false no notification fires regardless of the
+    /// per-trigger toggles below.
+    public var enabled: Bool
+
+    /// An agent transitioned to `ready` (waiting for the user). Fires the instant
+    /// Sidekick is inactive, without waiting out the background grace period.
+    public var needsInput: Bool
+
+    /// An agent transitioned to `done` (finished its run).
+    public var finished: Bool
+
+    /// A command exited non-zero in a pane the user wasn't viewing — the same
+    /// signal as the C2 failed-command attention mark.
+    public var commandFailed: Bool
+
+    /// A foreground command that ran at least `longRunningThresholdSeconds`
+    /// finished.
+    public var longRunningCommand: Bool
+
+    /// Duration (seconds) at or above which a finished command counts as
+    /// long-running for `longRunningCommand`. Default 30.
+    public var longRunningThresholdSeconds: Int
+
+    /// Seconds Sidekick must have been in the background before completion and
+    /// failure notifications fire (a brief context-switch shouldn't ping). Does
+    /// not apply to `needsInput`, which fires immediately when inactive. Default 0.
+    public var backgroundGraceSeconds: Int
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case needsInput = "needs_input"
+        case finished
+        case commandFailed = "command_failed"
+        case longRunningCommand = "long_running_command"
+        case longRunningThresholdSeconds = "long_running_threshold_seconds"
+        case backgroundGraceSeconds = "background_grace_seconds"
+    }
+
+    public init() {
+        self.enabled = false
+        self.needsInput = false
+        self.finished = false
+        self.commandFailed = false
+        self.longRunningCommand = false
+        self.longRunningThresholdSeconds = 30
+        self.backgroundGraceSeconds = 0
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? enabled
+        needsInput = try c.decodeIfPresent(Bool.self, forKey: .needsInput) ?? needsInput
+        finished = try c.decodeIfPresent(Bool.self, forKey: .finished) ?? finished
+        commandFailed = try c.decodeIfPresent(Bool.self, forKey: .commandFailed) ?? commandFailed
+        longRunningCommand = try c.decodeIfPresent(Bool.self, forKey: .longRunningCommand) ?? longRunningCommand
+        longRunningThresholdSeconds = try c.decodeIfPresent(Int.self, forKey: .longRunningThresholdSeconds) ?? longRunningThresholdSeconds
+        backgroundGraceSeconds = try c.decodeIfPresent(Int.self, forKey: .backgroundGraceSeconds) ?? backgroundGraceSeconds
+    }
+
+    /// True when at least one per-trigger toggle is on under the master switch —
+    /// i.e. the feature can actually deliver something. Drives lazy authorization.
+    public var anyTriggerActive: Bool {
+        enabled && (needsInput || finished || commandFailed || longRunningCommand)
     }
 }
 

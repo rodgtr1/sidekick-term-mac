@@ -91,6 +91,16 @@ final class PreferencesFormBuilder {
         cursor = slider.bottomAnchor
     }
 
+    /// Pin the last row's bottom to the container's bottom so the container has
+    /// a defined fitting height. Required when the container is a scroll view's
+    /// document view: without it the document has no intrinsic height and tall
+    /// content clips instead of scrolling.
+    func finish(gapBelow: CGFloat = 20) {
+        NSLayoutConstraint.activate([
+            container.bottomAnchor.constraint(equalTo: cursor, constant: gapBelow)
+        ])
+    }
+
     /// A single leading-pinned checkbox.
     @discardableResult
     func checkbox(_ button: NSButton, gapAbove: CGFloat) -> NSButton {

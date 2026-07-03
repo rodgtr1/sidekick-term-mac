@@ -1,4 +1,5 @@
 import Cocoa
+@preconcurrency import UserNotifications
 
 class PreferencesWindowController: NSWindowController {
     private var config: Config
@@ -45,13 +46,22 @@ class PreferencesWindowController: NSWindowController {
     private var alwaysAskField: NSTextField!
     private var worktreeAutoApproveCheckbox: NSButton!
 
+    // Notifications Tab
+    private var notificationsEnabledCheckbox: NSButton!
+    private var notifyNeedsInputCheckbox: NSButton!
+    private var notifyFinishedCheckbox: NSButton!
+    private var notifyCommandFailedCheckbox: NSButton!
+    private var notifyLongCommandCheckbox: NSButton!
+    private var longCommandThresholdField: NSTextField!
+    private var backgroundGraceField: NSTextField!
+
     init(config: Config, mainWindowController: MainWindowController? = nil) {
         self.config = config
         self.mainWindowController = mainWindowController
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 400),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 480),
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -102,6 +112,9 @@ class PreferencesWindowController: NSWindowController {
         window.title = "Preferences"
         window.delegate = self
         window.titlebarAppearsTransparent = false
+        // A sane floor so chrome stays usable; taller content scrolls, and the
+        // user can grow the window to reveal a whole pane at once.
+        window.minSize = NSSize(width: 500, height: 360)
         window.center()
         window.isMovableByWindowBackground = true
         window.backgroundColor = AppTheme.windowBackground
@@ -121,6 +134,7 @@ class PreferencesWindowController: NSWindowController {
         setupEditorTab()
         setupAgentsTab()
         setupApprovalsTab()
+        setupNotificationsTab()
         setupAppearanceTab()
         layoutViews()
     }
@@ -132,12 +146,34 @@ class PreferencesWindowController: NSWindowController {
         contentView.addSubview(tabView)
     }
 
-    /// A themed, layer-backed container for one preference pane.
-    private func makePaneView() -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-        return view
+    /// A themed pane whose content scrolls when it's taller than the tab area.
+    /// Returns the scroll view (which becomes the tab's view) and the flipped
+    /// document view the form builder lays out into. The document view is pinned
+    /// to the scroll view's content width so it only ever scrolls vertically; its
+    /// height comes from the form's `finish()` bottom constraint, so tall panes
+    /// (e.g. Approvals, Notifications) become reachable instead of clipping.
+    private func makeScrollingPane() -> (scroll: NSScrollView, content: NSView) {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = AppTheme.windowBackground
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.wantsLayer = true
+        scrollView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+
+        let content = FlippedView()
+        content.wantsLayer = true
+        content.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        content.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = content
+
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            content.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            content.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor)
+        ])
+        return (scrollView, content)
     }
 
     /// Wrap a built pane view in a tab and append it. Call order here (in
@@ -174,8 +210,8 @@ class PreferencesWindowController: NSWindowController {
     }
 
     private func setupGeneralTab() {
-        let generalView = makePaneView()
-        let form = PreferencesFormBuilder(container: generalView)
+        let (generalView, generalContent) = makeScrollingPane()
+        let form = PreferencesFormBuilder(container: generalContent)
 
         opacitySlider = NSSlider()
         opacitySlider.minValue = 0.3
@@ -206,13 +242,14 @@ class PreferencesWindowController: NSWindowController {
         form.checkbox(restoreSessionCheckbox, gapAbove: 12)
         form.fieldLabel("Raw Config File:", gapAbove: 30)
         form.leadingControl(rawConfigButton, gapAbove: 10)
+        form.finish()
 
         addTab(generalView, identifier: "general", label: "General")
     }
 
     private func setupTerminalTab() {
-        let terminalView = makePaneView()
-        let form = PreferencesFormBuilder(container: terminalView)
+        let (terminalView, terminalContent) = makeScrollingPane()
+        let form = PreferencesFormBuilder(container: terminalContent)
 
         fontFamilyPopup = NSPopUpButton()
         fontFamilyPopup.addItems(withTitles: terminalFontFamilies())
@@ -265,13 +302,14 @@ class PreferencesWindowController: NSWindowController {
         form.fieldLabel("Shell Integration:", gapAbove: 30)
         form.fullWidth(shellIntegrationStatusLabel, gapAbove: 6)
         form.leadingControl(shellIntegrationButton, gapAbove: 10)
+        form.finish()
 
         addTab(terminalView, identifier: "terminal", label: "Terminal")
     }
 
     private func setupAgentsTab() {
-        let agentsView = makePaneView()
-        let form = PreferencesFormBuilder(container: agentsView)
+        let (agentsView, agentsContent) = makeScrollingPane()
+        let form = PreferencesFormBuilder(container: agentsContent)
 
         let blurbLabel = Self.wrappingLabel(
             "Wire up agent CLIs to report Working / Needs input / Done to the agents panel. Detected from each tool's config directory; safe to re-run.",
@@ -298,13 +336,14 @@ class PreferencesWindowController: NSWindowController {
         }
 
         updateAgentIntegrationStatuses()
+        form.finish()
 
         addTab(agentsView, identifier: "agents", label: "Agents")
     }
 
     private func setupApprovalsTab() {
-        let approvalsView = makePaneView()
-        let form = PreferencesFormBuilder(container: approvalsView)
+        let (approvalsView, approvalsContent) = makeScrollingPane()
+        let form = PreferencesFormBuilder(container: approvalsContent)
 
         approvalModePopup = NSPopUpButton()
         approvalModePopup.addItems(withTitles: [
@@ -373,8 +412,99 @@ class PreferencesWindowController: NSWindowController {
         form.fullWidth(alwaysAskHelp, gapAbove: 6)
         form.checkbox(worktreeAutoApproveCheckbox, gapAbove: 22)
         form.fullWidth(worktreeAutoApproveHelp, gapAbove: 6)
+        form.finish()
 
         addTab(approvalsView, identifier: "approvals", label: "Approvals")
+    }
+
+    private func setupNotificationsTab() {
+        let (notificationsView, notificationsContent) = makeScrollingPane()
+        let form = PreferencesFormBuilder(container: notificationsContent)
+
+        notificationsEnabledCheckbox = NSButton(
+            checkboxWithTitle: "Enable macOS notifications",
+            target: self,
+            action: #selector(notificationsEnabledChanged(_:))
+        )
+        notificationsEnabledCheckbox.font = NSFont.systemFont(ofSize: 13)
+
+        let masterHelp = Self.wrappingLabel(
+            "Off by default. Sidekick only notifies when it's not the active app, never steals focus, and plays no sound (leave quiet hours to macOS Focus). Clicking a notification opens that tab and pane. You'll be asked for permission the first time you turn one of these on.",
+            fontSize: 11,
+            maxLines: 6,
+            preferredWidth: 420
+        )
+
+        notifyNeedsInputCheckbox = NSButton(
+            checkboxWithTitle: "Agent needs input",
+            target: self,
+            action: #selector(notifyNeedsInputChanged(_:))
+        )
+        notifyNeedsInputCheckbox.font = NSFont.systemFont(ofSize: 13)
+
+        notifyFinishedCheckbox = NSButton(
+            checkboxWithTitle: "Agent finished",
+            target: self,
+            action: #selector(notifyFinishedChanged(_:))
+        )
+        notifyFinishedCheckbox.font = NSFont.systemFont(ofSize: 13)
+
+        notifyCommandFailedCheckbox = NSButton(
+            checkboxWithTitle: "Command failed (in a pane you weren't viewing)",
+            target: self,
+            action: #selector(notifyCommandFailedChanged(_:))
+        )
+        notifyCommandFailedCheckbox.font = NSFont.systemFont(ofSize: 13)
+
+        notifyLongCommandCheckbox = NSButton(
+            checkboxWithTitle: "Long-running command finished",
+            target: self,
+            action: #selector(notifyLongCommandChanged(_:))
+        )
+        notifyLongCommandCheckbox.font = NSFont.systemFont(ofSize: 13)
+
+        longCommandThresholdField = Self.numberField(target: self, action: #selector(longCommandThresholdChanged(_:)))
+        backgroundGraceField = Self.numberField(target: self, action: #selector(backgroundGraceChanged(_:)))
+
+        let thresholdHelp = Self.wrappingLabel(
+            "Seconds a command must run to count as long-running.",
+            fontSize: 11,
+            maxLines: 2,
+            preferredWidth: 420
+        )
+        let graceHelp = Self.wrappingLabel(
+            "Seconds Sidekick must be in the background before completion and failure notifications fire (a quick tab-away won't ping). \"Agent needs input\" ignores this and fires as soon as Sidekick is inactive.",
+            fontSize: 11,
+            maxLines: 4,
+            preferredWidth: 420
+        )
+
+        form.checkbox(notificationsEnabledCheckbox, gapAbove: 30)
+        form.fullWidth(masterHelp, gapAbove: 6)
+        form.fieldLabel("Notify me when:", gapAbove: 24)
+        form.checkbox(notifyNeedsInputCheckbox, gapAbove: 10)
+        form.checkbox(notifyFinishedCheckbox, gapAbove: 10)
+        form.checkbox(notifyCommandFailedCheckbox, gapAbove: 10)
+        form.checkbox(notifyLongCommandCheckbox, gapAbove: 10)
+        form.fieldLabel("Long-running threshold (seconds):", gapAbove: 24)
+        form.leadingControl(longCommandThresholdField, gapAbove: 8, width: 80)
+        form.fullWidth(thresholdHelp, gapAbove: 6)
+        form.fieldLabel("Background grace (seconds):", gapAbove: 22)
+        form.leadingControl(backgroundGraceField, gapAbove: 8, width: 80)
+        form.fullWidth(graceHelp, gapAbove: 6)
+        form.finish()
+
+        addTab(notificationsView, identifier: "notifications", label: "Notifications")
+    }
+
+    /// A small right-aligned numeric text field for integer preferences.
+    private static func numberField(target: AnyObject, action: Selector) -> NSTextField {
+        let field = NSTextField()
+        field.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        field.alignment = .right
+        field.target = target
+        field.action = action
+        return field
     }
 
     // Theme picker model: every available theme, then an "Auto" entry that
@@ -390,8 +520,8 @@ class PreferencesWindowController: NSWindowController {
     }
 
     private func setupAppearanceTab() {
-        let appearanceView = makePaneView()
-        let form = PreferencesFormBuilder(container: appearanceView)
+        let (appearanceView, appearanceContent) = makeScrollingPane()
+        let form = PreferencesFormBuilder(container: appearanceContent)
 
         themePopup = NSPopUpButton()
         themePopup.addItems(withTitles: themeMenuTitles)
@@ -400,13 +530,14 @@ class PreferencesWindowController: NSWindowController {
 
         form.fieldLabel("Color Theme:", gapAbove: 30)
         form.leadingControl(themePopup, gapAbove: 10, width: 200)
+        form.finish()
 
         addTab(appearanceView, identifier: "appearance", label: "Appearance")
     }
 
     private func setupEditorTab() {
-        let editorView = makePaneView()
-        let form = PreferencesFormBuilder(container: editorView)
+        let (editorView, editorContent) = makeScrollingPane()
+        let form = PreferencesFormBuilder(container: editorContent)
 
         fileOpenModePopup = NSPopUpButton()
         fileOpenModePopup.addItems(withTitles: ["Terminal Editor", "Built-in Editor"])
@@ -447,6 +578,7 @@ class PreferencesWindowController: NSWindowController {
         form.sliderRow(editorFontSizeSlider, valueLabel: editorFontSizeLabel, gapAbove: 10)
         form.checkbox(wordWrapCheckbox, gapAbove: 24)
         form.checkbox(showHiddenFilesCheckbox, gapAbove: 12)
+        form.finish()
 
         addTab(editorView, identifier: "editor", label: "Editor")
     }
@@ -522,7 +654,27 @@ class PreferencesWindowController: NSWindowController {
         alwaysAskField.stringValue = approval.alwaysAsk.joined(separator: ", ")
         worktreeAutoApproveCheckbox.state = approval.worktreeAutoApprove ? .on : .off
 
+        // Load notification settings (defaults when the section is absent).
+        let notifications = config.notifications ?? NotificationsConfig()
+        notificationsEnabledCheckbox.state = notifications.enabled ? .on : .off
+        notifyNeedsInputCheckbox.state = notifications.needsInput ? .on : .off
+        notifyFinishedCheckbox.state = notifications.finished ? .on : .off
+        notifyCommandFailedCheckbox.state = notifications.commandFailed ? .on : .off
+        notifyLongCommandCheckbox.state = notifications.longRunningCommand ? .on : .off
+        longCommandThresholdField.integerValue = notifications.longRunningThresholdSeconds
+        backgroundGraceField.integerValue = notifications.backgroundGraceSeconds
+        updateNotificationControlsEnabled()
+
         updateShellIntegrationStatus()
+    }
+
+    /// Grey out the per-trigger toggles and numeric fields while the master
+    /// switch is off, so the dependency is obvious.
+    private func updateNotificationControlsEnabled() {
+        let on = notificationsEnabledCheckbox.state == .on
+        [notifyNeedsInputCheckbox, notifyFinishedCheckbox, notifyCommandFailedCheckbox,
+         notifyLongCommandCheckbox].forEach { $0?.isEnabled = on }
+        [longCommandThresholdField, backgroundGraceField].forEach { $0?.isEnabled = on }
     }
 
     private func updateShellIntegrationStatus() {
@@ -686,6 +838,93 @@ class PreferencesWindowController: NSWindowController {
         let enabled = sender.state == .on
         mutateConfig { Self.ensuringApproval(&$0); $0.approval?.worktreeAutoApprove = enabled }
         mainWindowController?.applyRuntimeConfig(config)
+    }
+
+    // MARK: - Notifications
+
+    @objc private func notificationsEnabledChanged(_ sender: NSButton) {
+        applyNotificationChange { $0.enabled = sender.state == .on }
+        updateNotificationControlsEnabled()
+    }
+
+    @objc private func notifyNeedsInputChanged(_ sender: NSButton) {
+        applyNotificationChange { $0.needsInput = sender.state == .on }
+    }
+
+    @objc private func notifyFinishedChanged(_ sender: NSButton) {
+        applyNotificationChange { $0.finished = sender.state == .on }
+    }
+
+    @objc private func notifyCommandFailedChanged(_ sender: NSButton) {
+        applyNotificationChange { $0.commandFailed = sender.state == .on }
+    }
+
+    @objc private func notifyLongCommandChanged(_ sender: NSButton) {
+        applyNotificationChange { $0.longRunningCommand = sender.state == .on }
+    }
+
+    @objc private func longCommandThresholdChanged(_ sender: NSTextField) {
+        let seconds = max(1, sender.integerValue)
+        sender.integerValue = seconds
+        applyNotificationChange { $0.longRunningThresholdSeconds = seconds }
+    }
+
+    @objc private func backgroundGraceChanged(_ sender: NSTextField) {
+        let seconds = max(0, sender.integerValue)
+        sender.integerValue = seconds
+        applyNotificationChange { $0.backgroundGraceSeconds = seconds }
+    }
+
+    /// Persist a notification-config edit, push it to the running coordinator,
+    /// and — if the change leaves at least one trigger active — verify the app
+    /// can actually deliver: prompt if macOS has never asked, or point the user
+    /// at System Settings if Sidekick is blocked there. Checking only here (a
+    /// user toggling a setting) keeps us from ever prompting at launch.
+    private func applyNotificationChange(_ apply: (inout NotificationsConfig) -> Void) {
+        mutateConfig {
+            Self.ensuringNotifications(&$0)
+            var n = $0.notifications ?? NotificationsConfig()
+            apply(&n)
+            $0.notifications = n
+        }
+        mainWindowController?.applyRuntimeConfig(config)
+        if config.notifications?.anyTriggerActive == true {
+            mainWindowController?.ensureNotificationAuthorization { [weak self] status in
+                if status == .denied { self?.showNotificationsDeniedAlert() }
+            }
+        }
+    }
+
+    /// Sidekick's notifications are switched off at the system level, so the
+    /// toggles the user just enabled can't deliver anything. Say so once per
+    /// Preferences session and offer the jump to the right System Settings pane.
+    private var didWarnNotificationsDenied = false
+    private func showNotificationsDeniedAlert() {
+        guard !didWarnNotificationsDenied else { return }
+        didWarnNotificationsDenied = true
+
+        let alert = NSAlert()
+        alert.messageText = "Notifications are off in System Settings"
+        alert.informativeText = "macOS is blocking Sidekick's notifications, so the alerts you just enabled won't appear. Allow them under System Settings > Notifications > Sidekick."
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Not Now")
+        let openSettings = {
+            let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!
+            NSWorkspace.shared.open(url)
+        }
+        if let window {
+            alert.beginSheetModal(for: window) { response in
+                if response == .alertFirstButtonReturn { openSettings() }
+            }
+        } else if alert.runModal() == .alertFirstButtonReturn {
+            openSettings()
+        }
+    }
+
+    private static func ensuringNotifications(_ config: inout Config) {
+        if config.notifications == nil {
+            config.notifications = NotificationsConfig()
+        }
     }
 
     /// Split a comma-separated glob list into trimmed, non-empty patterns.
@@ -853,6 +1092,12 @@ class PreferencesWindowController: NSWindowController {
     override func windowDidLoad() {
         super.windowDidLoad()
     }
+}
+
+/// A top-origin container so scroll-view content lays out from the top down
+/// and scrolls naturally toward the bottom.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 // MARK: - NSWindowDelegate
