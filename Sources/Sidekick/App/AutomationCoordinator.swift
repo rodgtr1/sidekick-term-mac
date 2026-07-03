@@ -341,6 +341,8 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             handleWaitAgentStatus(paneID: paneID, status: status, timeoutMS: timeoutMS, completion: completion)
         case .waitOutput(let paneID, let match, let timeoutMS):
             handleWaitOutput(paneID: paneID, match: match, timeoutMS: timeoutMS, completion: completion)
+        case .worktreeList(let cwd):
+            handleWorktreeList(cwd: cwd, completion: completion)
         case .worktreeRemove(let branch, let cwd, let force):
             handleWorktreeRemove(branch: branch, cwd: cwd, force: force, completion: completion)
         case .worktreePrune(let cwd):
@@ -553,6 +555,31 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         }
         waitForOutput(terminal: terminal, match: match, timeoutMS: timeoutMS) { matched in
             completion(IPCResponse(result: IPCResult(matched: matched)))
+        }
+    }
+
+    private func handleWorktreeList(cwd: String?, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        let directory = worktreeDirectory(cwd: cwd)
+        // Listing runs `git worktree list --porcelain`, so shell out off the
+        // main thread and hop back to reply, matching the other worktree verbs.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { () throws -> [IPCWorktreeInfo] in
+                guard let repoRoot = GitService().repositoryRoot(from: directory) else {
+                    throw WorktreeService.WorktreeError.notAGitRepository
+                }
+                return try WorktreeService().listWorktrees(repoRoot: repoRoot).map {
+                    IPCWorktreeInfo(path: $0.path, branch: $0.branch, head: $0.head,
+                                    detached: $0.isDetached, locked: $0.isLocked, bare: $0.isBare)
+                }
+            }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let worktrees):
+                    completion(IPCResponse(result: IPCResult(worktrees: worktrees)))
+                case .failure(let error):
+                    completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
+                }
+            }
         }
     }
 

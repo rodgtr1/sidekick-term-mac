@@ -70,6 +70,8 @@ struct SidekickCtl {
                         || args.prefix(2).elementsEqual(["wait", "output"]) {
                 let matched = (response["result"] as? [String: Any])?["matched"] as? Bool ?? false
                 if !matched { exit(1) }
+            } else if args.prefix(2).elementsEqual(["worktree", "list"]) {
+                printJSON((response["result"] as? [String: Any])?["worktrees"] ?? [])
             } else if args.prefix(2).elementsEqual(["worktree", "prune"]) {
                 if let text = (response["result"] as? [String: Any])?["text"] as? String, !text.isEmpty {
                     print(text)
@@ -116,9 +118,24 @@ struct SidekickCtl {
 
     private static func worktreeRequest(_ args: [String]) throws -> [String: Any] {
         guard let subcommand = args.first else {
-            throw CLIError("worktree requires a subcommand: remove <branch> | prune")
+            throw CLIError("worktree requires a subcommand: list | remove <branch> | prune")
         }
         switch subcommand {
+        case "list":
+            var request: [String: Any] = ["action": "worktree_list"]
+            var index = 1
+            while index < args.count {
+                switch args[index] {
+                case "--cwd":
+                    index += 1
+                    guard index < args.count else { throw CLIError("--cwd requires a directory") }
+                    request["cwd"] = expandTilde(args[index])
+                default:
+                    throw CLIError("Unknown worktree list option: \(args[index])")
+                }
+                index += 1
+            }
+            return request
         case "remove":
             guard args.count >= 2 else { throw CLIError("worktree remove requires a branch name") }
             var request: [String: Any] = ["action": "worktree_remove", "worktree": args[1]]
@@ -343,6 +360,7 @@ struct SidekickCtl {
           wait event [--pane id] [--type agent_state|command|diff|telemetry] [--timeout ms]
                               block until the next matching event and print it as JSON;
                               exits 1 on timeout. Current state is not replayed.
+          worktree list [--cwd dir]                        list worktrees as JSON (branch, path, head)
           worktree remove <branch> [--cwd dir] [--force]   tear down a --worktree split
           worktree prune [--cwd dir]                       drop stale worktree entries
           events [--follow] [--pane id] [--type agent_state|command|diff]

@@ -69,25 +69,39 @@ nonisolated struct IPCCommandRecord: Codable, Sendable {
     }
 }
 
+/// One registered git worktree, returned by `worktree_list`. Mirrors
+/// `GitWorktree` but as the IPC wire shape the CLI/MCP clients consume.
+nonisolated struct IPCWorktreeInfo: Codable, Sendable {
+    let path: String
+    let branch: String?
+    let head: String?
+    let detached: Bool
+    let locked: Bool
+    let bare: Bool
+}
+
 nonisolated struct IPCResult: Codable, Sendable {
     let panes: [IPCPaneInfo]?
     let pane: IPCPaneInfo?
     let text: String?
     let matched: Bool?
     let commands: [IPCCommandRecord]?
+    let worktrees: [IPCWorktreeInfo]?
 
     init(
         panes: [IPCPaneInfo]? = nil,
         pane: IPCPaneInfo? = nil,
         text: String? = nil,
         matched: Bool? = nil,
-        commands: [IPCCommandRecord]? = nil
+        commands: [IPCCommandRecord]? = nil,
+        worktrees: [IPCWorktreeInfo]? = nil
     ) {
         self.panes = panes
         self.pane = pane
         self.text = text
         self.matched = matched
         self.commands = commands
+        self.worktrees = worktrees
     }
 }
 
@@ -124,6 +138,7 @@ nonisolated enum IPCCommandType {
     case paneRead(paneID: UUID, source: String, lines: Int?, json: Bool)
     case waitAgentStatus(paneID: UUID, status: AgentState, timeoutMS: Int)
     case waitOutput(paneID: UUID, match: String, timeoutMS: Int)
+    case worktreeList(cwd: String?)
     case worktreeRemove(branch: String, cwd: String?, force: Bool)
     case worktreePrune(cwd: String?)
     case reportTelemetry(paneID: UUID, usage: TranscriptUsage)
@@ -237,6 +252,9 @@ nonisolated enum IPCCommandType {
                   let match = command.match, !match.isEmpty, match.count <= 16_384,
                   let timeout = validTimeout(command.timeoutMS) else { return .invalidArguments }
             return .command(.waitOutput(paneID: paneID, match: match, timeoutMS: timeout))
+        case "worktree_list":
+            guard let cwd = optionalDirectory(command.cwd) else { return .invalidArguments }
+            return .command(.worktreeList(cwd: cwd))
         case "worktree_remove":
             guard let rawBranch = command.worktree,
                   let branch = validatedBranchName(rawBranch),

@@ -262,6 +262,47 @@ public func makeTools(ipc: SidekickIPCClient) -> [Tool] {
                 throw ToolError(message: "Sidekick is not responding or closed the event stream. Is the app running?")
             }
         }
+    ),
+    Tool(
+        name: "sidekick_worktree_list",
+        description: "List the git worktrees for the repository containing the given (or active pane's) directory. Returns each worktree's branch, path, and head as JSON.",
+        inputSchema: object(["cwd": ["type": "string", "description": "Absolute directory inside the target repo. Defaults to the active pane's directory."]]),
+        buildRequest: { args in
+            var request: [String: Any] = ["action": "worktree_list"]
+            if let cwd = args["cwd"] as? String, !cwd.isEmpty { request["cwd"] = cwd }
+            return request
+        },
+        render: { result in prettyJSON(result?["worktrees"] ?? []) }
+    ),
+    Tool(
+        name: "sidekick_worktree_remove",
+        description: "Remove the git worktree registered for a branch. Refuses a dirty or locked worktree unless force is set, so an agent's uncommitted work isn't silently discarded.",
+        inputSchema: object([
+            "branch": ["type": "string", "description": "Branch whose worktree to remove."],
+            "force": ["type": "boolean", "description": "Remove even when the worktree is dirty or locked. Defaults to false."],
+            "cwd": ["type": "string", "description": "Absolute directory inside the target repo. Defaults to the active pane's directory."]
+        ], required: ["branch"]),
+        buildRequest: { args in
+            var request: [String: Any] = ["action": "worktree_remove", "worktree": try requireString(args, "branch")]
+            if (args["force"] as? Bool) == true { request["force"] = true }
+            if let cwd = args["cwd"] as? String, !cwd.isEmpty { request["cwd"] = cwd }
+            return request
+        },
+        render: { _ in "Removed the worktree." }
+    ),
+    Tool(
+        name: "sidekick_worktree_prune",
+        description: "Prune stale git worktree admin entries (bookkeeping for worktrees whose directories were deleted by hand).",
+        inputSchema: object(["cwd": ["type": "string", "description": "Absolute directory inside the target repo. Defaults to the active pane's directory."]]),
+        buildRequest: { args in
+            var request: [String: Any] = ["action": "worktree_prune"]
+            if let cwd = args["cwd"] as? String, !cwd.isEmpty { request["cwd"] = cwd }
+            return request
+        },
+        render: { result in
+            let text = (result?["text"] as? String) ?? ""
+            return text.isEmpty ? "Nothing to prune." : text
+        }
     )
     ]
 }
