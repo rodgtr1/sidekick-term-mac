@@ -7,6 +7,9 @@ class PaneModel: Identifiable, Hashable {
     var title: String = ""
     var currentDirectory: String = ""
     var gitBranch: String?
+    /// True when `currentDirectory` sits inside a linked git worktree (never the
+    /// primary checkout). Drives the muted worktree glyph in the tab bar.
+    var isInWorktree: Bool = false
     var agentState: AgentState = .idle
     var agentStateChangedAt = Date()
 
@@ -157,6 +160,11 @@ class PaneModel: Identifiable, Hashable {
             title = dirName
         }
 
+        // Only re-resolve on an actual directory change; the shell reports a
+        // title on every prompt, and most of those stay in the same directory.
+        if directory != currentDirectory {
+            isInWorktree = WorkspaceResolver.linkedWorktreeRoot(from: directory) != nil
+        }
         currentDirectory = directory
         gitBranch = branch
 

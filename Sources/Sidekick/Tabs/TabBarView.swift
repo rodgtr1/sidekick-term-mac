@@ -270,6 +270,18 @@ class TabBarView: NSView {
             attributedTitle.append(dirtyText)
         }
 
+        // Worktree marker: a muted branch glyph when the active pane's directory
+        // is a linked git worktree, so worktree tabs read differently from the
+        // primary checkout at a glance.
+        if tab.activePane?.isInWorktree == true {
+            appendAgentIndicator(
+                systemSymbolName: "arrow.triangle.branch",
+                accessibilityDescription: "In Git Worktree",
+                color: AppTheme.mutedText,
+                to: attributedTitle
+            )
+        }
+
         // Tab title
         let titleText = NSAttributedString(string: tab.title, attributes: [
             .font: NSFont.systemFont(ofSize: 12),
