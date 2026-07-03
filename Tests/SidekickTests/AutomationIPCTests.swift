@@ -199,12 +199,13 @@ final class AutomationIPCTests: XCTestCase {
         {"action":"pane_read","pane_id":"\(paneID.uuidString)","format":"json","lines":20}
         """
         let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
-        guard case let .paneRead(decodedID, _, lines, isJSON) = IPCCommandType.from(command) else {
+        guard case let .paneRead(decodedID, _, lines, isJSON, since) = IPCCommandType.from(command) else {
             return XCTFail("Expected paneRead")
         }
         XCTAssertEqual(decodedID, paneID)
         XCTAssertEqual(lines, 20)
         XCTAssertTrue(isJSON)
+        XCTAssertNil(since)
     }
 
     func testPaneReadDefaultsToTextAndRejectsUnknownFormat() throws {
@@ -213,7 +214,7 @@ final class AutomationIPCTests: XCTestCase {
             IPCCommand.self, from: Data("""
             {"action":"pane_read","pane_id":"\(paneID)"}
             """.utf8))
-        guard case let .paneRead(_, _, _, isJSON) = IPCCommandType.from(textCommand) else {
+        guard case let .paneRead(_, _, _, isJSON, _) = IPCCommandType.from(textCommand) else {
             return XCTFail("Expected paneRead")
         }
         XCTAssertFalse(isJSON)
@@ -223,6 +224,28 @@ final class AutomationIPCTests: XCTestCase {
             {"action":"pane_read","pane_id":"\(paneID)","format":"xml"}
             """.utf8))
         XCTAssertNil(IPCCommandType.from(badCommand))
+    }
+
+    func testPaneReadParsesSinceCursor() throws {
+        let paneID = UUID()
+        let json = """
+        {"action":"pane_read","pane_id":"\(paneID.uuidString)","source":"recent","since":"4321:8192"}
+        """
+        let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
+        guard case let .paneRead(decodedID, source, _, _, since) = IPCCommandType.from(command) else {
+            return XCTFail("Expected paneRead")
+        }
+        XCTAssertEqual(decodedID, paneID)
+        XCTAssertEqual(source, "recent")
+        XCTAssertEqual(since, "4321:8192")
+    }
+
+    func testPaneReadRejectsOverlongSinceCursor() throws {
+        let json = """
+        {"action":"pane_read","pane_id":"\(UUID().uuidString)","since":"\(String(repeating: "9", count: 129))"}
+        """
+        let command = try JSONDecoder().decode(IPCCommand.self, from: Data(json.utf8))
+        XCTAssertNil(IPCCommandType.from(command))
     }
 
     func testCommandRecordUsesSnakeCaseJSONKeys() throws {

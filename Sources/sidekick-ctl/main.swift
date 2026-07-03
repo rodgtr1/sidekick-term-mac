@@ -63,6 +63,14 @@ struct SidekickCtl {
                     printJSON(commands)
                 } else if let text = result["text"] as? String {
                     print(text)
+                    // Keep stdout the pane text; surface the delta-read cursor and
+                    // any re-sync as stderr diagnostics a poller can capture apart.
+                    if (result["truncated"] as? Bool) == true {
+                        warn("truncated: cursor was stale or evicted; text is a full re-read")
+                    }
+                    if let cursor = result["cursor"] as? String {
+                        warn("cursor: \(cursor)")
+                    }
                 }
             } else if shouldPrintJSON(args) {
                 printJSON(response)
@@ -248,6 +256,10 @@ struct SidekickCtl {
                     index += 1
                     guard index < args.count, let lines = Int(args[index]) else { throw CLIError("--lines requires an integer") }
                     request["lines"] = lines
+                case "--since":
+                    index += 1
+                    guard index < args.count else { throw CLIError("--since requires a cursor") }
+                    request["since"] = args[index]
                 case "--json":
                     request["format"] = "json"
                 default:
@@ -354,7 +366,9 @@ struct SidekickCtl {
           pane split <pane-id> [--direction right|down] [--cwd dir] [--worktree branch] [--no-focus] [--exec command args...]
           pane focus|close <pane-id>
           pane send-text <pane-id> <text> | send-key <pane-id> <key> | run <pane-id> <command>
-          pane read <pane-id> [--source visible|recent] [--lines count] [--json]
+          pane read <pane-id> [--source visible|recent] [--lines count] [--since cursor] [--json]
+                              --since returns only recent output after a prior read's
+                              cursor (printed to stderr); re-reads in full on a stale one
           wait agent-status <pane-id> <idle|working|ready|done> [--timeout ms]
           wait output <pane-id> <text> [--timeout ms]
           wait event [--pane id] [--type agent_state|command|diff|telemetry] [--timeout ms]
@@ -372,6 +386,11 @@ struct SidekickCtl {
     private static func fail(_ message: String) -> Never {
         FileHandle.standardError.write(Data((message + "\n").utf8))
         exit(1)
+    }
+
+    /// Non-fatal diagnostic on stderr, so stdout stays the pane's text.
+    private static func warn(_ message: String) {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
     }
 }
 

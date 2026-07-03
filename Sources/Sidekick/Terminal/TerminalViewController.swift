@@ -241,6 +241,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private var pendingDetectionOutput = ""
     private var detectionFlushScheduled = false
     private var automationOutput = ""
+    // Monotonic UTF-8 byte count of everything ever appended to
+    // `automationOutput` over this shell's lifetime — the offset a `pane_read`
+    // cursor encodes. `automationOutputDroppedBytes` tracks how many of those
+    // leading bytes the rolling-buffer trim has since evicted, so the invariant
+    // `dropped + automationOutput.utf8.count == total` holds; a `since` cursor
+    // pointing before `dropped` can no longer be served as a delta.
+    private var automationOutputTotalBytes = 0
+    private var automationOutputDroppedBytes = 0
 
     private var findBar: TerminalFindBar?
     private var alternateScrollAccumulator: CGFloat = 0
@@ -907,7 +915,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func appendAutomationOutput(_ output: String) {
+        let bytesBefore = automationOutput.utf8.count
         TerminalText.appendBounded(output, to: &automationOutput, cap: 64_000)
+        // Advance the monotonic cursor by what we appended, and fold whatever
+        // the bounded-append trimmed off the front into the evicted-bytes total
+        // so `dropped + automationOutput.utf8.count == total` stays invariant.
+        let appended = output.utf8.count
+        automationOutputTotalBytes += appended
+        automationOutputDroppedBytes += bytesBefore + appended - automationOutput.utf8.count
 
         // First output means the shell is up and has drawn its prompt — flush any
         // command queued via sendOnShellReady().
@@ -1241,19 +1256,25 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     func visibleScreenText(lineLimit: Int? = nil) -> String {
-        let text = readVisibleScreenText()
-        guard let lineLimit, lineLimit > 0 else { return text }
-        return text.split(separator: "\n", omittingEmptySubsequences: false)
-            .suffix(lineLimit)
-            .joined(separator: "\n")
+        TerminalText.lastLines(of: readVisibleScreenText(), limit: lineLimit)
     }
 
     func recentOutputText(lineLimit: Int? = nil) -> String {
-        let text = TerminalText.stripANSIEscapes(automationOutput)
-        guard let lineLimit, lineLimit > 0 else { return text }
-        return text.split(separator: "\n", omittingEmptySubsequences: false)
-            .suffix(lineLimit)
-            .joined(separator: "\n")
+        TerminalText.lastLines(of: TerminalText.stripANSIEscapes(automationOutput), limit: lineLimit)
+    }
+
+    /// A cursor-scoped delta of the recent-output buffer, scoped to this pane's
+    /// shell PID so a cursor from a previous shell reads as truncated. See
+    /// `TerminalText.recentDelta` for the delta/truncation semantics.
+    func recentOutputDelta(since: String?, lineLimit: Int? = nil) -> (text: String, cursor: String, truncated: Bool) {
+        let delta = TerminalText.recentDelta(
+            buffer: automationOutput,
+            total: automationOutputTotalBytes,
+            dropped: automationOutputDroppedBytes,
+            generation: Int(shellPID),
+            since: since,
+            lineLimit: lineLimit)
+        return (delta.text, delta.cursor, delta.truncated)
     }
 
     // MARK: - Streaming output match (for `wait output`)

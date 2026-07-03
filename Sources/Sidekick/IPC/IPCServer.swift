@@ -17,6 +17,9 @@ nonisolated struct IPCCommand: Codable, Sendable {
     let key: String?
     let source: String?
     let lines: Int?
+    /// Delta-read cursor from a prior `pane_read` response: return only output
+    /// appended since it (or a truncated full read when it's stale).
+    let since: String?
     let status: String?
     let match: String?
     let timeoutMS: Int?
@@ -32,7 +35,7 @@ nonisolated struct IPCCommand: Codable, Sendable {
     let telemetry: String?
 
     enum CodingKeys: String, CodingKey {
-        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, status, match, format, worktree, force, type, backlog, telemetry
+        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, since, status, match, format, worktree, force, type, backlog, telemetry
         case paneID = "pane_id"
         case timeoutMS = "timeout_ms"
     }
@@ -87,6 +90,11 @@ nonisolated struct IPCResult: Codable, Sendable {
     let matched: Bool?
     let commands: [IPCCommandRecord]?
     let worktrees: [IPCWorktreeInfo]?
+    /// Recent-output cursor at read time — pass back as `since` for a delta read.
+    let cursor: String?
+    /// True when a `since` cursor couldn't be served as a delta (stale or
+    /// evicted) and `text` is a full re-read instead. Absent otherwise.
+    let truncated: Bool?
 
     init(
         panes: [IPCPaneInfo]? = nil,
@@ -94,7 +102,9 @@ nonisolated struct IPCResult: Codable, Sendable {
         text: String? = nil,
         matched: Bool? = nil,
         commands: [IPCCommandRecord]? = nil,
-        worktrees: [IPCWorktreeInfo]? = nil
+        worktrees: [IPCWorktreeInfo]? = nil,
+        cursor: String? = nil,
+        truncated: Bool? = nil
     ) {
         self.panes = panes
         self.pane = pane
@@ -102,6 +112,8 @@ nonisolated struct IPCResult: Codable, Sendable {
         self.matched = matched
         self.commands = commands
         self.worktrees = worktrees
+        self.cursor = cursor
+        self.truncated = truncated
     }
 }
 
@@ -135,7 +147,7 @@ nonisolated enum IPCCommandType {
     case paneSendText(paneID: UUID, text: String)
     case paneRun(paneID: UUID, text: String)
     case paneSendKey(paneID: UUID, key: String)
-    case paneRead(paneID: UUID, source: String, lines: Int?, json: Bool)
+    case paneRead(paneID: UUID, source: String, lines: Int?, json: Bool, since: String?)
     case waitAgentStatus(paneID: UUID, status: AgentState, timeoutMS: Int)
     case waitOutput(paneID: UUID, match: String, timeoutMS: Int)
     case worktreeList(cwd: String?)
@@ -239,8 +251,9 @@ nonisolated enum IPCCommandType {
             let format = command.format ?? "text"
             guard source == "visible" || source == "recent",
                   format == "text" || format == "json",
-                  command.lines.map({ (1...10_000).contains($0) }) ?? true else { return .invalidArguments }
-            return .command(.paneRead(paneID: paneID, source: source, lines: command.lines, json: format == "json"))
+                  command.lines.map({ (1...10_000).contains($0) }) ?? true,
+                  command.since.map({ $0.count <= 128 }) ?? true else { return .invalidArguments }
+            return .command(.paneRead(paneID: paneID, source: source, lines: command.lines, json: format == "json", since: command.since))
         case "wait_agent_status":
             guard let paneID = uuid(command.paneID),
                   let rawStatus = command.status,

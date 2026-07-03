@@ -167,11 +167,12 @@ public func makeTools(ipc: SidekickIPCClient) -> [Tool] {
     ),
     Tool(
         name: "sidekick_pane_read",
-        description: "Read a pane's output. source=visible (the screen) or recent (scrollback). Set json=true for structured per-command records {command, exit_code, duration, output} built from shell-integration marks — easier to reason over than raw text.",
+        description: "Read a pane's output. source=visible (the screen) or recent (scrollback). A source=recent read returns a `cursor`; pass it back as `since` to get only the output appended since — polling a worker pane then reads deltas, not the whole buffer each time. On a stale cursor (evicted or a restarted shell) the reply is `truncated: true` with a full re-read, never an error. Set json=true for structured per-command records {command, exit_code, duration, output} built from shell-integration marks — easier to reason over than raw text.",
         inputSchema: object([
             "pane_id": paneIDProperty,
             "source": ["type": "string", "enum": ["visible", "recent"], "description": "visible (default) or recent."],
             "lines": ["type": "integer", "description": "Limit to the last N lines (text) or N command records (json)."],
+            "since": ["type": "string", "description": "Cursor from a prior source=recent read; returns only output appended after it."],
             "json": ["type": "boolean", "description": "Return structured command records instead of raw text."]
         ], required: ["pane_id"]),
         buildRequest: { args in
@@ -181,12 +182,20 @@ public func makeTools(ipc: SidekickIPCClient) -> [Tool] {
                 "source": (args["source"] as? String) ?? "visible"
             ]
             if let lines = args["lines"] as? Int { request["lines"] = lines }
+            if let since = args["since"] as? String { request["since"] = since }
             if (args["json"] as? Bool) == true { request["format"] = "json" }
             return request
         },
         render: { result in
             if let commands = result?["commands"] { return prettyJSON(commands) }
-            return (result?["text"] as? String) ?? ""
+            let text = (result?["text"] as? String) ?? ""
+            // A source=recent read carries the cursor; append it as a trailing
+            // line so the model can pass it back as `since` on the next poll.
+            guard let cursor = result?["cursor"] as? String else { return text }
+            let note = (result?["truncated"] as? Bool) == true
+                ? "[cursor: \(cursor) — truncated: prior cursor was stale, this is a full re-read]"
+                : "[cursor: \(cursor)]"
+            return text.isEmpty ? note : text + "\n\n" + note
         }
     ),
     Tool(

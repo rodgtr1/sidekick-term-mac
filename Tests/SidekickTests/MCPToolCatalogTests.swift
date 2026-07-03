@@ -203,6 +203,34 @@ final class MCPToolCatalogTests: XCTestCase {
         XCTAssertNil(withoutJSON["format"], "format should be absent (server defaults to text) when json isn't set")
     }
 
+    func testPaneReadThreadsSinceCursorAndParsesAsDelta() throws {
+        let schema = tool("sidekick_pane_read").inputSchema
+        let properties = schema["properties"] as? [String: Any]
+        XCTAssertNotNil(properties?["since"], "pane_read must expose a `since` cursor property")
+
+        let withSince = try tool("sidekick_pane_read").buildRequest(
+            ["pane_id": UUID().uuidString, "source": "recent", "since": "4321:8192"])
+        XCTAssertEqual(withSince["since"] as? String, "4321:8192")
+        let command = try decodeCommand(withSince)
+        guard case let .paneRead(_, _, _, _, since) = IPCCommandType.from(command) else {
+            return XCTFail("Expected paneRead")
+        }
+        XCTAssertEqual(since, "4321:8192")
+
+        let withoutSince = try tool("sidekick_pane_read").buildRequest(["pane_id": UUID().uuidString])
+        XCTAssertNil(withoutSince["since"], "since stays absent (full read) unless the caller passes a cursor")
+    }
+
+    func testPaneReadRendersCursorAndTruncationForRecentReads() {
+        let read = tool("sidekick_pane_read")
+        XCTAssertEqual(read.render(["text": "output", "cursor": "12:34"]), "output\n\n[cursor: 12:34]")
+        XCTAssertEqual(
+            read.render(["text": "full re-read", "cursor": "12:34", "truncated": true]),
+            "full re-read\n\n[cursor: 12:34 — truncated: prior cursor was stale, this is a full re-read]")
+        XCTAssertEqual(read.render(["text": "visible only"]), "visible only",
+                       "a read without a cursor (visible source) renders plain text")
+    }
+
     // MARK: - worktree lifecycle
 
     func testWorktreeRemoveMapsBranchToWorktreeAndOmitsForceByDefault() throws {

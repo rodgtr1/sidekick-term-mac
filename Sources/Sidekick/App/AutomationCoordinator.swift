@@ -365,8 +365,8 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             handlePaneRun(paneID: paneID, text: text, completion: completion)
         case .paneSendKey(let paneID, let key):
             handlePaneSendKey(paneID: paneID, key: key, completion: completion)
-        case .paneRead(let paneID, let source, let lines, let json):
-            handlePaneRead(paneID: paneID, source: source, lines: lines, json: json, completion: completion)
+        case .paneRead(let paneID, let source, let lines, let json, let since):
+            handlePaneRead(paneID: paneID, source: source, lines: lines, json: json, since: since, completion: completion)
         case .waitAgentStatus(let paneID, let status, let timeoutMS):
             handleWaitAgentStatus(paneID: paneID, status: status, timeoutMS: timeoutMS, completion: completion)
         case .waitOutput(let paneID, let match, let timeoutMS):
@@ -539,6 +539,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         source: String,
         lines: Int?,
         json: Bool,
+        since: String?,
         completion: @escaping @Sendable (IPCResponse) -> Void
     ) {
         guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
@@ -550,11 +551,14 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
                 IPCCommandRecord(command: $0.command, exitCode: $0.exitCode, duration: $0.duration, output: $0.output)
             }
             completion(IPCResponse(result: IPCResult(commands: records)))
+        } else if source == "recent" {
+            // Only the recent-output buffer has a stable cursor; a `since` delta
+            // read reports the new cursor (and `truncated` when it re-synced).
+            let delta = terminal.recentOutputDelta(since: since, lineLimit: lines)
+            completion(IPCResponse(result: IPCResult(
+                text: delta.text, cursor: delta.cursor, truncated: delta.truncated ? true : nil)))
         } else {
-            let text = source == "recent"
-                ? terminal.recentOutputText(lineLimit: lines)
-                : terminal.visibleScreenText(lineLimit: lines)
-            completion(IPCResponse(result: IPCResult(text: text)))
+            completion(IPCResponse(result: IPCResult(text: terminal.visibleScreenText(lineLimit: lines))))
         }
     }
 
