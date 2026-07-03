@@ -28,6 +28,7 @@ final class MCPToolCatalogTests: XCTestCase {
     private let expectedAction: [String: String] = [
         "sidekick_ping": "ping",
         "sidekick_pane_list": "pane_list",
+        "sidekick_agent_list": "agent_list",
         "sidekick_pane_current": "pane_current",
         "sidekick_new_tab": "new_tab",
         "sidekick_pane_split": "pane_split",
@@ -48,7 +49,7 @@ final class MCPToolCatalogTests: XCTestCase {
     private func validArgs(for name: String) -> [String: Any] {
         let paneID = UUID().uuidString
         switch name {
-        case "sidekick_ping", "sidekick_pane_list", "sidekick_new_tab":
+        case "sidekick_ping", "sidekick_pane_list", "sidekick_agent_list", "sidekick_new_tab":
             return [:]
         case "sidekick_pane_current", "sidekick_pane_focus", "sidekick_pane_close":
             return ["pane_id": paneID]
@@ -259,6 +260,33 @@ final class MCPToolCatalogTests: XCTestCase {
         ])
         XCTAssertTrue(rendered.contains("\"branch\""))
         XCTAssertTrue(rendered.contains("main"))
+    }
+
+    // MARK: - agent_list
+
+    func testAgentListRendersAgentsArray() {
+        let rendered = tool("sidekick_agent_list").render([
+            "agents": [[
+                "pane_id": "abc", "tab_id": "def", "tab": "sidekick (main)",
+                "agent": "opus-4.8", "state": "working", "since_s": 12,
+                "cost_usd": 0.36, "worktree": "feature/x"
+            ]]
+        ])
+        XCTAssertTrue(rendered.contains("\"state\""))
+        XCTAssertTrue(rendered.contains("working"))
+        XCTAssertTrue(rendered.contains("\"since_s\""))
+        XCTAssertTrue(rendered.contains("\"worktree\""))
+        // JSONSerialization escapes the branch's slash (feature\/x).
+        XCTAssertTrue(rendered.contains("feature"))
+    }
+
+    func testAgentListRendersEmptyArrayWhenNoAgents() {
+        // A fleet with no active agents (or a nil result) renders an empty JSON
+        // array — a well-formed list the caller can iterate, never an error.
+        for result in [[String: Any](), nil] {
+            let rendered = tool("sidekick_agent_list").render(result)
+            XCTAssertEqual(rendered.filter { !$0.isWhitespace }, "[]")
+        }
     }
 
     // MARK: - wait_event

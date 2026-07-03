@@ -351,6 +351,8 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             handleSetAgentState(.idle, completion: completion)
         case .paneList:
             handlePaneList(completion: completion)
+        case .agentList:
+            handleAgentList(completion: completion)
         case .paneCurrent(let requestedPaneID):
             handlePaneCurrent(paneID: requestedPaneID, completion: completion)
         case .paneSplit(let paneID, let direction, let cwd, let command, let focus, let worktree):
@@ -423,6 +425,36 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
 
     private func handlePaneList(completion: @escaping @Sendable (IPCResponse) -> Void) {
         completion(IPCResponse(result: IPCResult(panes: allAutomationPaneInfo())))
+    }
+
+    private func handleAgentList(completion: @escaping @Sendable (IPCResponse) -> Void) {
+        completion(IPCResponse(result: IPCResult(agents: allAgentInfo())))
+    }
+
+    /// Fleet status for every pane with agent activity — the wire twin of the
+    /// Agents sidebar dashboard. Idle panes are skipped (the dashboard drops
+    /// idle tabs too): a listed row always names a working, ready, or done
+    /// agent. Model and cost come from the same per-pane telemetry the dashboard
+    /// reads, so this adds no new tracking.
+    private func allAgentInfo() -> [IPCAgentInfo] {
+        guard let host else { return [] }
+        let now = Date()
+        return host.automationTabs.flatMap { tab -> [IPCAgentInfo] in
+            tab.panes.compactMap { pane -> IPCAgentInfo? in
+                guard pane.agentState != .idle else { return nil }
+                let usage = paneTelemetry[pane.id]
+                return IPCAgentInfo(
+                    paneID: pane.id.uuidString.lowercased(),
+                    tabID: tab.id.uuidString.lowercased(),
+                    tab: tab.title,
+                    agent: usage?.model.map(TelemetryFormat.shortModel),
+                    state: pane.agentState.rawValue,
+                    sinceS: max(0, Int(now.timeIntervalSince(pane.agentStateChangedAt))),
+                    costUSD: usage?.estimatedCostUSD(rates: telemetryRates),
+                    worktree: pane.isInWorktree ? pane.gitBranch : nil
+                )
+            }
+        }
     }
 
     private func handlePaneCurrent(paneID: UUID?, completion: @escaping @Sendable (IPCResponse) -> Void) {

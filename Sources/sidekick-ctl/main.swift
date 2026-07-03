@@ -78,6 +78,8 @@ struct SidekickCtl {
                         || args.prefix(2).elementsEqual(["wait", "output"]) {
                 let matched = (response["result"] as? [String: Any])?["matched"] as? Bool ?? false
                 if !matched { exit(1) }
+            } else if args.first == "agent-list" {
+                printJSON((response["result"] as? [String: Any])?["agents"] ?? [])
             } else if args.prefix(2).elementsEqual(["worktree", "list"]) {
                 printJSON((response["result"] as? [String: Any])?["worktrees"] ?? [])
             } else if args.prefix(2).elementsEqual(["worktree", "prune"]) {
@@ -109,6 +111,7 @@ struct SidekickCtl {
         case "open-diff":
             guard args.count == 2 else { throw CLIError("open-diff requires a file path") }
             return ["action": "show_diff", "path": expandTilde(args[1]), "old": "", "new": ""]
+        case "agent-list": return ["action": "agent_list"]
         case "agent-ready": return ["action": "agent_ready"]
         case "agent-busy": return ["action": "agent_busy"]
         case "agent-done": return ["action": "agent_done"]
@@ -362,6 +365,7 @@ struct SidekickCtl {
         Usage: sidekick-ctl <command>
           ping | new-tab [cwd] | open-diff <file>
           agent-ready | agent-busy | agent-done | agent-idle
+          agent-list                                       fleet status for every agent pane as JSON
           pane list | current
           pane split <pane-id> [--direction right|down] [--cwd dir] [--worktree branch] [--no-focus] [--exec command args...]
           pane focus|close <pane-id>

@@ -83,9 +83,42 @@ nonisolated struct IPCWorktreeInfo: Codable, Sendable {
     let bare: Bool
 }
 
+/// One agent pane's fleet status, returned by `agent_list`. This is the same
+/// per-pane data the Agents sidebar dashboard renders (state + elapsed +
+/// telemetry), flattened to a wire row so a driver can poll the whole fleet in
+/// one call instead of walking `pane_list` and the telemetry stream.
+nonisolated struct IPCAgentInfo: Codable, Sendable {
+    let paneID: String
+    let tabID: String
+    /// Owning tab's title (directory/branch or the user's rename).
+    let tab: String
+    /// Short model name from the pane's latest telemetry (e.g. "opus-4.8"),
+    /// the closest thing the dashboard tracks to an agent identity. Nil until a
+    /// turn has been billed for the pane.
+    let agent: String?
+    /// Agent state: working | ready | done (idle panes aren't listed).
+    let state: String
+    /// Seconds the pane has been in `state`.
+    let sinceS: Int
+    /// Estimated USD cost of the pane's latest reported usage, when its model
+    /// has a known rate. Nil otherwise.
+    let costUSD: Double?
+    /// Branch name when the pane sits in a linked git worktree; nil otherwise.
+    let worktree: String?
+
+    enum CodingKeys: String, CodingKey {
+        case tab, agent, state, worktree
+        case paneID = "pane_id"
+        case tabID = "tab_id"
+        case sinceS = "since_s"
+        case costUSD = "cost_usd"
+    }
+}
+
 nonisolated struct IPCResult: Codable, Sendable {
     let panes: [IPCPaneInfo]?
     let pane: IPCPaneInfo?
+    let agents: [IPCAgentInfo]?
     let text: String?
     let matched: Bool?
     let commands: [IPCCommandRecord]?
@@ -99,6 +132,7 @@ nonisolated struct IPCResult: Codable, Sendable {
     init(
         panes: [IPCPaneInfo]? = nil,
         pane: IPCPaneInfo? = nil,
+        agents: [IPCAgentInfo]? = nil,
         text: String? = nil,
         matched: Bool? = nil,
         commands: [IPCCommandRecord]? = nil,
@@ -108,6 +142,7 @@ nonisolated struct IPCResult: Codable, Sendable {
     ) {
         self.panes = panes
         self.pane = pane
+        self.agents = agents
         self.text = text
         self.matched = matched
         self.commands = commands
@@ -140,6 +175,7 @@ nonisolated enum IPCCommandType {
     case agentDone
     case agentIdle
     case paneList
+    case agentList
     case paneCurrent(paneID: UUID?)
     case paneSplit(paneID: UUID, direction: SplitDirection, cwd: String?, command: [String]?, focus: Bool, worktree: String?)
     case paneFocus(paneID: UUID)
@@ -196,6 +232,8 @@ nonisolated enum IPCCommandType {
             return .command(.agentIdle)
         case "pane_list":
             return .command(.paneList)
+        case "agent_list":
+            return .command(.agentList)
         case "pane_current":
             if let rawPaneID = command.paneID {
                 guard let paneID = UUID(uuidString: rawPaneID) else { return .invalidArguments }

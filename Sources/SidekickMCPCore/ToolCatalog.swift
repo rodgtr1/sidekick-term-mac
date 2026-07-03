@@ -69,6 +69,13 @@ public func makeTools(ipc: SidekickIPCClient) -> [Tool] {
         render: { result in prettyJSON(result?["panes"] ?? []) }
     ),
     Tool(
+        name: "sidekick_agent_list",
+        description: "Fleet status for every agent pane in one call — the data the Agents sidebar tracks. Each row: pane_id, tab_id, tab title, agent (model, when known), state (working/ready/done), since_s (seconds in that state), cost_usd (when priced), and worktree branch (when the pane is on one). Idle panes are omitted. Use this to poll many workers at once instead of walking pane_list.",
+        inputSchema: object([:]),
+        buildRequest: { _ in ["action": "agent_list"] },
+        render: { result in prettyJSON(result?["agents"] ?? []) }
+    ),
+    Tool(
         name: "sidekick_pane_current",
         description: "Get the focused pane, or a specific pane when pane_id is given.",
         inputSchema: object(["pane_id": paneIDProperty]),
