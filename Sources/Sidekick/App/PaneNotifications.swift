@@ -50,4 +50,9 @@ nonisolated extension Notification.Name {
     /// The pending diff-approval queue gained or lost entries. `object` is the
     /// `ApprovalQueue`; read its `pending` list for the current state.
     static let pendingApprovalsChanged = Notification.Name("PendingApprovalsChanged")
+
+    /// A pane was shut down (pane closed, tab closed). `object` is the
+    /// `PaneModel`. The automation coordinator uses this to fail in-flight
+    /// waits on that pane immediately instead of letting them run to timeout.
+    static let paneDidClose = Notification.Name("PaneDidClose")
 }

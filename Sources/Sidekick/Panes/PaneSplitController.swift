@@ -591,7 +591,7 @@ class PaneSplitController: NSViewController {
 }
 
 // MARK: - ClickableContainerView
-class ClickableContainerView: NSView {
+class ClickableContainerView: NSView, NSGestureRecognizerDelegate {
     var onMouseDown: (() -> Void)?
     private var clickGestureRecognizer: NSClickGestureRecognizer?
 
@@ -608,6 +608,7 @@ class ClickableContainerView: NSView {
     private func setupGestureRecognizer() {
         let clickRecognizer = NSClickGestureRecognizer(target: self, action: #selector(handleClick(_:)))
         clickRecognizer.delaysPrimaryMouseButtonEvents = false
+        clickRecognizer.delegate = self
         self.addGestureRecognizer(clickRecognizer)
         self.clickGestureRecognizer = clickRecognizer
     }
@@ -618,6 +619,25 @@ class ClickableContainerView: NSView {
     // override only double-fired setActivePane without covering any new case.
     @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
         onMouseDown?()
+    }
+
+    // The recognizer spans the whole container, so it also sees clicks that
+    // land on the pane's close button. It recognizes on mouse-up and AppKit
+    // then withholds that mouse-up from the button, so the X highlights but
+    // its action never fires — the click only re-activates the pane. Bow out
+    // when the click starts on the button; activation still fires for clicks
+    // anywhere else, and closing a pane activates it first anyway.
+    func gestureRecognizer(
+        _ gestureRecognizer: NSGestureRecognizer,
+        shouldAttemptToRecognizeWith event: NSEvent
+    ) -> Bool {
+        guard let superview else { return true }
+        var view = hitTest(superview.convert(event.locationInWindow, from: nil))
+        while let current = view, current !== self {
+            if current is PaneCloseButton { return false }
+            view = current.superview
+        }
+        return true
     }
 }
 
@@ -640,6 +660,12 @@ final class PaneCloseButton: NSButton {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    // The terminal underneath claims an I-beam cursor for its whole surface;
+    // without an explicit rect the X inherits it and reads as dead UI.
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 }
 

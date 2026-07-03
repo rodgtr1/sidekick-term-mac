@@ -45,10 +45,19 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     /// In-flight `wait agent-status` requests, resolved by the
     /// PaneAgentStateChanged push rather than a poll. Keyed by request id so a
     /// fired deadline and a matching transition can't both resolve one twice.
+    /// How an in-flight wait ended. `paneClosed` exists so a wait whose target
+    /// pane disappears fails immediately with a real error, instead of leaving
+    /// the client blocked until its full timeout elapses.
+    enum WaitOutcome {
+        case matched
+        case timedOut
+        case paneClosed
+    }
+
     private struct StatusWait {
         let paneID: UUID
         let target: AgentState
-        let completion: (Bool) -> Void
+        let completion: (WaitOutcome) -> Void
         let deadlineTimer: Timer
     }
     private var statusWaits: [UUID: StatusWait] = [:]
@@ -57,7 +66,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     /// matching; this just holds the deadline + completion and the matcher
     /// handle so a fired deadline can cancel it.
     private struct OutputWait {
-        let completion: (Bool) -> Void
+        let completion: (WaitOutcome) -> Void
         let deadlineTimer: Timer
         weak var terminal: TerminalViewController?
         let matcherID: UUID
@@ -77,6 +86,12 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             self,
             selector: #selector(paneCommandStatusChanged(_:)),
             name: .paneCommandStatusChanged,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(paneDidClose(_:)),
+            name: .paneDidClose,
             object: nil
         )
     }
@@ -161,32 +176,32 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         terminal: TerminalViewController,
         match: String,
         timeoutMS: Int,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping (WaitOutcome) -> Void
     ) {
         let id = UUID()
         // Added to .common modes (not the default scheduledTimer, which only
         // runs in .default mode) so the deadline still fires while the main run
         // loop is in a modal/event-tracking mode.
         let timer = Timer(timeInterval: Double(timeoutMS) / 1000, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.resolveOutputWait(id, matched: false) }
+            MainActor.assumeIsolated { self?.resolveOutputWait(id, outcome: .timedOut) }
         }
         RunLoop.main.add(timer, forMode: .common)
         guard let matcherID = terminal.registerOutputMatcher(match, onMatch: { [weak self] in
-            self?.resolveOutputWait(id, matched: true)
+            self?.resolveOutputWait(id, outcome: .matched)
         }) else {
             // Already present — resolve now without registering.
             timer.invalidate()
-            completion(true)
+            completion(.matched)
             return
         }
         outputWaits[id] = OutputWait(completion: completion, deadlineTimer: timer, terminal: terminal, matcherID: matcherID)
     }
 
-    private func resolveOutputWait(_ id: UUID, matched: Bool) {
+    private func resolveOutputWait(_ id: UUID, outcome: WaitOutcome) {
         guard let wait = outputWaits.removeValue(forKey: id) else { return }
         wait.deadlineTimer.invalidate()
         wait.terminal?.cancelOutputMatcher(wait.matcherID)
-        wait.completion(matched)
+        wait.completion(outcome)
     }
 
     // MARK: - Agent-status waits (push, not poll)
@@ -199,35 +214,50 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         paneID: UUID,
         target: AgentState,
         timeoutMS: Int,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping (WaitOutcome) -> Void
     ) {
         if automationPane(id: paneID)?.pane.agentState == target {
-            completion(true)
+            completion(.matched)
             return
         }
         let id = UUID()
         // .common modes so the deadline fires even during modal/tracking runloop
         // modes (scheduledTimer would only run in .default).
         let timer = Timer(timeInterval: Double(timeoutMS) / 1000, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.resolveStatusWait(id, matched: false) }
+            MainActor.assumeIsolated { self?.resolveStatusWait(id, outcome: .timedOut) }
         }
         RunLoop.main.add(timer, forMode: .common)
         statusWaits[id] = StatusWait(paneID: paneID, target: target, completion: completion, deadlineTimer: timer)
     }
 
-    private func resolveStatusWait(_ id: UUID, matched: Bool) {
+    private func resolveStatusWait(_ id: UUID, outcome: WaitOutcome) {
         guard let wait = statusWaits.removeValue(forKey: id) else { return }
         wait.deadlineTimer.invalidate()
-        wait.completion(matched)
+        wait.completion(outcome)
     }
 
     @objc private func paneAgentStateChanged(_ notification: Notification) {
         guard let pane = notification.object as? PaneModel else { return }
         let matched = statusWaits.filter { $0.value.paneID == pane.id && pane.agentState == $0.value.target }
         for id in matched.keys {
-            resolveStatusWait(id, matched: true)
+            resolveStatusWait(id, outcome: .matched)
         }
         emitAgentStateEvent(for: pane)
+    }
+
+    /// Fails every in-flight wait that targets a pane the moment it closes.
+    /// Without this a `wait agent-status` / `wait output` whose pane goes away
+    /// (worker finished and was closed, tab closed) silently blocks the client
+    /// until its full timeout — minutes of a stale process waiting on nothing.
+    @objc private func paneDidClose(_ notification: Notification) {
+        guard let pane = notification.object as? PaneModel else { return }
+        for id in statusWaits.filter({ $0.value.paneID == pane.id }).keys {
+            resolveStatusWait(id, outcome: .paneClosed)
+        }
+        let closedTerminal = pane.terminalViewController
+        for (id, wait) in outputWaits where wait.terminal == nil || wait.terminal === closedTerminal {
+            resolveOutputWait(id, outcome: .paneClosed)
+        }
     }
 
     @objc private func paneCommandStatusChanged(_ notification: Notification) {
@@ -538,8 +568,15 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             completion(IPCResponse(ok: false, error: "Pane not found"))
             return
         }
-        waitForAgentStatus(paneID: paneID, target: status, timeoutMS: timeoutMS) { matched in
-            completion(IPCResponse(result: IPCResult(matched: matched)))
+        waitForAgentStatus(paneID: paneID, target: status, timeoutMS: timeoutMS) { outcome in
+            switch outcome {
+            case .matched:
+                completion(IPCResponse(result: IPCResult(matched: true)))
+            case .timedOut:
+                completion(IPCResponse(result: IPCResult(matched: false)))
+            case .paneClosed:
+                completion(IPCResponse(ok: false, error: "Pane closed while waiting"))
+            }
         }
     }
 
@@ -553,8 +590,15 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             completion(IPCResponse(ok: false, error: "Terminal pane not found"))
             return
         }
-        waitForOutput(terminal: terminal, match: match, timeoutMS: timeoutMS) { matched in
-            completion(IPCResponse(result: IPCResult(matched: matched)))
+        waitForOutput(terminal: terminal, match: match, timeoutMS: timeoutMS) { outcome in
+            switch outcome {
+            case .matched:
+                completion(IPCResponse(result: IPCResult(matched: true)))
+            case .timedOut:
+                completion(IPCResponse(result: IPCResult(matched: false)))
+            case .paneClosed:
+                completion(IPCResponse(ok: false, error: "Pane closed while waiting"))
+            }
         }
     }
 

@@ -187,6 +187,7 @@ class PaneModel: Identifiable, Hashable {
     /// and can't touch the main-actor view controller.
     func shutdown() {
         terminalViewController?.terminateProcess()
+        NotificationCenter.default.post(name: .paneDidClose, object: self)
     }
 
     func focus() {
