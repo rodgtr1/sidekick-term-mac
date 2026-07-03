@@ -1,4 +1,5 @@
 import AppKit
+import SidekickTelemetryCore
 
 /// The slice of the window controller `TabController` needs to host tabs: the
 /// content area a tab's split-controller view is pinned into, the live config
@@ -180,6 +181,12 @@ final class TabController: NSObject {
 
         let tabToClose = tabs[index]
 
+        // Capture this tab's spend before it's dropped: the termination roll-up
+        // only sees tabs still open, so a closed agent's cost would be lost.
+        if let cost = Self.tabCost(for: tabToClose) {
+            SessionCostStore.append(SessionCostRecord(timestamp: Date(), tabs: [cost]))
+        }
+
         // Kill every pane's shell before the models are dropped; nothing else
         // terminates them and orphaned shells outlive the tab otherwise.
         for pane in tabToClose.panes {
@@ -311,6 +318,30 @@ final class TabController: NSObject {
         guard state != lastSavedSession else { return }
         lastSavedSession = state
         SessionStore.save(state)
+    }
+
+    // MARK: - Session cost history
+
+    /// A tab's telemetry as a cost entry, or nil when it never billed a turn.
+    /// Prices are already resolved onto the tab (`telemetryCostUSD`), so this
+    /// stays a pure read of the model state.
+    private static func tabCost(for tab: TabModel) -> SessionTabCost? {
+        guard let usage = tab.telemetry, usage.assistantResponses > 0 else { return nil }
+        return SessionTabCost(
+            title: tab.title,
+            model: usage.model,
+            tokens: usage.totalTokens,
+            costUSD: tab.telemetryCostUSD
+        )
+    }
+
+    /// Appends one cost record covering every still-open tab that billed
+    /// telemetry this session. Called at app termination; a no-op when nothing
+    /// billed.
+    func recordSessionCosts() {
+        let entries = tabs.compactMap(Self.tabCost(for:))
+        guard !entries.isEmpty else { return }
+        SessionCostStore.append(SessionCostRecord(timestamp: Date(), tabs: entries))
     }
 
     private func restoreSession(_ session: SessionState) {

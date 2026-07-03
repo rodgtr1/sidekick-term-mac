@@ -352,6 +352,12 @@ class MainWindowController: NSWindowController {
         tabController.saveSession()
     }
 
+    /// Appends the session's cost roll-up to the JSONL history. Called once at
+    /// app termination (see `applicationWillTerminate`).
+    func recordSessionCosts() {
+        tabController.recordSessionCosts()
+    }
+
     private func setupTitlebarBackground() {
         titlebarBackgroundView = TitlebarBackgroundView()
         titlebarBackgroundView.translatesAutoresizingMaskIntoConstraints = false

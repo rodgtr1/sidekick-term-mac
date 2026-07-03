@@ -14,6 +14,11 @@ final class AgentDashboardViewController: NSViewController {
     private var tableView: NSTableView!
     private var scrollView: NSScrollView!
     private var emptyLabel: NSTextField!
+    /// Bottom roll-up summing cost and tokens across every tab this session; a
+    /// thin divider plus one line. Hidden until a tab has billed a turn.
+    private var footerContainer: NSView!
+    private var footerDivider: NSView!
+    private var footerLabel: NSTextField!
     // Set on the main actor; invalidated in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var refreshTimer: Timer?
 
@@ -82,6 +87,8 @@ final class AgentDashboardViewController: NSViewController {
         tableView?.backgroundColor = AppTheme.sidebarBackground
         emptyLabel?.textColor = AppTheme.mutedText
         approvalsHeader?.textColor = AppTheme.mutedText
+        footerDivider?.layer?.backgroundColor = AppTheme.divider.cgColor
+        footerLabel?.textColor = AppTheme.primaryText
         tableView?.reloadData()
         // Cards bake theme colors in at construction; rebuild them. (Loses an
         // expanded diff on theme switch — a rare, low-cost event.)
@@ -151,9 +158,28 @@ final class AgentDashboardViewController: NSViewController {
         emptyLabel.maximumNumberOfLines = 0
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        footerContainer = NSView()
+        footerContainer.wantsLayer = true
+        footerContainer.translatesAutoresizingMaskIntoConstraints = false
+        footerContainer.isHidden = true
+
+        footerDivider = NSView()
+        footerDivider.wantsLayer = true
+        footerDivider.layer?.backgroundColor = AppTheme.divider.cgColor
+        footerDivider.translatesAutoresizingMaskIntoConstraints = false
+
+        footerLabel = NSTextField(labelWithString: "")
+        footerLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        footerLabel.textColor = AppTheme.primaryText
+        footerLabel.lineBreakMode = .byTruncatingTail
+        footerLabel.translatesAutoresizingMaskIntoConstraints = false
+        footerContainer.addSubview(footerDivider)
+        footerContainer.addSubview(footerLabel)
+
         view.addSubview(approvalsStack)
         view.addSubview(scrollView)
         view.addSubview(emptyLabel)
+        view.addSubview(footerContainer)
 
         NSLayoutConstraint.activate([
             approvalsStack.topAnchor.constraint(equalTo: view.topAnchor),
@@ -163,7 +189,21 @@ final class AgentDashboardViewController: NSViewController {
             scrollView.topAnchor.constraint(equalTo: approvalsStack.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: footerContainer.topAnchor),
+
+            footerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            footerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            footerContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            footerDivider.topAnchor.constraint(equalTo: footerContainer.topAnchor),
+            footerDivider.leadingAnchor.constraint(equalTo: footerContainer.leadingAnchor),
+            footerDivider.trailingAnchor.constraint(equalTo: footerContainer.trailingAnchor),
+            footerDivider.heightAnchor.constraint(equalToConstant: 1),
+
+            footerLabel.leadingAnchor.constraint(equalTo: footerContainer.leadingAnchor, constant: 12),
+            footerLabel.trailingAnchor.constraint(lessThanOrEqualTo: footerContainer.trailingAnchor, constant: -12),
+            footerLabel.topAnchor.constraint(equalTo: footerDivider.bottomAnchor, constant: 7),
+            footerLabel.bottomAnchor.constraint(equalTo: footerContainer.bottomAnchor, constant: -8),
 
             emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 40),
@@ -180,6 +220,7 @@ final class AgentDashboardViewController: NSViewController {
         guard isViewLoaded else { return }
         reloadApprovals()
         let tabs = delegate?.agentDashboardTabs(self) ?? []
+        updateFooter(tabs)
 
         var newRows = tabs.enumerated().compactMap { index, tab -> Row? in
             guard tab.agentState != .idle else { return nil }
@@ -211,6 +252,33 @@ final class AgentDashboardViewController: NSViewController {
         emptyLabel.isHidden = !rows.isEmpty || !ApprovalQueue.shared.pending.isEmpty
         tableView.reloadData()
         selectActiveRow()
+    }
+
+    /// Refreshes the bottom roll-up from the current tab set, hiding it when
+    /// nothing has billed yet. Called on every reload (cheap: a sum over tabs).
+    private func updateFooter(_ tabs: [TabModel]) {
+        guard let summary = Self.sessionSummary(tabs) else {
+            footerContainer.isHidden = true
+            return
+        }
+        footerContainer.isHidden = false
+        footerLabel.stringValue = "Session · \(TelemetryFormat.cost(summary.cost)) · \(TelemetryFormat.compactTokens(summary.tokens)) tokens"
+    }
+
+    /// Session roll-up across all tabs: total est-$ and total tokens, or nil
+    /// when no tab has billed a turn (footer stays hidden). Tabs with an unknown
+    /// rate still contribute their tokens, matching the JSONL history.
+    fileprivate static func sessionSummary(_ tabs: [TabModel]) -> (cost: Double, tokens: Int)? {
+        var totalCost = 0.0
+        var totalTokens = 0
+        var billed = false
+        for tab in tabs {
+            guard let usage = tab.telemetry, usage.assistantResponses > 0 else { continue }
+            billed = true
+            totalTokens += usage.totalTokens
+            if let cost = tab.telemetryCostUSD { totalCost += cost }
+        }
+        return billed ? (totalCost, totalTokens) : nil
     }
 
     /// Syncs the approvals section with the queue: cards for resolved entries
