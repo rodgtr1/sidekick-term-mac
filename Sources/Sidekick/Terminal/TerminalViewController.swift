@@ -1075,7 +1075,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             // Command started — clear the previous command's status and begin
             // capturing a new record. The shell integration carries the command
             // line base64-encoded in the C parameter (`133;C;<base64>`).
-            commandRecorder.commandStarted(command: ShellIntegrationParser.decodeCommandParameter(parameter))
+            commandRecorder.commandStarted(
+                command: ShellIntegrationParser.decodeCommandParameter(parameter),
+                promptRow: promptMarkRows.last
+            )
             delegate?.terminalDidUpdateCommandStatus(self, status: nil)
         case "D":
             let exitCode = parameter.flatMap { Int($0) } ?? 0
@@ -1121,6 +1124,19 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             return
         }
         terminalView.scrollUp(lines: currentTop - target)
+    }
+
+    /// Scrolls so the prompt at absolute scrollback `row` lands at the top of
+    /// the view — used by the commands timeline's jump-to action. Clamps to the
+    /// available scrollback and pins to the bottom for a row that's still on the
+    /// live screen.
+    func jumpToPrompt(row: Int) {
+        let currentTop = terminalView.getTerminal().buffer.yDisp
+        if row < currentTop {
+            terminalView.scrollUp(lines: currentTop - row)
+        } else if row > currentTop {
+            terminalView.scrollDown(lines: row - currentTop)
+        }
     }
 
     /// Scrolls so the next prompt below the current view lands at the top.

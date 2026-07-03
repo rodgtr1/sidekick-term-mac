@@ -10,6 +10,9 @@ protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didRequestConnectCommand command: String)
     /// Repository root for the active tab's pane, or nil when not in a git repo.
     func sidebarContainerActiveRepoRoot(_ container: SidebarContainerView) -> String?
+    /// The active pane's terminal, for the commands timeline panel; nil when the
+    /// active pane isn't a terminal.
+    func sidebarContainerActiveTerminal(_ container: SidebarContainerView) -> TerminalViewController?
     /// Open or focus a pane sitting in the worktree at `path`.
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenWorktree path: String)
     /// Create a worktree for `branch`, optionally launching `agent` in its pane.
@@ -159,6 +162,10 @@ class SidebarContainerView: NSView {
             let agentDashboardVC = AgentDashboardViewController()
             agentDashboardVC.delegate = self
             return agentDashboardVC
+        case .commands:
+            let commandsVC = CommandsPanelViewController()
+            commandsVC.delegate = self
+            return commandsVC
         case .hosts:
             let hostsPanelVC = HostsPanelViewController()
             hostsPanelVC.delegate = self
@@ -196,12 +203,22 @@ class SidebarContainerView: NSView {
         if panel == .worktrees {
             (panelControllers[.worktrees] as? WorktreesPanelViewController)?.reload()
         }
+
+        if panel == .commands {
+            (panelControllers[.commands] as? CommandsPanelViewController)?.reload()
+        }
     }
 
     /// Refreshes the agents panel (if instantiated) so its highlighted row
     /// tracks the active tab. Called when the active tab changes.
     func refreshAgents() {
         (panelControllers[.agents] as? AgentDashboardViewController)?.reload()
+    }
+
+    /// Refreshes the commands panel (if instantiated) so it tracks the active
+    /// pane's command history. Called when the active tab or pane changes.
+    func refreshCommands() {
+        (panelControllers[.commands] as? CommandsPanelViewController)?.reload()
     }
 
     func toggleVisibility() {
@@ -288,6 +305,12 @@ extension SidebarContainerView: AgentDashboardDelegate {
 
     func agentDashboard(_ dashboard: AgentDashboardViewController, didSelectTabAt index: Int) {
         delegate?.sidebarContainer(self, didRequestSwitchToTab: index)
+    }
+}
+
+extension SidebarContainerView: CommandsPanelDelegate {
+    func commandsPanelActiveTerminal(_ panel: CommandsPanelViewController) -> TerminalViewController? {
+        delegate?.sidebarContainerActiveTerminal(self)
     }
 }
 
