@@ -570,6 +570,25 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         return [program, "--permission-mode", mode] + command.dropFirst()
     }
 
+    /// Injects Sidekick's scoped Codex approval/sandbox flags into a
+    /// Sidekick-launched `codex` worker when an auto/bypass level is active. Like
+    /// the Claude path: workers run via `exec`, bypassing the shell-integration
+    /// `codex` wrapper, so the flags must go on the argv directly. Leaves a
+    /// caller-supplied approval/sandbox flag untouched and only touches commands
+    /// whose program is `codex`.
+    private static func applyingCodexApprovalFlags(_ command: [String]) -> [String] {
+        let flags = AgentApprovalState.codexApprovalArgs
+        guard !flags.isEmpty,
+              let program = command.first,
+              URL(fileURLWithPath: program).lastPathComponent == "codex",
+              !command.contains(where: {
+                  AgentIntegrationInstaller.codexApprovalFlagNames.contains($0)
+                      || $0.hasPrefix("--sandbox=") || $0.hasPrefix("--ask-for-approval=")
+              })
+        else { return command }
+        return [program] + flags + command.dropFirst()
+    }
+
     private func startConfiguredProcess() {
         let shell = getShell()
         let shellIdiom = "-" + NSString(string: shell).lastPathComponent
@@ -606,7 +625,16 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         if let claudeMode = AgentApprovalState.claudePermissionMode {
             environment.append("SIDEKICK_CLAUDE_PERMISSION_MODE=\(claudeMode)")
         }
-        if let command = initialCommand.map(Self.applyingClaudePermissionMode) {
+        // Same scoping for Codex: the shell-integration wrapper reads this when the
+        // user types `codex` interactively; workers get the flags on argv below.
+        if !AgentApprovalState.codexApprovalArgs.isEmpty {
+            environment.append(
+                "SIDEKICK_CODEX_APPROVAL_ARGS=\(AgentApprovalState.codexApprovalArgs.joined(separator: " "))"
+            )
+        }
+        if let command = initialCommand
+            .map(Self.applyingClaudePermissionMode)
+            .map(Self.applyingCodexApprovalFlags) {
             // Launch the worker through the user's login+interactive shell so
             // it inherits the same PATH and version-manager setup a normal pane
             // gets (e.g. ~/.local/bin, nvm). The command string is the fixed
