@@ -1,5 +1,4 @@
 import Cocoa
-import Combine
 
 protocol GitPanelDelegate: AnyObject {
     func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String)
@@ -10,11 +9,9 @@ class GitPanelViewController: NSViewController {
     // Created up front (not in viewDidLoad) so the owning sidebar can seed a
     // repository path via setRepositoryPath before the view loads — lazy panel
     // creation runs the seed first. Its init is inert (polling starts only in
-    // setRepositoryPath), and setupBindings' Combine sinks deliver the model's
-    // current value on subscribe, so the seed is reflected without being clobbered.
+    // setRepositoryPath), and setupBindings applies the model's current state
+    // once on install, so the seed is reflected without being clobbered.
     private let gitStatusModel = GitStatusModel()
-    // Populated on the main actor; cleared in the nonisolated deinit at end-of-life.
-    nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
 
     weak var delegate: GitPanelDelegate?
 
@@ -315,53 +312,12 @@ class GitPanelViewController: NSViewController {
     }
 
     private func setupBindings() {
-        // Observe git status changes
-        gitStatusModel.$files
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.tableView.reloadData()
-            }
-            .store(in: &cancellables)
-
-        gitStatusModel.$currentBranch
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] branch in
-                self?.branchLabel.stringValue = branch.isEmpty ? "No repository" : branch
-            }
-            .store(in: &cancellables)
-
-        gitStatusModel.$aheadCount
-            .combineLatest(gitStatusModel.$behindCount)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] ahead, behind in
-                guard let self = self else { return }
-                var parts: [String] = []
-                if ahead > 0 { parts.append("\u{2191}\(ahead)") }
-                if behind > 0 { parts.append("\u{2193}\(behind)") }
-                self.syncLabel.stringValue = parts.joined(separator: " ")
-                self.syncLabel.toolTip = parts.isEmpty ? nil :
-                    "\(ahead) commit(s) to push, \(behind) to pull"
-                self.pushButton.title = ahead > 0 ? "Push (\(ahead))" : "Push"
-                self.pullButton.title = behind > 0 ? "Pull (\(behind))" : "Pull"
-            }
-            .store(in: &cancellables)
-
-        gitStatusModel.$isClean
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isClean in
-                self?.statusLabel.stringValue = isClean ? "Working tree clean" : "Changes detected"
-                self?.statusLabel.textColor = isClean ? AppTheme.success : AppTheme.peach
-            }
-            .store(in: &cancellables)
-
-        gitStatusModel.$commitMessage
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] message in
-                if self?.commitMessageTextView.string != message {
-                    self?.commitMessageTextView.string = message
-                }
-            }
-            .store(in: &cancellables)
+        // Repaint from the model whenever its state changes, then once now to
+        // reflect any value seeded before the view (and this observer) existed.
+        gitStatusModel.onChange = { [weak self] in
+            self?.applyModelState()
+        }
+        applyModelState()
 
         // Enable commit button when message is not empty
         NotificationCenter.default.addObserver(
@@ -370,6 +326,32 @@ class GitPanelViewController: NSViewController {
             name: NSText.didChangeNotification,
             object: commitMessageTextView
         )
+    }
+
+    /// Pulls the current model state into every header/table/commit control.
+    /// Replaces the old per-property Combine sinks — the model batches its
+    /// updates and fires `onChange` once, so a single repaint stays in sync.
+    private func applyModelState() {
+        tableView.reloadData()
+
+        branchLabel.stringValue = gitStatusModel.currentBranch.isEmpty ? "No repository" : gitStatusModel.currentBranch
+
+        let ahead = gitStatusModel.aheadCount
+        let behind = gitStatusModel.behindCount
+        var parts: [String] = []
+        if ahead > 0 { parts.append("\u{2191}\(ahead)") }
+        if behind > 0 { parts.append("\u{2193}\(behind)") }
+        syncLabel.stringValue = parts.joined(separator: " ")
+        syncLabel.toolTip = parts.isEmpty ? nil : "\(ahead) commit(s) to push, \(behind) to pull"
+        pushButton.title = ahead > 0 ? "Push (\(ahead))" : "Push"
+        pullButton.title = behind > 0 ? "Pull (\(behind))" : "Pull"
+
+        statusLabel.stringValue = gitStatusModel.isClean ? "Working tree clean" : "Changes detected"
+        statusLabel.textColor = gitStatusModel.isClean ? AppTheme.success : AppTheme.peach
+
+        if commitMessageTextView.string != gitStatusModel.commitMessage {
+            commitMessageTextView.string = gitStatusModel.commitMessage
+        }
     }
 
     func setRepositoryPath(_ path: String) {
@@ -436,6 +418,11 @@ class GitPanelViewController: NSViewController {
     }
 
     @objc private func commitMessageChanged() {
+        // Mirror the untrimmed draft into the model so applyModelState's guard
+        // (textView.string != model.commitMessage) sees them equal and doesn't
+        // clobber the in-progress message on the next refresh batch — onChange
+        // now fires on every FSEvents/poll refresh, not just message writes.
+        gitStatusModel.commitMessage = commitMessageTextView.string
         let message = commitMessageTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         commitButton.isEnabled = !message.isEmpty
     }
@@ -525,7 +512,6 @@ class GitPanelViewController: NSViewController {
     }
 
     deinit {
-        cancellables.removeAll()
         NotificationCenter.default.removeObserver(self)
     }
 }
