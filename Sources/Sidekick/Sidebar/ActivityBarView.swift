@@ -7,10 +7,10 @@ protocol ActivityBarDelegate: AnyObject {
 
 enum SidebarPanel: String, CaseIterable {
     case files = "Files"
+    case agents = "Agents"
     case search = "Search"
     case git = "Git"
     case worktrees = "Worktrees"
-    case agents = "Agents"
     case commands = "Commands"
     case hosts = "Hosts"
 
