@@ -16,10 +16,13 @@ public struct TranscriptUsage: Equatable, Codable, Sendable {
     public var cacheReadTokens: Int
     public var cacheCreation5mTokens: Int
     public var cacheCreation1hTokens: Int
-    /// Billed model responses (assistant lines carrying a `usage` block).
+    /// Billed model responses (distinct assistant messages carrying a `usage`
+    /// block — deduplicated by message id, since the transcript repeats one
+    /// message across several lines).
     public var assistantResponses: Int
     /// Typed user prompts (user lines whose content is a plain string, i.e. not
-    /// a tool-result array). The dashboard surfaces this as "turns".
+    /// a tool-result array or a harness-injected notification). The dashboard
+    /// surfaces this as "turns".
     public var userPrompts: Int
 
     /// A cost the agent reported itself (e.g. Pi sums `usage.cost.total`). When
@@ -83,8 +86,9 @@ public enum TranscriptParser {
     /// live transcript is appended to while we read it.
     public static func aggregate<S: StringProtocol>(jsonl: S) -> TranscriptUsage {
         var usage = TranscriptUsage()
+        var seenMessageIDs = Set<String>()
         for rawLine in jsonl.split(separator: "\n", omittingEmptySubsequences: true) {
-            ingest(Data(rawLine.utf8), into: &usage)
+            ingest(Data(rawLine.utf8), into: &usage, seenMessageIDs: &seenMessageIDs)
         }
         return usage
     }
@@ -94,14 +98,19 @@ public enum TranscriptParser {
     /// transcript doesn't load whole into memory on every Stop hook (P5).
     public static func aggregate(contentsOfFile path: String) -> TranscriptUsage? {
         var usage = TranscriptUsage()
-        guard TranscriptLineReader.forEachLine(inFileAt: path, { ingest($0, into: &usage) })
+        var seenMessageIDs = Set<String>()
+        guard TranscriptLineReader.forEachLine(inFileAt: path, { ingest($0, into: &usage, seenMessageIDs: &seenMessageIDs) })
         else { return nil }
         return usage
     }
 
     /// Folds one JSONL line's bytes into `usage`. Shared by the string and
     /// streaming entry points so they can't diverge.
-    private static func ingest(_ lineData: Data, into usage: inout TranscriptUsage) {
+    private static func ingest(
+        _ lineData: Data,
+        into usage: inout TranscriptUsage,
+        seenMessageIDs: inout Set<String>
+    ) {
         guard let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
         else { return }
 
@@ -109,15 +118,27 @@ public enum TranscriptParser {
         let message = object["message"] as? [String: Any]
 
         // A typed prompt: a user line whose content is a plain string. Array
-        // content is a tool-result turn, which we don't count as a prompt.
-        if type == "user", message?["content"] is String {
-            usage.userPrompts += 1
+        // content is a tool-result turn, and harness-injected lines (task
+        // notifications, command output, caveats — which arrive as string
+        // content with no distinguishing flag) aren't things the user typed;
+        // neither counts as a prompt.
+        if type == "user", let content = message?["content"] as? String {
+            if !content.hasPrefix("<") && !content.hasPrefix("Caveat:") {
+                usage.userPrompts += 1
+            }
             return
         }
 
         guard type == "assistant",
               let message,
               let usageObject = message["usage"] as? [String: Any] else { return }
+
+        // The transcript writes one line per content block, so a multi-block
+        // assistant message repeats the same id and an identical `usage` on
+        // every line. Bill each message once or the session totals double.
+        if let id = message["id"] as? String, !seenMessageIDs.insert(id).inserted {
+            return
+        }
 
         usage.assistantResponses += 1
         if let model = message["model"] as? String { usage.model = model }

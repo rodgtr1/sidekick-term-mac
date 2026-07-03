@@ -21,6 +21,13 @@ enum AgentState: String, Codable, CaseIterable {
     }
 }
 
+/// One pane's reported usage plus its cost priced at that pane's own model.
+struct PaneTelemetry: Equatable {
+    let paneID: UUID
+    let usage: TranscriptUsage
+    let costUSD: Double?
+}
+
 class TabModel: Identifiable {
     let id = UUID()
     var title: String = "Terminal"
@@ -56,6 +63,12 @@ class TabModel: Identifiable {
     /// `[telemetry]` rate card by AutomationCoordinator (so the view doesn't
     /// need the rates). Nil when the model has no known rate.
     var telemetryCostUSD: Double?
+
+    /// Telemetry for every agent pane in this tab (pane order), each priced at
+    /// its own model's rate — a split tab can run different models side by
+    /// side, and summing their usages under one rate would misprice them.
+    /// `telemetry` above remains the primary pane's, driving the context bar.
+    var paneTelemetries: [PaneTelemetry] = []
 
     // Backward compatibility
     var isAgentReady: Bool {

@@ -38,6 +38,10 @@ final class AgentDashboardViewController: NSViewController {
         let isActive: Bool
         let usage: TranscriptUsage?
         let cost: Double?
+        /// Every reporting pane in the tab, each priced at its own model. Two
+        /// or more billed panes render one telemetry line each, so a split
+        /// running fable beside opus shows both spends instead of one.
+        let paneTelemetries: [PaneTelemetry]
     }
 
     private var rows: [Row] = []
@@ -231,7 +235,8 @@ final class AgentDashboardViewController: NSViewController {
                 since: tab.agentStateChangedAt,
                 isActive: tab.isActive,
                 usage: tab.telemetry,
-                cost: tab.telemetryCostUSD
+                cost: tab.telemetryCostUSD,
+                paneTelemetries: tab.paneTelemetries
             )
         }
         // Actionable tabs first: needs-input, then working, then done.
@@ -263,22 +268,43 @@ final class AgentDashboardViewController: NSViewController {
         }
         footerContainer.isHidden = false
         footerLabel.stringValue = "Session · \(TelemetryFormat.cost(summary.cost)) · \(TelemetryFormat.compactTokens(summary.tokens)) tokens"
+        footerLabel.toolTip = summary.byModel
+            .map { "\($0.model) · \(TelemetryFormat.cost($0.cost)) · \(TelemetryFormat.compactTokens($0.tokens)) tokens" }
+            .joined(separator: "\n")
     }
 
-    /// Session roll-up across all tabs: total est-$ and total tokens, or nil
-    /// when no tab has billed a turn (footer stays hidden). Tabs with an unknown
-    /// rate still contribute their tokens, matching the JSONL history.
-    fileprivate static func sessionSummary(_ tabs: [TabModel]) -> (cost: Double, tokens: Int)? {
+    /// Session roll-up across every reporting pane of every tab: total est-$
+    /// and total tokens, plus a per-model breakdown (highest spend first) for
+    /// the footer tooltip. Nil when nothing has billed a turn (footer stays
+    /// hidden). Panes with an unknown rate still contribute their tokens,
+    /// matching the JSONL history. Falls back to the tab-level primary usage
+    /// for a tab whose per-pane list hasn't populated. Internal (not private)
+    /// for unit tests.
+    static func sessionSummary(
+        _ tabs: [TabModel]
+    ) -> (cost: Double, tokens: Int, byModel: [(model: String, cost: Double, tokens: Int)])? {
         var totalCost = 0.0
         var totalTokens = 0
-        var billed = false
+        var byModel: [String: (cost: Double, tokens: Int)] = [:]
         for tab in tabs {
-            guard let usage = tab.telemetry, usage.assistantResponses > 0 else { continue }
-            billed = true
-            totalTokens += usage.totalTokens
-            if let cost = tab.telemetryCostUSD { totalCost += cost }
+            let entries: [(usage: TranscriptUsage, cost: Double?)] = tab.paneTelemetries.isEmpty
+                ? (tab.telemetry.map { [($0, tab.telemetryCostUSD)] } ?? [])
+                : tab.paneTelemetries.map { ($0.usage, $0.costUSD) }
+            for entry in entries where entry.usage.assistantResponses > 0 {
+                totalTokens += entry.usage.totalTokens
+                totalCost += entry.cost ?? 0
+                let model = entry.usage.model.map(TelemetryFormat.shortModel) ?? "unknown"
+                var slot = byModel[model, default: (0, 0)]
+                slot.cost += entry.cost ?? 0
+                slot.tokens += entry.usage.totalTokens
+                byModel[model] = slot
+            }
         }
-        return billed ? (totalCost, totalTokens) : nil
+        guard !byModel.isEmpty else { return nil }
+        let breakdown = byModel
+            .map { (model: $0.key, cost: $0.value.cost, tokens: $0.value.tokens) }
+            .sorted { ($0.cost, $0.tokens) > ($1.cost, $1.tokens) }
+        return (totalCost, totalTokens, breakdown)
     }
 
     /// Syncs the approvals section with the queue: cards for resolved entries
@@ -406,6 +432,20 @@ final class AgentDashboardViewController: NSViewController {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
+    /// The telemetry lines a row renders. Two or more billed panes get one
+    /// line each (a split tab can run different models side by side); otherwise
+    /// the tab's primary usage keeps its single line.
+    private static func telemetryLines(for row: Row) -> [(line: String, tooltip: String)] {
+        let billed = row.paneTelemetries.filter { $0.usage.assistantResponses > 0 }
+        if billed.count >= 2 {
+            return billed.compactMap { pane in
+                telemetryLine(pane.usage, cost: pane.costUSD).map { ($0, telemetryTooltip(pane.usage)) }
+            }
+        }
+        guard let usage = row.usage, let line = telemetryLine(usage, cost: row.cost) else { return [] }
+        return [(line, telemetryTooltip(usage))]
+    }
+
     /// Full breakdown for the row tooltip.
     fileprivate static func telemetryTooltip(_ usage: TranscriptUsage) -> String {
         var lines = ["in \(TelemetryFormat.compactTokens(usage.totalInputTokens)) · out \(TelemetryFormat.compactTokens(usage.outputTokens))"]
@@ -483,19 +523,20 @@ extension AgentDashboardViewController: NSTableViewDelegate {
             detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8)
         ])
 
-        // Telemetry line (model · est$ · turns), with the full breakdown on hover.
+        // Telemetry lines (model · est$ · turns) — one per billed pane when the
+        // tab is split across agents — each with its full breakdown on hover.
         var lastBottom: NSLayoutYAxisAnchor = detailLabel.bottomAnchor
-        if let usage = rowData.usage, let line = Self.telemetryLine(usage, cost: rowData.cost) {
-            let telemetryLabel = NSTextField(labelWithString: line)
+        for entry in Self.telemetryLines(for: rowData) {
+            let telemetryLabel = NSTextField(labelWithString: entry.line)
             telemetryLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
             telemetryLabel.textColor = AppTheme.mutedText
             telemetryLabel.lineBreakMode = .byTruncatingTail
-            telemetryLabel.toolTip = Self.telemetryTooltip(usage)
+            telemetryLabel.toolTip = entry.tooltip
             telemetryLabel.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(telemetryLabel)
             NSLayoutConstraint.activate([
                 telemetryLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-                telemetryLabel.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 2),
+                telemetryLabel.topAnchor.constraint(equalTo: lastBottom, constant: 2),
                 telemetryLabel.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8)
             ])
             lastBottom = telemetryLabel.bottomAnchor
@@ -519,10 +560,10 @@ extension AgentDashboardViewController: NSTableViewDelegate {
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard row < rows.count, let usage = rows[row].usage else { return 42 }
-        var height: CGFloat = 42
-        if Self.telemetryLine(usage, cost: rows[row].cost) != nil { height += 16 }
-        if usage.contextFraction() != nil { height += 9 }
+        guard row < rows.count else { return 42 }
+        let rowData = rows[row]
+        var height: CGFloat = 42 + CGFloat(Self.telemetryLines(for: rowData).count) * 16
+        if rowData.usage?.contextFraction() != nil { height += 9 }
         return height
     }
 

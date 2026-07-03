@@ -660,7 +660,9 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     /// Sets `tab.telemetry` to its primary agent pane's usage: the active pane's
     /// if it reported, else the pane with the most billed responses. Avoids
     /// summing across panes, which would conflate distinct agents/models. Prices
-    /// it once here so the view never needs the rate card.
+    /// it once here so the view never needs the rate card. Every reporting
+    /// pane also lands in `tab.paneTelemetries` (each priced at its own model)
+    /// so cost roll-ups see the whole split, not just the primary pane.
     private func updateTabTelemetry(_ tab: TabModel) {
         let usage: TranscriptUsage?
         if let active = tab.activePane, let activeUsage = paneTelemetry[active.id] {
@@ -672,6 +674,11 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         }
         tab.telemetry = usage
         tab.telemetryCostUSD = usage?.estimatedCostUSD(rates: telemetryRates)
+        tab.paneTelemetries = tab.panes.compactMap { pane in
+            paneTelemetry[pane.id].map {
+                PaneTelemetry(paneID: pane.id, usage: $0, costUSD: $0.estimatedCostUSD(rates: telemetryRates))
+            }
+        }
     }
 
     /// Resolves the directory a worktree command operates from: an explicit
