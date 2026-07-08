@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Cmd+W (close tab) and Shift+Cmd+W (close pane) now ask for confirmation before killing sessions, calling out any agents still working there. On by default; disable in Preferences > General or with `confirm_close = false` under `[behavior]`.
+
 ## 0.2.0 (2026-07-03)
 
 ### New features

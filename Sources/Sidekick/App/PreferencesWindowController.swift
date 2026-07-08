@@ -15,6 +15,7 @@ class PreferencesWindowController: NSWindowController {
     private var opacityLabel: NSTextField!
     private var blurCheckbox: NSButton!
     private var restoreSessionCheckbox: NSButton!
+    private var confirmCloseCheckbox: NSButton!
     private var rawConfigButton: NSButton!
 
     // Terminal Tab
@@ -233,6 +234,13 @@ class PreferencesWindowController: NSWindowController {
         )
         restoreSessionCheckbox.font = NSFont.systemFont(ofSize: 13)
 
+        confirmCloseCheckbox = NSButton(
+            checkboxWithTitle: "Confirm before closing tabs and panes (⌘W / ⇧⌘W)",
+            target: self,
+            action: #selector(confirmCloseChanged(_:))
+        )
+        confirmCloseCheckbox.font = NSFont.systemFont(ofSize: 13)
+
         rawConfigButton = NSButton(title: "View/Edit Raw Config...", target: self, action: #selector(rawConfigButtonClicked(_:)))
         rawConfigButton.bezelStyle = .rounded
 
@@ -240,6 +248,7 @@ class PreferencesWindowController: NSWindowController {
         form.sliderRow(opacitySlider, valueLabel: opacityLabel, gapAbove: 10)
         form.checkbox(blurCheckbox, gapAbove: 20)
         form.checkbox(restoreSessionCheckbox, gapAbove: 12)
+        form.checkbox(confirmCloseCheckbox, gapAbove: 12)
         form.fieldLabel("Raw Config File:", gapAbove: 30)
         form.leadingControl(rawConfigButton, gapAbove: 10)
         form.finish()
@@ -603,6 +612,9 @@ class PreferencesWindowController: NSWindowController {
         // Load session-restore setting
         restoreSessionCheckbox.state = config.behavior.restoreSession ? .on : .off
 
+        // Load close-confirmation setting
+        confirmCloseCheckbox.state = config.behavior.confirmClose ? .on : .off
+
         // Load font family. If the configured font isn't in the list, add it
         // so the popup always reflects what's actually in use.
         let currentFont = config.font.family
@@ -719,6 +731,11 @@ class PreferencesWindowController: NSWindowController {
     @objc private func restoreSessionChanged(_ sender: NSButton) {
         let enabled = sender.state == .on
         mutateConfig { $0.behavior.restoreSession = enabled }
+    }
+
+    @objc private func confirmCloseChanged(_ sender: NSButton) {
+        let enabled = sender.state == .on
+        mutateConfig { $0.behavior.confirmClose = enabled }
     }
 
     /// Popup title meaning "no family configured — use the system mono font".

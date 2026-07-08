@@ -148,6 +148,8 @@ mouse_autohide = true
 audible_bell = false
 # restore_session: true | false — restore tabs and working dirs on launch.
 restore_session = true
+# confirm_close: true | false — ask before Cmd+W / Shift+Cmd+W closes a tab or pane.
+confirm_close = true
 
 [shell]
 # program: shell path (free-form); "" uses the $SHELL environment variable.
@@ -384,6 +386,7 @@ public struct BehaviorConfig: Codable {
     public var mouseAutohide: Bool
     public var audibleBell: Bool
     public var restoreSession: Bool
+    public var confirmClose: Bool
 
     enum CodingKeys: String, CodingKey {
         case scrollbackLines = "scrollback_lines"
@@ -393,6 +396,7 @@ public struct BehaviorConfig: Codable {
         case mouseAutohide = "mouse_autohide"
         case audibleBell = "audible_bell"
         case restoreSession = "restore_session"
+        case confirmClose = "confirm_close"
     }
 
     public init() {
@@ -403,6 +407,7 @@ public struct BehaviorConfig: Codable {
         self.mouseAutohide = true
         self.audibleBell = false
         self.restoreSession = true
+        self.confirmClose = true
     }
 
     // Tolerant decoding so configs written before a key existed still parse;
@@ -417,6 +422,7 @@ public struct BehaviorConfig: Codable {
         mouseAutohide = try container.decodeIfPresent(Bool.self, forKey: .mouseAutohide) ?? mouseAutohide
         audibleBell = try container.decodeIfPresent(Bool.self, forKey: .audibleBell) ?? audibleBell
         restoreSession = try container.decodeIfPresent(Bool.self, forKey: .restoreSession) ?? restoreSession
+        confirmClose = try container.decodeIfPresent(Bool.self, forKey: .confirmClose) ?? confirmClose
     }
 }
 

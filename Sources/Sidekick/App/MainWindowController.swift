@@ -321,6 +321,29 @@ class MainWindowController: NSWindowController {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    /// Confirmation for keyboard-driven closes (⌘W tab, ⇧⌘W pane), so a stray
+    /// keystroke can't silently kill sessions. Returns true when the close may
+    /// proceed: `behavior.confirm_close` is off, or the user confirmed. `panes`
+    /// is the set being closed, so busy agents there get called out.
+    private func confirmKeyboardClose(target: String, panes: [PaneModel]) -> Bool {
+        guard config.behavior.confirmClose else { return true }
+
+        let busy = panes.filter { $0.agentState == .working || $0.agentState == .ready }.count
+        let alert = NSAlert()
+        alert.messageText = "Close this \(target)?"
+        if busy > 0 {
+            alert.informativeText = (busy == 1 ? "An agent is still working here." : "\(busy) agents are still working here.")
+                + " Closing will end " + (busy == 1 ? "its session" : "their sessions") + " and any running commands."
+        } else {
+            let sessions = panes.count == 1 ? "its terminal session" : "its \(panes.count) terminal sessions"
+            alert.informativeText = "Closing will end \(sessions) and any running commands."
+        }
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Close")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     @objc private func windowWillClose() {
         saveSession()
 
@@ -1267,7 +1290,19 @@ extension MainWindowController {
     }
 
     func closeCurrentPane() {
-        if currentPaneSplitController?.closeActivePane() != true {
+        guard let tab = tabs[safe: activeTabIndex] else { return }
+
+        if tab.panes.count > 1 {
+            guard let pane = currentPaneSplitController?.activePane,
+                  confirmKeyboardClose(target: "pane", panes: [pane]) else { return }
+            currentPaneSplitController?.closeActivePane()
+        } else if config.behavior.confirmClose {
+            // ⇧⌘W on a tab's only pane falls through to closing the whole
+            // window. One alert covers everything the window holds; close()
+            // skips windowShouldClose so the busy-agent veto can't ask twice.
+            guard confirmKeyboardClose(target: "window", panes: tabs.flatMap(\.panes)) else { return }
+            window?.close()
+        } else {
             window?.performClose(nil)
         }
     }
@@ -1482,6 +1517,10 @@ extension MainWindowController: PaletteCommandHost {
     }
 
     func closeActiveTab() {
+        // Mirror TabController.closeTab's last-tab guard so no confirmation
+        // shows for a close that would be refused anyway.
+        guard tabs.count > 1, let tab = tabs[safe: activeTabIndex] else { return }
+        guard confirmKeyboardClose(target: "tab", panes: tab.panes) else { return }
         closeTab(index: activeTabIndex)
     }
 

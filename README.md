@@ -249,6 +249,7 @@ allow_hyperlinks = true
 mouse_autohide = true
 audible_bell = false
 restore_session = true
+confirm_close = true         # ask before Cmd+W / Shift+Cmd+W closes a tab or pane
 
 [shell]
 program = ""                 # empty = use $SHELL
