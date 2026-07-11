@@ -3,6 +3,35 @@ import XCTest
 
 @MainActor
 final class TreeSitterHighlighterTests: XCTestCase {
+    private static let testScheme = SyntaxHighlighter.SyntaxColorScheme(
+        text: .black, background: .white, comment: .gray, keyword: .red,
+        string: .green, number: .blue, function: .purple, type: .orange
+    )
+
+    /// Runs one highlight pass over `storage`, the way `SyntaxHighlighter` does.
+    @discardableResult
+    private func highlight(
+        _ document: TreeSitterHighlighter.Document,
+        _ storage: NSTextStorage,
+        dirtyRange: NSRange?,
+        ext: String = "swift"
+    ) -> Bool {
+        let ns = storage.string as NSString
+        storage.beginEditing()
+        defer { storage.endEditing() }
+        return document.highlight(
+            textStorage: storage,
+            fullText: ns,
+            dirtyRange: dirtyRange,
+            ext: ext,
+            scheme: Self.testScheme
+        )
+    }
+
+    private func color(_ storage: NSTextStorage, at location: Int) -> NSColor? {
+        storage.attribute(.foregroundColor, at: location, effectiveRange: nil) as? NSColor
+    }
+
     func testSupportedExtensions() {
         for ext in ["swift", "SWIFT", "go", "rs", "js", "jsx", "ts", "tsx", "md", "mdx", "py"] {
             XCTAssertTrue(TreeSitterHighlighter.canHighlight(ext: ext), "expected \(ext) supported")
@@ -44,33 +73,19 @@ final class TreeSitterHighlighterTests: XCTestCase {
     func testHighlightsReachTheBackHalfOfTheDocument() {
         // Padding pushes a `func` keyword well past the halfway byte offset.
         let padding = String(repeating: "let filler = 1\n", count: 40)
-        let source = padding + "func trailing() {}\n"
-        let scheme = SyntaxHighlighter.SyntaxColorScheme(
-            text: .white, background: .black, comment: .gray,
-            keyword: .purple, string: .green, number: .orange,
-            function: .blue, type: .yellow
-        )
-        let fullText = source as NSString
-        let textStorage = NSTextStorage(
-            string: source,
-            attributes: [.foregroundColor: scheme.text]
-        )
-        let fullRange = NSRange(location: 0, length: fullText.length)
+        let storage = NSTextStorage(string: padding + "func trailing() {}\n")
 
-        textStorage.beginEditing()
-        let handled = TreeSitterHighlighter.highlight(
-            textStorage: textStorage,
-            fullText: fullText,
-            range: fullRange,
-            ext: "swift",
-            scheme: scheme
+        XCTAssertTrue(
+            highlight(TreeSitterHighlighter.Document(), storage, dirtyRange: nil),
+            "Swift source should be handled by tree-sitter"
         )
-        textStorage.endEditing()
 
-        XCTAssertTrue(handled, "Swift source should be handled by tree-sitter")
-        let keywordLocation = fullText.range(of: "func trailing").location
-        let color = textStorage.attribute(.foregroundColor, at: keywordLocation, effectiveRange: nil) as? NSColor
-        XCTAssertEqual(color, scheme.keyword, "keyword past the file midpoint must be colored")
+        let keywordLocation = (storage.string as NSString).range(of: "func trailing").location
+        XCTAssertEqual(
+            color(storage, at: keywordLocation),
+            Self.testScheme.keyword,
+            "keyword past the file midpoint must be colored"
+        )
     }
 
     /// Confirms the embedded highlights query compiles against the linked Swift
@@ -107,29 +122,235 @@ final class TreeSitterHighlighterTests: XCTestCase {
         XCTAssertNil(TreeSitterHighlighter._captureKinds(in: "x = 1", ext: "rb"))
     }
 
+    // MARK: - Incremental highlighting (TreeSitterHighlighter.Document)
+
+    /// Opening a string literal re-parses every line below it as string content.
+    /// (An unterminated `/*` would be the other classic case, but this grammar
+    /// parses it as an error and leaves the tokens below it alone.)
+    private static let openStringEdit = "let s = \"\n"
+
+    /// #11: a structural edit re-parses everything below it, but the recolor was
+    /// confined to the paragraph the user typed in — so opening a string literal
+    /// left the rest of the file wearing the colors of the old parse. The tree
+    /// diff has to pull those regions into the recolor.
+    func testStructuralEditRecolorsPastTheEditedParagraph() {
+        let storage = NSTextStorage(string: "let a = 1\nfunc alpha() {}\nfunc beta() {}\n")
+        let document = TreeSitterHighlighter.Document()
+
+        XCTAssertTrue(highlight(document, storage, dirtyRange: nil))
+        XCTAssertEqual(color(storage, at: (storage.string as NSString).range(of: "func beta").location), Self.testScheme.keyword)
+
+        let edit = Self.openStringEdit
+        storage.replaceCharacters(in: NSRange(location: 0, length: 0), with: edit)
+        document.noteEdit(editedRange: NSRange(location: 0, length: edit.utf16.count), changeInLength: edit.utf16.count)
+
+        let ns = storage.string as NSString
+        let dirty = ns.paragraphRange(for: NSRange(location: 0, length: edit.utf16.count))
+        XCTAssertTrue(highlight(document, storage, dirtyRange: dirty))
+
+        XCTAssertEqual(
+            color(storage, at: ns.range(of: "func beta").location),
+            Self.testScheme.string,
+            "text the edit re-parsed as string content must be recolored, not left keyword-colored"
+        )
+    }
+
+    /// The same structural edit, with an emoji on every line so the source is
+    /// dense with surrogate pairs. The incremental reparse feeds the parser one
+    /// whole UTF-16LE buffer for exactly this reason: a reader that chunks the
+    /// source can split a pair, end the parse early, and lose every capture past
+    /// the split.
+    func testIncrementalReparseSurvivesSurrogatePairs() {
+        let filler = String(repeating: "let filler = 1 // 😀\n", count: 200)
+        let storage = NSTextStorage(string: filler + "func trailing() {}\n")
+        let document = TreeSitterHighlighter.Document()
+
+        XCTAssertTrue(highlight(document, storage, dirtyRange: nil))
+        XCTAssertEqual(color(storage, at: (storage.string as NSString).range(of: "func trailing").location), Self.testScheme.keyword)
+
+        let edit = Self.openStringEdit
+        storage.replaceCharacters(in: NSRange(location: 0, length: 0), with: edit)
+        document.noteEdit(editedRange: NSRange(location: 0, length: edit.utf16.count), changeInLength: edit.utf16.count)
+
+        let ns = storage.string as NSString
+        XCTAssertTrue(highlight(document, storage, dirtyRange: ns.paragraphRange(for: NSRange(location: 0, length: edit.utf16.count))))
+        XCTAssertEqual(
+            color(storage, at: ns.range(of: "func trailing").location),
+            Self.testScheme.string,
+            "the reparse must reach the end of a source full of surrogate pairs"
+        )
+    }
+
+    /// A local edit still recolors the text that was typed, even though
+    /// tree-sitter reports no changed range for a keystroke that only grows a
+    /// leaf node.
+    func testLocalEditRecolorsTheTypedText() {
+        let storage = NSTextStorage(string: "let a = 1\nvar b = 2\n")
+        let document = TreeSitterHighlighter.Document()
+        XCTAssertTrue(highlight(document, storage, dirtyRange: nil))
+
+        // Turn `var` into `func` on the second line.
+        let ns0 = storage.string as NSString
+        let varRange = ns0.range(of: "var")
+        storage.replaceCharacters(in: varRange, with: "func")
+        document.noteEdit(editedRange: NSRange(location: varRange.location, length: 4), changeInLength: 1)
+
+        let ns = storage.string as NSString
+        XCTAssertTrue(highlight(document, storage, dirtyRange: ns.paragraphRange(for: NSRange(location: varRange.location, length: 4))))
+        XCTAssertEqual(color(storage, at: ns.range(of: "func").location), Self.testScheme.keyword)
+        XCTAssertEqual(color(storage, at: ns.range(of: "let").location), Self.testScheme.keyword)
+    }
+
+    /// An edit the highlighter is never told about (or a bogus one) must not be
+    /// fed to tree-sitter as a tree edit: the delta is checked against the two
+    /// texts first, and a mismatch throws the tree away for a full reparse.
+    func testEditThatDoesNotDescribeTheTextFallsBackToAFullParse() {
+        let storage = NSTextStorage(string: "let a = 1\n")
+        let document = TreeSitterHighlighter.Document()
+        XCTAssertTrue(highlight(document, storage, dirtyRange: nil))
+
+        // Replace the whole document behind the highlighter's back, then report
+        // an edit that describes none of it.
+        storage.replaceCharacters(
+            in: NSRange(location: 0, length: storage.length),
+            with: "func replaced() {}\nlet x = 7\n"
+        )
+        document.noteEdit(editedRange: NSRange(location: 0, length: 1), changeInLength: 1)
+
+        let ns = storage.string as NSString
+        XCTAssertTrue(highlight(document, storage, dirtyRange: NSRange(location: 0, length: ns.length)))
+        XCTAssertEqual(color(storage, at: ns.range(of: "func").location), Self.testScheme.keyword)
+        XCTAssertEqual(color(storage, at: ns.range(of: "7").location), Self.testScheme.number)
+    }
+
+    /// The same fix, driven through the real editor: type an opening quote into
+    /// an open `.swift` file and the lines below it must lose their keyword
+    /// colors. Covers the wiring the tests above stub out — the text view's edit
+    /// reaching the storage delegate, and the delegate reporting it to the
+    /// highlighter before the debounced pass runs.
+    func testTypingAStructuralEditInTheEditorRecolorsTheRestOfTheFile() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("treesitter-\(UUID().uuidString).swift")
+        try "let a = 1\nfunc alpha() {}\nfunc beta() {}\n".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let editor = EditorViewController()
+        _ = editor.view // force loadView so the text view exists
+        editor.openFile(file)
+
+        let textView = try XCTUnwrap(editor._textView)
+        let storage = try XCTUnwrap(textView.textStorage)
+        let scheme = SyntaxHighlighter.SyntaxColorScheme.current
+        XCTAssertEqual(color(storage, at: (storage.string as NSString).range(of: "func beta").location), scheme.keyword)
+
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+        textView.insertText(Self.openStringEdit, replacementRange: NSRange(location: 0, length: 0))
+        // The editor debounces highlighting by 0.3s off the main run loop.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+
+        XCTAssertEqual(
+            color(storage, at: (storage.string as NSString).range(of: "func beta").location),
+            scheme.string,
+            "the keyword colors below the edit must not survive the reparse"
+        )
+    }
+
+    // MARK: - Pure logic
+
+    /// Keystrokes arrive one at a time but the reparse is debounced, so the
+    /// deltas fold into one before tree-sitter sees it. The fold must describe
+    /// old → new exactly: tree-sitter reuses the subtrees on either side of the
+    /// window, so a window that is too small silently corrupts the parse.
+    func testEditDeltaFoldDescribesTheOldAndNewText() {
+        // Each case is a run of (range to replace, replacement) applied in order.
+        let scenarios: [[(NSRange, String)]] = [
+            [(NSRange(location: 4, length: 0), "x")],                                    // one insert
+            [(NSRange(location: 4, length: 0), "x"), (NSRange(location: 5, length: 0), "y")], // typing forward
+            [(NSRange(location: 9, length: 0), "z"), (NSRange(location: 2, length: 0), "w")], // then editing earlier
+            [(NSRange(location: 2, length: 5), ""), (NSRange(location: 6, length: 3), "ab")], // delete, then edit after
+            [(NSRange(location: 3, length: 2), "long replacement"), (NSRange(location: 1, length: 12), "")], // deletion spanning the window
+            [(NSRange(location: 0, length: 20), "")]                                     // wipe the document
+        ]
+
+        for edits in scenarios {
+            let old = "let a = 1\nvar b = 2\n"
+            let text = NSMutableString(string: old)
+            var delta: TreeSitterHighlighter.EditDelta?
+
+            for (range, replacement) in edits {
+                text.replaceCharacters(in: range, with: replacement)
+                let edited = NSRange(location: range.location, length: (replacement as NSString).length)
+                let change = (replacement as NSString).length - range.length
+                delta = delta?.merging(editedRange: edited, changeInLength: change)
+                    ?? TreeSitterHighlighter.EditDelta(editedRange: edited, changeInLength: change)
+            }
+
+            guard let delta else { return XCTFail("no delta for \(edits)") }
+            let oldNS = old as NSString
+            let newNS = text as NSString
+            XCTAssertTrue(
+                delta.describes(oldLength: oldNS.length, newLength: newNS.length),
+                "\(delta) does not describe \(edits)"
+            )
+            // The text outside the window is what tree-sitter will reuse, so it
+            // has to be identical on both sides.
+            XCTAssertEqual(oldNS.substring(to: delta.start), newNS.substring(to: delta.start), "prefix differs for \(edits)")
+            XCTAssertEqual(oldNS.substring(from: delta.oldEnd), newNS.substring(from: delta.newEnd), "suffix differs for \(edits)")
+        }
+    }
+
+    func testRecolorRangesMergeOverlapsAndClampToTheDocument() {
+        let ranges = TreeSitterHighlighter.Document.recolorRanges(
+            dirty: NSRange(location: 0, length: 10),
+            edited: NSRange(location: 5, length: 3),
+            changed: [NSRange(location: 8, length: 4), NSRange(location: 40, length: 100)],
+            documentLength: 60
+        )
+        XCTAssertEqual(ranges, [NSRange(location: 0, length: 12), NSRange(location: 40, length: 20)])
+    }
+
+    func testRecolorRangesWithNothingToRecolor() {
+        XCTAssertEqual(
+            TreeSitterHighlighter.Document.recolorRanges(dirty: nil, edited: nil, changed: [], documentLength: 10),
+            []
+        )
+    }
+
+    /// Columns in an `InputEdit` point are byte offsets into their row, and the
+    /// parser reads UTF-16LE, so they are 2× the UTF-16 offset into the line.
+    func testLineIndexPoints() {
+        let index = TreeSitterHighlighter.LineIndex("ab\ncdé\nz")
+        XCTAssertEqual(index.length, 8)
+
+        func rowAndColumn(_ offset: Int) -> [Int] {
+            let point = index.point(atUTF16: offset)
+            return [Int(point.row), Int(point.column)]
+        }
+
+        XCTAssertEqual(rowAndColumn(0), [0, 0])
+        XCTAssertEqual(rowAndColumn(2), [0, 4])
+        XCTAssertEqual(rowAndColumn(3), [1, 0])
+        XCTAssertEqual(rowAndColumn(6), [1, 6])
+        XCTAssertEqual(rowAndColumn(7), [2, 0])
+        // Out-of-range offsets clamp rather than trap.
+        XCTAssertEqual(rowAndColumn(99), [2, 2])
+    }
+
     /// The query is restricted to the edited range's UTF-8 byte span. A multibyte
     /// character on an earlier line makes UTF-8 byte offsets diverge from UTF-16,
     /// so this proves the byte-range conversion is correct: the `func` keyword in
     /// the dirty range must still be colored as a keyword.
     func testSubRangeHighlightingWithMultibytePrefix() {
-        let source = "let café = \"☕\"\nfunc greet() {}\n"
-        let ns = source as NSString
-        let storage = NSTextStorage(string: source)
-        let scheme = SyntaxHighlighter.SyntaxColorScheme(
-            text: .black, background: .white, comment: .gray, keyword: .red,
-            string: .green, number: .blue, function: .purple, type: .orange
-        )
+        let ns = "let café = \"☕\"\nfunc greet() {}\n" as NSString
+        let storage = NSTextStorage(string: ns as String)
         let dirty = ns.paragraphRange(for: ns.range(of: "func greet() {}"))
 
-        storage.beginEditing()
-        let ok = TreeSitterHighlighter.highlight(
-            textStorage: storage, fullText: ns, range: dirty, ext: "swift", scheme: scheme
-        )
-        storage.endEditing()
+        XCTAssertTrue(highlight(TreeSitterHighlighter.Document(), storage, dirtyRange: dirty))
 
-        XCTAssertTrue(ok)
-        let funcLoc = ns.range(of: "func").location
-        let color = storage.attribute(.foregroundColor, at: funcLoc, effectiveRange: nil) as? NSColor
-        XCTAssertEqual(color, .red, "keyword in the dirty range should be highlighted")
+        XCTAssertEqual(
+            color(storage, at: ns.range(of: "func").location),
+            Self.testScheme.keyword,
+            "keyword in the dirty range should be highlighted"
+        )
     }
 }

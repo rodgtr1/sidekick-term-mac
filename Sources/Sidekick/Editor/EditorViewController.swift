@@ -212,6 +212,11 @@ class EditorViewController: NSViewController {
         lineNumberRuler?.needsDisplay = true
     }
 
+    /// Test hook: the editor's text view, so a test can type into it and drive
+    /// the real path (text view → storage delegate → highlighter) rather than
+    /// simulating the pieces.
+    var _textView: NSTextView? { textView }
+
     @objc private func textDidChange() {
         isModified = true
         // Trigger syntax highlighting after a small delay to avoid performance issues
@@ -534,6 +539,10 @@ extension EditorViewController: NSTextStorageDelegate {
         changeInLength delta: Int
     ) {
         guard editedMask.contains(.editedCharacters), !isProgrammaticLoad else { return }
+        // The highlighter needs the shape of the edit, not just the range it
+        // dirtied: that is what lets tree-sitter reuse its tree and report which
+        // regions further down the file the edit re-parsed.
+        syntaxHighlighter?.noteEdit(editedRange: editedRange, changeInLength: delta)
         if let pending = pendingHighlightRange {
             pendingHighlightRange = NSUnionRange(pending, editedRange)
         } else {

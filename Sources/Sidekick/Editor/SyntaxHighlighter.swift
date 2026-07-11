@@ -11,6 +11,11 @@ class SyntaxHighlighter {
     /// Compiled regexes are cached per pattern; patterns are static per language.
     private var regexCache: [String: NSRegularExpression] = [:]
 
+    /// Tree-sitter state for the document this highlighter is attached to: the
+    /// last parse tree plus the edits made since, so a reparse knows what the
+    /// edit restructured. Unused for the regex languages.
+    private let treeSitter = TreeSitterHighlighter.Document()
+
     struct SyntaxColorScheme {
         let text: NSColor
         let background: NSColor
@@ -48,6 +53,14 @@ class SyntaxHighlighter {
         highlightSyntax(in: nil)
     }
 
+    /// Records a character edit to the document. The editor must report every
+    /// one: the tree-sitter path folds them into the delta it hands the parser,
+    /// and an edit it never hears about would leave it reusing a tree that no
+    /// longer matches the text.
+    func noteEdit(editedRange: NSRange, changeInLength delta: Int) {
+        treeSitter.noteEdit(editedRange: editedRange, changeInLength: delta)
+    }
+
     /// Highlights only the paragraphs overlapping `dirtyRange` (the whole
     /// document when nil), so edits don't re-scan the entire file.
     func highlightSyntax(in dirtyRange: NSRange?) {
@@ -69,25 +82,30 @@ class SyntaxHighlighter {
         textStorage.beginEditing()
         defer { textStorage.endEditing() }
 
-        // Reset to base text color
-        textStorage.removeAttribute(.foregroundColor, range: range)
-        textStorage.addAttribute(.foregroundColor, value: colorScheme.text, range: range)
-
         // tree-sitter is authoritative for every language it has a grammar for
         // (Swift, Go, Rust, Python, JS/TS/JSX/TSX, Markdown — the advertised
         // set). Its grammar-accurate output fully replaces the old regex passes,
         // so there is no regex fallback for these: on the rare parse failure the
-        // text simply stays the base color already applied above.
+        // text simply stays the base color.
+        //
+        // It resets the base color itself rather than being handed a reset
+        // range: a structural edit changes the parse below the dirty paragraph,
+        // so which ranges need recoloring is only known once it has reparsed.
         if TreeSitterHighlighter.canHighlight(ext: fileExtension) {
-            _ = TreeSitterHighlighter.highlight(
+            let handled = treeSitter.highlight(
                 textStorage: textStorage,
                 fullText: nsText,
-                range: range,
+                dirtyRange: dirtyRange == nil ? nil : range,
                 ext: fileExtension,
                 scheme: colorScheme
             )
+            if !handled {
+                resetToBaseColor(textStorage, range: range)
+            }
             return
         }
+
+        resetToBaseColor(textStorage, range: range)
 
         // Regex highlighting survives only for languages tree-sitter has no
         // grammar for: C/C++ and Java (keyword rules), HTML/CSS/JSON, and a
@@ -106,6 +124,11 @@ class SyntaxHighlighter {
                 highlightGeneric(text: nsText, textStorage: textStorage, range: range)
             }
         }
+    }
+
+    private func resetToBaseColor(_ textStorage: NSTextStorage, range: NSRange) {
+        textStorage.removeAttribute(.foregroundColor, range: range)
+        textStorage.addAttribute(.foregroundColor, value: colorScheme.text, range: range)
     }
 
     /// Regex fallback for keyword-based languages tree-sitter doesn't cover

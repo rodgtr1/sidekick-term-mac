@@ -23,6 +23,19 @@ struct SearchFileResult {
     }
 }
 
+/// How much of the search actually ran. The panel labels every result set with
+/// this, so a run that was cut short by the cap or the timeout is never
+/// presented with the same confident count as a complete one.
+enum SearchOutcome {
+    case complete
+    /// Parsing stopped at `maxResults`; the backend may have found more.
+    case cappedAtLimit
+    /// The backend was still running at the timeout and got SIGTERMed, so what
+    /// it had already written is all we have.
+    case stoppedByTimeout
+    case failed
+}
+
 class SearchPanelViewController: NSViewController {
     private enum SearchBackend {
         case ripgrep(URL)
@@ -32,6 +45,10 @@ class SearchPanelViewController: NSViewController {
     private var searchTask: Process?
     private var debounceWorkItem: DispatchWorkItem?
     private var searchTimeoutWorkItem: DispatchWorkItem?
+    /// Set when the timeout actually fired for the in-flight search. The task's
+    /// exit status can't tell us: a SIGTERMed backend that had already written
+    /// some matches looks exactly like a successful one.
+    private var searchTimedOut = false
 
     weak var delegate: SearchPanelDelegate?
 
@@ -158,10 +175,7 @@ class SearchPanelViewController: NSViewController {
         searchTask = nil
 
         if searchText.isEmpty {
-            searchMatches = []
-            searchFileResults = []
-            statusLabel.stringValue = "Type to search files"
-            tableView.reloadData()
+            clearResults(status: "Type to search files")
             return
         }
 
@@ -184,17 +198,15 @@ class SearchPanelViewController: NSViewController {
 
     private func performSearch(_ searchText: String) {
         statusLabel.stringValue = "Searching..."
+        searchTimedOut = false
 
         guard let backend = searchBackend() else {
-            statusLabel.stringValue = "Search failed: grep not found"
+            clearResults(status: "Search failed: grep not found")
             return
         }
 
         if case .grep = backend, isBroadSearchRoot(currentWorkingDirectory) {
-            statusLabel.stringValue = "Install ripgrep to search this folder"
-            searchMatches = []
-            searchFileResults = []
-            tableView.reloadData()
+            clearResults(status: "Install ripgrep to search this folder")
             return
         }
 
@@ -245,14 +257,17 @@ class SearchPanelViewController: NSViewController {
 
         do {
             try task.run()
-            let timeoutWorkItem = DispatchWorkItem { [weak task] in
+            let timeoutWorkItem = DispatchWorkItem { [weak self, weak task] in
+                // Remember that we cut the search short: whatever the backend
+                // had written by now is partial, and the results must say so.
+                self?.searchTimedOut = true
                 task?.terminate()
             }
             searchTimeoutWorkItem = timeoutWorkItem
             // This closure is MainActor-isolated (the class is an NSViewController),
             // so it must run on the main queue. Scheduling it on a background queue
             // trips a Swift 6 runtime isolation assertion (EXC_BREAKPOINT) when it fires.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeoutWorkItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.searchTimeout, execute: timeoutWorkItem)
 
             DispatchQueue.global(qos: .userInitiated).async { [weak self, task] in
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -278,15 +293,31 @@ class SearchPanelViewController: NSViewController {
                     self.searchTimeoutWorkItem = nil
 
                     guard let matches else {
-                        self.statusLabel.stringValue = "Search failed"
+                        // A backend we SIGTERMed at the timeout before it wrote
+                        // anything also lands here: that's a search cut short,
+                        // not a failed one.
+                        if self.searchTimedOut {
+                            self.updateSearchResults([], outcome: .stoppedByTimeout)
+                        } else {
+                            self.clearResults(status: Self.resultSummary(fileCount: 0, matchCount: 0, outcome: .failed))
+                        }
                         return
                     }
-                    self.updateSearchResults(matches)
+
+                    let outcome: SearchOutcome
+                    if self.searchTimedOut {
+                        outcome = .stoppedByTimeout
+                    } else if matches.count >= Self.maxResults {
+                        outcome = .cappedAtLimit
+                    } else {
+                        outcome = .complete
+                    }
+                    self.updateSearchResults(matches, outcome: outcome)
                 }
             }
         } catch {
             DispatchQueue.main.async { [weak self] in
-                self?.statusLabel.stringValue = "Search failed: \(error.localizedDescription)"
+                self?.clearResults(status: "Search failed: \(error.localizedDescription)")
             }
         }
     }
@@ -319,7 +350,10 @@ class SearchPanelViewController: NSViewController {
 
     /// Upper bound on matches surfaced to the UI. Parsing stops here so a broad
     /// search doesn't decode/group unbounded output on the main thread (P2).
-    private nonisolated static let maxResults = 1000
+    nonisolated static let maxResults = 1000
+
+    /// How long a backend gets before we SIGTERM it and keep whatever it wrote.
+    nonisolated static let searchTimeout: TimeInterval = 8
 
     private nonisolated static func parseRipgrepResults(_ data: Data, searchText: String) -> [SearchMatch] {
         guard let output = String(data: data, encoding: .utf8) else { return [] }
@@ -394,10 +428,24 @@ class SearchPanelViewController: NSViewController {
         return matches
     }
 
-    private func updateSearchResults(_ matches: [SearchMatch]) {
+    private func updateSearchResults(_ matches: [SearchMatch], outcome: SearchOutcome) {
         searchMatches = matches
         searchFileResults = groupedFileResults(from: matches)
-        statusLabel.stringValue = resultSummary(fileCount: searchFileResults.count, matchCount: matches.count)
+        statusLabel.stringValue = Self.resultSummary(
+            fileCount: searchFileResults.count,
+            matchCount: matches.count,
+            outcome: outcome
+        )
+        tableView.reloadData()
+    }
+
+    /// Drops the rows before showing `status`. Every path that can't produce
+    /// results has to go through here: leaving the previous query's rows on
+    /// screen under a new label reads as if they were results for this query.
+    private func clearResults(status: String) {
+        searchMatches = []
+        searchFileResults = []
+        statusLabel.stringValue = status
         tableView.reloadData()
     }
 
@@ -423,12 +471,26 @@ class SearchPanelViewController: NSViewController {
         }
     }
 
-    private func resultSummary(fileCount: Int, matchCount: Int) -> String {
-        guard matchCount > 0 else { return "No results" }
-
+    /// The status-label wording, kept pure so the honesty rules are testable: a
+    /// run stopped by the cap or the timeout must never read like a complete
+    /// one, because the user has no other way to tell them apart.
+    nonisolated static func resultSummary(fileCount: Int, matchCount: Int, outcome: SearchOutcome) -> String {
         let fileWord = fileCount == 1 ? "file" : "files"
         let matchWord = matchCount == 1 ? "match" : "matches"
-        return "\(fileCount) \(fileWord), \(matchCount) \(matchWord)"
+        let counts = "\(fileCount) \(fileWord), \(matchCount) \(matchWord)"
+
+        switch outcome {
+        case .failed:
+            return "Search failed"
+        case .complete:
+            return matchCount > 0 ? counts : "No results"
+        case .cappedAtLimit:
+            return "\(fileCount) \(fileWord), first \(matchCount) \(matchWord) (limit reached)"
+        case .stoppedByTimeout:
+            let seconds = Int(searchTimeout)
+            guard matchCount > 0 else { return "Stopped after \(seconds)s: no matches yet" }
+            return "Stopped after \(seconds)s: \(counts) so far"
+        }
     }
 
     @objc private func tableViewDoubleClick(_ sender: NSTableView) {
