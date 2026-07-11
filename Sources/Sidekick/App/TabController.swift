@@ -22,6 +22,9 @@ protocol TabHost: AnyObject {
     func refreshAgentsBadge()
     /// Point the sidebar file tree at `path` (a pane reported its directory).
     func updateSidebarDirectory(_ path: String)
+    /// Confirm a mouse-driven close of `panes` (a pane's X) before they're torn
+    /// down; false vetoes it. Sessions don't prompt here, unsaved editors do.
+    func confirmMouseClose(target: String, panes: [PaneModel]) -> Bool
 }
 
 /// Owns the tab collection and its lifecycle — create / install / switch /
@@ -456,6 +459,10 @@ extension TabController: PaneSplitControllerDelegate {
         if let directory = pane.resolvedWorkingDirectory() {
             host?.updateSidebarDirectory(directory)
         }
+    }
+
+    func paneSplitController(_ controller: PaneSplitController, shouldClosePane pane: PaneModel) -> Bool {
+        host?.confirmMouseClose(target: "pane", panes: [pane]) ?? true
     }
 
     func paneSplitController(_ controller: PaneSplitController, didClosePane pane: PaneModel, at index: Int) {

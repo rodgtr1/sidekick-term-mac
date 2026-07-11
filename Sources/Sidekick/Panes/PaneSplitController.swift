@@ -4,6 +4,15 @@ protocol PaneSplitControllerDelegate: AnyObject {
     func paneSplitController(_ controller: PaneSplitController, didAddPane pane: PaneModel, at index: Int)
     func paneSplitController(_ controller: PaneSplitController, didActivatePane pane: PaneModel, at index: Int)
     func paneSplitController(_ controller: PaneSplitController, didClosePane pane: PaneModel, at index: Int)
+    /// Asked before the pane's X button closes it; return false to veto. The
+    /// window confirms when the pane holds an editor with unsaved edits. Closes
+    /// that don't come from that button skip this: MCP `pane_close` is
+    /// programmatic, and ⇧⌘W confirms for itself before calling in.
+    func paneSplitController(_ controller: PaneSplitController, shouldClosePane pane: PaneModel) -> Bool
+}
+
+extension PaneSplitControllerDelegate {
+    func paneSplitController(_ controller: PaneSplitController, shouldClosePane pane: PaneModel) -> Bool { true }
 }
 
 class PaneSplitController: NSViewController {
@@ -108,6 +117,7 @@ class PaneSplitController: NSViewController {
               let index = panes.firstIndex(of: pane) else { return }
 
         setActivePane(index: index)
+        guard delegate?.paneSplitController(self, shouldClosePane: pane) ?? true else { return }
         closePane(index: index)
     }
 

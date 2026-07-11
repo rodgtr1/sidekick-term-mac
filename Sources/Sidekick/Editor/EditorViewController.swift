@@ -6,6 +6,14 @@ class EditorViewController: NSViewController {
     private var lineNumberRuler: LineNumberRulerView!
     private var syntaxHighlighter: SyntaxHighlighter!
     private var currentURL: URL?
+    /// The encoding `openFile` decoded the file with. Saves write it back the
+    /// same way rather than silently transcoding a legacy file to UTF-8.
+    private var fileEncoding: String.Encoding = .utf8
+    /// The file's modification date as of the last read or write. A different
+    /// date on disk means something else — an agent, git, another editor —
+    /// changed the file under us, so writing the whole buffer would revert it.
+    /// `saveFile` confirms before it does.
+    private var lastKnownModificationDate: Date?
     private var activeSearchTerm: String?
     private var pendingHighlightRange: NSRange?
     private var isProgrammaticLoad = false
@@ -235,12 +243,14 @@ class EditorViewController: NSViewController {
         }
 
         do {
-            let content = try String(contentsOf: url)
+            let (content, encoding) = try Self.read(contentsOf: url)
             isProgrammaticLoad = true
             textView.string = content
             isProgrammaticLoad = false
             pendingHighlightRange = nil
             currentURL = url
+            fileEncoding = encoding
+            lastKnownModificationDate = Self.modificationDate(of: url)
             isModified = false
             updateTitle()
 
@@ -259,22 +269,20 @@ class EditorViewController: NSViewController {
         }
     }
 
+    @discardableResult
     func saveFile() -> Bool {
         guard let url = currentURL else {
             return saveAsFile()
         }
 
-        do {
-            try textView.string.write(to: url, atomically: true, encoding: .utf8)
-            isModified = false
-            return true
-        } catch {
-            Log.error("Failed to save \(url.path): \(error.localizedDescription)", category: "editor")
-            showError("Failed to save file: \(error.localizedDescription)")
+        guard confirmExternalChange(at: url),
+              let encoding = resolvedWriteEncoding() else {
             return false
         }
+        return write(to: url, encoding: encoding)
     }
 
+    @discardableResult
     func saveAsFile() -> Bool {
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.plainText]
@@ -285,22 +293,124 @@ class EditorViewController: NSViewController {
             savePanel.nameFieldStringValue = url.lastPathComponent
         }
 
+        // The panel confirms an overwrite itself, so there's no external-change
+        // check here: the user picked this destination just now.
         guard savePanel.runModal() == .OK,
-              let url = savePanel.url else {
+              let url = savePanel.url,
+              let encoding = resolvedWriteEncoding(),
+              write(to: url, encoding: encoding) else {
             return false
         }
 
+        currentURL = url
+        updateTitle()
+        return true
+    }
+
+    /// Writes the buffer to `url` and records the modification date it lands
+    /// with, so the next save's external-change check compares against what we
+    /// just wrote rather than what we opened.
+    private func write(to url: URL, encoding: String.Encoding) -> Bool {
         do {
-            try textView.string.write(to: url, atomically: true, encoding: .utf8)
-            currentURL = url
+            try Self.write(textView.string, to: url, encoding: encoding)
+            fileEncoding = encoding
+            lastKnownModificationDate = Self.modificationDate(of: url)
             isModified = false
-            updateTitle()
             return true
         } catch {
-            Log.error("Failed to save as \(url.path): \(error.localizedDescription)", category: "editor")
+            Log.error("Failed to save \(url.path): \(error.localizedDescription)", category: "editor")
             showError("Failed to save file: \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// Guards a save against clobbering an edit made behind our back — an agent
+    /// rewriting the file we have open is routine here, and the whole-buffer
+    /// write would silently revert it. Returns false to abort the save.
+    private func confirmExternalChange(at url: URL) -> Bool {
+        guard Self.fileChangedExternally(recorded: lastKnownModificationDate,
+                                         current: Self.modificationDate(of: url)) else { return true }
+
+        let alert = NSAlert()
+        alert.messageText = "\(url.lastPathComponent) changed on disk"
+        alert.informativeText = "Something else modified this file after you opened it. "
+            + "Saving replaces those changes with what's in the editor. "
+            + "Cancel to keep them, then reopen the file to see them."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Overwrite")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// The encoding this save should use: the one the file was opened with,
+    /// unless the buffer has since grown characters it can't represent (an emoji
+    /// typed into a Latin-1 file), in which case the user is asked before the
+    /// file is converted to UTF-8. Nil when they cancel.
+    private func resolvedWriteEncoding() -> String.Encoding? {
+        let encoding = Self.encodingForWrite(text: textView.string, fileEncoding: fileEncoding)
+        guard encoding != fileEncoding else { return encoding }
+
+        let alert = NSAlert()
+        alert.messageText = "Save \(fileName) as UTF-8?"
+        alert.informativeText = "This file was opened as \(String.localizedName(of: fileEncoding)), "
+            + "and some of the text in it can't be written in that encoding. "
+            + "Saving converts the file to UTF-8."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save as UTF-8")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn ? .utf8 : nil
+    }
+
+    /// Reads `url`, reporting the encoding it decoded with so a later save can
+    /// write the file back the way it was found. Falls back to a lossless 8-bit
+    /// read for legacy files Cocoa can't sniff, rather than failing the open.
+    static func read(contentsOf url: URL) throws -> (text: String, encoding: String.Encoding) {
+        var used = String.Encoding.utf8
+        if let text = try? String(contentsOf: url, usedEncoding: &used) {
+            return (text, used)
+        }
+
+        let data = try Data(contentsOf: url)
+        if let text = String(data: data, encoding: .utf8) {
+            return (text, .utf8)
+        }
+        guard let text = String(data: data, encoding: .isoLatin1) else {
+            throw CocoaError(.fileReadUnknownStringEncoding)
+        }
+        return (text, .isoLatin1)
+    }
+
+    /// Writes `text` to `url`, resolving a symlink to its target first (the same
+    /// helper config saves use). An atomic write is a temp file plus a rename,
+    /// which would otherwise replace the link with a regular file and leave the
+    /// real file — the one in the dotfiles repo, or wherever it's stowed from —
+    /// holding stale content.
+    static func write(_ text: String, to url: URL, encoding: String.Encoding) throws {
+        try text.write(to: Config.resolvingSymlinkForWrite(url), atomically: true, encoding: encoding)
+    }
+
+    /// The encoding a save should use for `text`: the file's own, unless it can
+    /// no longer represent what's in the buffer — then UTF-8.
+    static func encodingForWrite(text: String, fileEncoding: String.Encoding) -> String.Encoding {
+        text.canBeConverted(to: fileEncoding) ? fileEncoding : .utf8
+    }
+
+    /// Whether the file moved out from under us since `recorded` was taken. A
+    /// missing date on either side means there's nothing to compare (never
+    /// tracked, or the file is gone and the save recreates it).
+    static func fileChangedExternally(recorded: Date?, current: Date?) -> Bool {
+        guard let recorded = recorded, let current = current else { return false }
+        // Modification dates round-trip through a Double, so compare with a hair
+        // of tolerance rather than exactly.
+        return abs(current.timeIntervalSince(recorded)) > 0.001
+    }
+
+    /// The modification date of the file `url` really points at — symlinks
+    /// resolved, since that's where a save lands.
+    static func modificationDate(of url: URL) -> Date? {
+        let path = url.resolvingSymlinksInPath().path
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        return attributes?[.modificationDate] as? Date
     }
 
     private func updateTitle() {

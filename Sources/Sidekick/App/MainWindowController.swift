@@ -303,45 +303,91 @@ class MainWindowController: NSWindowController {
         }
     }
 
-    /// Returns true when it is safe to close/quit: nothing is busy, or the user
-    /// confirmed via the alert. Returns false to abort the close. Called from
-    /// both windowShouldClose (close button) and applicationShouldTerminate (⌘Q).
-    func confirmCloseWithBusyAgents() -> Bool {
-        let busy = busyAgentPaneCount
-        guard busy > 0 else { return true }
+    /// Editor panes among `panes` holding unsaved edits. Unlike a busy session,
+    /// which the user can restart, these are work that only exists in the
+    /// buffer — so every close path confirms them (mouse X included) and
+    /// `behavior.confirm_close` doesn't gate them.
+    private func modifiedEditors(in panes: [PaneModel]) -> [EditorViewController] {
+        panes.compactMap { pane in
+            guard let editor = pane.editorViewController, editor.isModified else { return nil }
+            return editor
+        }
+    }
 
-        let alert = NSAlert()
-        alert.messageText = busy == 1 ? "An agent is still working" : "\(busy) agents are still working"
-        alert.informativeText = "Quitting Sidekick will end "
-            + (busy == 1 ? "this session" : "these sessions")
-            + " and any running commands. Quit anyway?"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Quit Anyway")
-        alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
+    /// Returns true when it is safe to close/quit: nothing would be lost, or the
+    /// user confirmed via the alert. Returns false to abort the close. Called
+    /// from both windowShouldClose (close button) and applicationShouldTerminate
+    /// (⌘Q), so it covers everything every tab holds — busy agents and editor
+    /// buffers with unsaved edits alike, in one alert.
+    func confirmCloseWithUnsavedWork() -> Bool {
+        let editors = modifiedEditors(in: tabs.flatMap(\.panes))
+        guard let confirmation = CloseConfirmation.quit(
+            busyPaneCount: busyAgentPaneCount,
+            modifiedFileNames: editors.map(\.fileName)
+        ) else { return true }
+
+        return runConfirmation(confirmation, dirtyEditors: editors)
     }
 
     /// Confirmation for keyboard-driven closes (⌘W tab, ⇧⌘W pane), so a stray
     /// keystroke can't silently kill sessions. Returns true when the close may
-    /// proceed: `behavior.confirm_close` is off, or the user confirmed. `panes`
-    /// is the set being closed, so busy agents there get called out.
+    /// proceed: nothing would be lost, or the user confirmed. `panes` is the set
+    /// being closed, so busy agents and unsaved files there get called out.
     private func confirmKeyboardClose(target: String, panes: [PaneModel]) -> Bool {
-        guard config.behavior.confirmClose else { return true }
+        confirmClose(target: target, panes: panes, confirmSessionClose: config.behavior.confirmClose)
+    }
 
-        let busy = panes.filter { $0.agentState == .working || $0.agentState == .ready }.count
+    /// Confirmation for mouse-driven closes (a pane's or a tab's X). Sessions
+    /// stay prompt-free here by design — a click on the X isn't a stray
+    /// keystroke — but an unsaved editor buffer still prompts, on this path like
+    /// every other.
+    func confirmMouseClose(target: String, panes: [PaneModel]) -> Bool {
+        confirmClose(target: target, panes: panes, confirmSessionClose: false)
+    }
+
+    private func confirmClose(target: String, panes: [PaneModel], confirmSessionClose: Bool) -> Bool {
+        let editors = modifiedEditors(in: panes)
+        guard let confirmation = CloseConfirmation.close(
+            target: target,
+            terminalPaneCount: panes.filter { $0.paneType == .terminal }.count,
+            busyPaneCount: panes.filter { $0.agentState == .working || $0.agentState == .ready }.count,
+            modifiedFileNames: editors.map(\.fileName),
+            confirmSessionClose: confirmSessionClose
+        ) else { return true }
+
+        return runConfirmation(confirmation, dirtyEditors: editors)
+    }
+
+    /// Runs a `CloseConfirmation` as an alert and reports whether the close may
+    /// proceed. When there are unsaved buffers the alert leads with Save, which
+    /// saves each of them through the editor's own save path (so an
+    /// external-change or encoding prompt still applies); a save the user
+    /// cancels, or one that fails, aborts the close too.
+    private func runConfirmation(_ confirmation: CloseConfirmation, dirtyEditors: [EditorViewController]) -> Bool {
         let alert = NSAlert()
-        alert.messageText = "Close this \(target)?"
-        if busy > 0 {
-            alert.informativeText = (busy == 1 ? "An agent is still working here." : "\(busy) agents are still working here.")
-                + " Closing will end " + (busy == 1 ? "its session" : "their sessions") + " and any running commands."
-        } else {
-            let sessions = panes.count == 1 ? "its terminal session" : "its \(panes.count) terminal sessions"
-            alert.informativeText = "Closing will end \(sessions) and any running commands."
-        }
+        alert.messageText = confirmation.messageText
+        alert.informativeText = confirmation.informativeText
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Close")
+
+        guard confirmation.offersSave else {
+            alert.addButton(withTitle: confirmation.proceedButtonTitle)
+            alert.addButton(withTitle: "Cancel")
+            return alert.runModal() == .alertFirstButtonReturn
+        }
+
+        // Buttons lay out right to left in the order they're added, so this is
+        // the standard macOS document alert: [Discard] [Cancel] [Save].
+        alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
+        alert.addButton(withTitle: confirmation.proceedButtonTitle)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return dirtyEditors.allSatisfy { $0.saveFile() }
+        case .alertThirdButtonReturn:
+            return true
+        default:
+            return false
+        }
     }
 
     @objc private func windowWillClose() {
@@ -882,6 +928,10 @@ extension MainWindowController: TabBarDelegate {
     }
 
     func tabBar(_ tabBar: TabBarView, didCloseTab index: Int) {
+        // Mirror TabController.closeTab's last-tab guard so no confirmation
+        // shows for a close that would be refused anyway.
+        guard tabs.count > 1, let tab = tabs[safe: index] else { return }
+        guard confirmMouseClose(target: "tab", panes: tab.panes) else { return }
         closeTab(index: index)
     }
 
@@ -1387,11 +1437,11 @@ private final class SidebarResizeHandle: NSView {
 
 // MARK: - NSWindowDelegate
 extension MainWindowController: NSWindowDelegate {
-    /// Veto a close-button close while agents are working, so the window (and
-    /// its PTYs) aren't torn down without a heads-up. ⌘Q is guarded separately
-    /// in AppDelegate.applicationShouldTerminate.
+    /// Veto a close-button close while agents are working or an editor holds
+    /// unsaved edits, so the window (and its PTYs) aren't torn down without a
+    /// heads-up. ⌘Q is guarded separately in AppDelegate.applicationShouldTerminate.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        confirmCloseWithBusyAgents()
+        confirmCloseWithUnsavedWork()
     }
 }
 

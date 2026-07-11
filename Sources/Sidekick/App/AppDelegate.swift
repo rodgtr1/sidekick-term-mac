@@ -65,13 +65,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // ⌘Q path: the window is still open, so the close-button guard
-        // (windowShouldClose) hasn't run — confirm here if agents are busy.
-        // On the close-button path the window is already gone by now, so we
-        // skip the check to avoid prompting the user twice.
+        // (windowShouldClose) hasn't run — confirm here if agents are busy or an
+        // editor holds unsaved edits. On the close-button path the window is
+        // already gone by now, so we skip the check to avoid prompting twice.
         guard let controller = mainWindowController, controller.window?.isVisible == true else {
             return .terminateNow
         }
-        return controller.confirmCloseWithBusyAgents() ? .terminateNow : .terminateCancel
+        return controller.confirmCloseWithUnsavedWork() ? .terminateNow : .terminateCancel
     }
 
     func applicationWillTerminate(_ notification: Notification) {

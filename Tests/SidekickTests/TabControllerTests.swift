@@ -130,4 +130,5 @@ private final class StubTabHost: TabHost {
     func syncSidebarToActiveTab() {}
     func refreshAgentsBadge() {}
     func updateSidebarDirectory(_ path: String) {}
+    func confirmMouseClose(target: String, panes: [PaneModel]) -> Bool { true }
 }
