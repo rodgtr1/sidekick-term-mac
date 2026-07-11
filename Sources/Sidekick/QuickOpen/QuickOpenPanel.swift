@@ -123,7 +123,9 @@ class QuickOpenPanel: FilterableListPanel {
 
         let pipe = Pipe()
         task.standardOutput = pipe
-        task.standardError = Pipe() // Suppress errors
+        // /dev/null, not a Pipe: an unread pipe fills at ~64KB and blocks the
+        // child forever (find prints a line per unreadable directory).
+        task.standardError = FileHandle.nullDevice
 
         // Store reference
         findTask = task

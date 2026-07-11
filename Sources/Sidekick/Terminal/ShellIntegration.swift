@@ -41,22 +41,35 @@ enum ShellIntegration {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zshrc")
     }
 
-    static func isInstalledInZshrc() -> Bool {
-        guard let contents = try? String(contentsOf: zshrcURL, encoding: .utf8) else { return false }
+    /// Contents of ~/.zshrc, or "" when there is no such file. Throws when the
+    /// file exists but cannot be read as UTF-8: a failed read must never be
+    /// mistaken for empty content, or the append below would rewrite the user's
+    /// zshrc as nothing but the Sidekick stanza.
+    private static func zshrcContents(at url: URL) throws -> String {
+        guard FileManager.default.fileExists(atPath: url.path) else { return "" }
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// False when ~/.zshrc is absent, and also when it exists but can't be read
+    /// — in that case `installInZshrc` throws rather than clobbering it.
+    static func isInstalledInZshrc(at url: URL = zshrcURL) -> Bool {
+        guard let contents = try? zshrcContents(at: url) else { return false }
         return contents.contains("shell-integration/sidekick.zsh")
     }
 
-    /// Appends the source line to ~/.zshrc. Returns false if it was already present.
+    /// Appends the source line to ~/.zshrc. Returns false if it was already
+    /// present. Throws (leaving the file untouched) if an existing ~/.zshrc
+    /// cannot be read.
     @discardableResult
-    static func installInZshrc() throws -> Bool {
-        guard !isInstalledInZshrc() else { return false }
+    static func installInZshrc(at url: URL = zshrcURL) throws -> Bool {
+        var contents = try zshrcContents(at: url)
+        guard !contents.contains("shell-integration/sidekick.zsh") else { return false }
 
-        var contents = (try? String(contentsOf: zshrcURL, encoding: .utf8)) ?? ""
         if !contents.isEmpty && !contents.hasSuffix("\n") {
             contents += "\n"
         }
         contents += "\n\(zshrcMarker)\n\(zshrcSourceLine)\n"
-        try contents.write(to: zshrcURL, atomically: true, encoding: .utf8)
+        try contents.write(to: url, atomically: true, encoding: .utf8)
         return true
     }
 

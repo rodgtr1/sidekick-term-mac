@@ -759,6 +759,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
+                // Lookups for several cwds can be in flight at once (a fast `cd`
+                // sequence), and the background queue is concurrent, so they can
+                // finish out of order. Drop any result whose cwd is no longer the
+                // current one: applying it would leave a stale title and — worse,
+                // since nothing re-polls until the cwd changes again — a branch
+                // watcher permanently attached to the previous repo.
+                guard cwd == self.currentCWD else { return }
 
                 // Update window title
                 if let label = label, !label.isEmpty {
@@ -772,7 +779,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
                 self.updateBranchWatch(repositoryRoot: repositoryRoot)
 
                 // Notify delegate for tab title updates
-                self.delegate?.terminalDidUpdateTitle(self, directory: self.currentCWD, branch: label)
+                self.delegate?.terminalDidUpdateTitle(self, directory: cwd, branch: label)
             }
         }
     }

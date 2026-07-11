@@ -235,7 +235,9 @@ class SearchPanelViewController: NSViewController {
 
         let pipe = Pipe()
         task.standardOutput = pipe
-        task.standardError = Pipe() // Suppress errors
+        // /dev/null, not a Pipe: an unread pipe fills at ~64KB and blocks the
+        // child forever (grep on an unreadable tree is chatty on stderr).
+        task.standardError = FileHandle.nullDevice
 
         // Replace any in-flight search before starting this one
         searchTask?.terminate()

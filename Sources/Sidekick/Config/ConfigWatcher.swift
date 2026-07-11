@@ -14,7 +14,6 @@ nonisolated final class ConfigWatcher: @unchecked Sendable {
     var onChange: (@MainActor () -> Void)?
 
     private var source: DispatchSourceFileSystemObject?
-    private var directoryFD: Int32 = -1
     private var debounceWork: DispatchWorkItem?
     private var lastModificationDate: Date?
     // Serial: the DispatchSource delivers events here and the debounce work runs
@@ -48,8 +47,14 @@ nonisolated final class ConfigWatcher: @unchecked Sendable {
 
         watchedPath = resolved(configPath)
         let directory = (watchedPath as NSString).deletingLastPathComponent
-        directoryFD = open(directory, O_EVTONLY)
-        guard directoryFD >= 0 else {
+        // An immutable local, not a property: the cancel handler must close the
+        // exact descriptor its own source was opened with. Reading a shared
+        // property would close whatever fd is current at cancel time (the wrong
+        // one, if start() ever runs again), and capturing self weakly to reach it
+        // leaks the fd outright when deinit cancels — self is already gone by the
+        // time the handler runs.
+        let fd = open(directory, O_EVTONLY)
+        guard fd >= 0 else {
             Log.error("ConfigWatcher: cannot open \(directory)", category: "config")
             return
         }
@@ -57,19 +62,14 @@ nonisolated final class ConfigWatcher: @unchecked Sendable {
         lastModificationDate = modificationDate()
 
         let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: directoryFD,
+            fileDescriptor: fd,
             eventMask: [.write],
             queue: queue
         )
         source.setEventHandler { [weak self] in
             self?.scheduleReloadCheck()
         }
-        source.setCancelHandler { [weak self] in
-            if let fd = self?.directoryFD, fd >= 0 {
-                close(fd)
-                self?.directoryFD = -1
-            }
-        }
+        source.setCancelHandler { close(fd) }
         source.resume()
         self.source = source
     }
