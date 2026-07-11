@@ -374,14 +374,49 @@ nonisolated final class GitService: Sendable {
         let unstagedStatus = line[line.index(after: line.startIndex)]
         let pathStart = line.index(line.startIndex, offsetBy: 3)
         let rawPath = String(line[pathStart...])
-        // Rename/copy entries are "old -> new"; show the destination.
-        let destination = rawPath.components(separatedBy: " -> ").last ?? rawPath
+        let isRenameOrCopy = "RC".contains(stagedStatus) || "RC".contains(unstagedStatus)
+        let destination = isRenameOrCopy ? renameDestination(in: rawPath) : rawPath
 
         return GitStatusEntry(
             path: unquoteGitPath(destination),
             stagedStatus: stagedStatus,
             unstagedStatus: unstagedStatus
         )
+    }
+
+    /// The destination half of a rename/copy path field, which git writes as
+    /// `old -> new`. A filename may itself contain " -> ", so the separator is
+    /// only searched for *outside* the C-quoted source path: git quotes any path
+    /// that could be confused with its own framing (a name holding " -> " always
+    /// arrives quoted, because the space alone is enough to trigger it), so once
+    /// the closing quote is found, the next " -> " is the real separator.
+    ///
+    /// Splitting on the last " -> " instead — or splitting at all on a
+    /// non-rename entry — truncates such a name at the arrow and shows a path
+    /// that doesn't exist.
+    static func renameDestination(in rawPath: String) -> String {
+        var searchStart = rawPath.startIndex
+        if rawPath.hasPrefix("\""), let closingQuote = closingQuoteIndex(in: rawPath) {
+            searchStart = rawPath.index(after: closingQuote)
+        }
+        guard let separator = rawPath.range(of: " -> ", range: searchStart..<rawPath.endIndex) else {
+            return rawPath
+        }
+        return String(rawPath[separator.upperBound...])
+    }
+
+    /// Index of the quote that closes a C-quoted path, skipping `\"` escapes.
+    private static func closingQuoteIndex(in raw: String) -> String.Index? {
+        var i = raw.index(after: raw.startIndex)
+        while i < raw.endIndex {
+            if raw[i] == "\\" {
+                i = raw.index(i, offsetBy: 2, limitedBy: raw.endIndex) ?? raw.endIndex
+                continue
+            }
+            if raw[i] == "\"" { return i }
+            i = raw.index(after: i)
+        }
+        return nil
     }
 
     /// Git quotes paths containing special characters in C style:

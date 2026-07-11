@@ -65,6 +65,61 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(entry?.path, "new name.txt")
     }
 
+    // MARK: - filenames containing " -> "
+    //
+    // git quotes any path that could be confused with its own framing (a space
+    // is enough), so a name holding " -> " always arrives quoted. Splitting on
+    // the arrow before unquoting truncated such a name; the lines below are
+    // verbatim `git status --porcelain` output for those files.
+
+    func testUntrackedFileNamedWithAnArrowKeepsItsWholeName() {
+        let entry = GitService.parseStatusLine("?? \"untracked -> arrow.txt\"")
+
+        XCTAssertEqual(entry?.path, "untracked -> arrow.txt")
+        XCTAssertEqual(entry?.isUntracked, true)
+    }
+
+    func testModifiedFileNamedWithAnArrowKeepsItsWholeName() {
+        let entry = GitService.parseStatusLine(" M \"docs/a -> b.md\"")
+
+        XCTAssertEqual(entry?.path, "docs/a -> b.md")
+    }
+
+    func testRenameBetweenTwoArrowNamedFilesTakesTheDestination() {
+        // Both halves contain the separator; only the arrow *outside* the quoted
+        // source is the real one.
+        let entry = GitService.parseStatusLine("R  \"a -> b.txt\" -> \"dest -> arrow.txt\"")
+
+        XCTAssertEqual(entry?.path, "dest -> arrow.txt")
+        XCTAssertEqual(entry?.stagedStatus, "R")
+    }
+
+    func testRenameFromAnArrowNamedFileToAPlainOne() {
+        let entry = GitService.parseStatusLine("R  \"a -> b.txt\" -> renamed.txt")
+
+        XCTAssertEqual(entry?.path, "renamed.txt")
+    }
+
+    func testCopyEntryTakesTheDestination() {
+        let entry = GitService.parseStatusLine("C  original.txt -> copy.txt")
+
+        XCTAssertEqual(entry?.path, "copy.txt")
+        XCTAssertEqual(entry?.stagedStatus, "C")
+    }
+
+    func testRenameStagedThenModifiedInTheWorktree() {
+        let entry = GitService.parseStatusLine("RM \"old -> name.txt\" -> new.txt")
+
+        XCTAssertEqual(entry?.path, "new.txt")
+        XCTAssertEqual(entry?.unstagedStatus, "M")
+    }
+
+    func testEscapedQuoteInsideAnArrowNamedSourceDoesNotEndTheQuotedPath() {
+        let entry = GitService.parseStatusLine("R  \"we\\\"ird -> a.txt\" -> \"b.txt\"")
+
+        XCTAssertEqual(entry?.path, "b.txt")
+    }
+
     func testRejectsMalformedShortLine() {
         XCTAssertNil(GitService.parseStatusLine("M"))
         XCTAssertNil(GitService.parseStatusLine(""))

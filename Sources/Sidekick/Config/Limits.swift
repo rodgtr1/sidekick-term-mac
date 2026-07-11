@@ -8,6 +8,10 @@ public enum Limits {
     public static let maxRecentFiles: Int = 50
     public static let maxTaskHistory: Int = 100
     public static let maxGitDiffSize: Int = 10 * 1024 * 1024 // 10MB
+    /// Sidekick.log rotates to Sidekick.log.1 past this size; one generation is
+    /// kept. `nonisolated` because Log reads it from its own background queue,
+    /// off the main actor this module defaults to.
+    nonisolated public static let maxLogFileSize: Int = 5 * 1024 * 1024 // 5MB
     public static let terminalScrollback: Int = 10000
     public static let searchDebounceMs: Int = 200
     public static let cwdPollIntervalMs: Int = 1000

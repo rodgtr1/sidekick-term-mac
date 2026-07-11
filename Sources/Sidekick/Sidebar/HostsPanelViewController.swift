@@ -108,11 +108,14 @@ final class HostsPanelViewController: NSViewController {
         var newItems: [Item] = []
 
         newItems.append(.header("SSH CONFIG"))
-        if sshHosts.isEmpty {
+        let connectable = sshHosts.compactMap { host in
+            Self.connectCommand(forHost: host).map { (name: host, command: $0) }
+        }
+        if connectable.isEmpty {
             newItems.append(.message("No hosts in ~/.ssh/config"))
         } else {
-            for host in sshHosts {
-                newItems.append(.host(name: host, detail: nil, command: "ssh \(host)"))
+            for entry in connectable {
+                newItems.append(.host(name: entry.name, detail: nil, command: entry.command))
             }
         }
 
@@ -121,6 +124,29 @@ final class HostsPanelViewController: NSViewController {
     }
 
     // MARK: - SSH config parsing
+
+    /// The command a double-click types into the terminal, or nil when the alias
+    /// isn't a plausible ssh host token.
+    ///
+    /// The alias goes straight into a shell, so an ssh_config `Host` holding
+    /// shell syntax (`;`, `$(…)`, backticks) would run as shell code, and one
+    /// starting with `-` would be read by ssh as an option rather than a
+    /// destination. The charset below admits no metacharacter, so the alias needs
+    /// no quoting once it passes; anything that fails isn't a host we could
+    /// connect to anyway, so it is dropped from the list rather than quoted into
+    /// a command that would only fail later. (Wildcard `Host *` patterns never
+    /// reach here — parseSSHConfigHosts already drops them.)
+    static func connectCommand(forHost host: String) -> String? {
+        guard isPlausibleHostToken(host) else { return nil }
+        return "ssh \(host)"
+    }
+
+    private static func isPlausibleHostToken(_ host: String) -> Bool {
+        guard !host.isEmpty, !host.hasPrefix("-") else { return false }
+        return host.allSatisfy { char in
+            char.isASCII && (char.isLetter || char.isNumber || char == "." || char == "-" || char == "_")
+        }
+    }
 
     static func parseSSHConfigHosts() -> [String] {
         let configURL = FileManager.default.homeDirectoryForCurrentUser
