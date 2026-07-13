@@ -1205,13 +1205,22 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     private func readVisibleScreenText() -> String {
         let terminal = terminalView.getTerminal()
+        let cursor = terminal.getCursorLocation()
         var lines: [String] = []
         // Interactive dialogs live at the bottom. Restricting the scan keeps a
         // prompt higher in the viewport's scrollback from looking current.
         let firstRow = max(0, terminal.rows - 12)
         for row in firstRow..<terminal.rows {
             if let line = terminal.getLine(row: row) {
-                lines.append(line.translateToString(trimRight: true))
+                // Dim/gray suggestion text at the cursor (Claude Code's
+                // autosuggest, shell autosuggestions) reads identically to
+                // typed input once flattened; mark it so agents monitoring
+                // this pane don't attribute it to the user.
+                if row == cursor.y, let marked = GhostText.markedLine(line, cursorCol: cursor.x) {
+                    lines.append(marked)
+                } else {
+                    lines.append(line.translateToString(trimRight: true))
+                }
             }
         }
         return lines.joined(separator: "\n")

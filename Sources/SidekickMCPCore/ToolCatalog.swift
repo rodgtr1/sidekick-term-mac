@@ -174,7 +174,7 @@ public func makeTools(ipc: SidekickIPCClient) -> [Tool] {
     ),
     Tool(
         name: "sidekick_pane_read",
-        description: "Read a pane's output. source=visible (the screen) or recent (scrollback). A source=recent read returns a `cursor`; pass it back as `since` to get only the output appended since — polling a worker pane then reads deltas, not the whole buffer each time. On a stale cursor (evicted or a restarted shell) the reply is `truncated: true` with a full re-read, never an error. Set json=true for structured per-command records {command, exit_code, duration, output} built from shell-integration marks — easier to reason over than raw text.",
+        description: "Read a pane's output. source=visible (the screen) or recent (scrollback). A source=recent read returns a `cursor`; pass it back as `since` to get only the output appended since — polling a worker pane then reads deltas, not the whole buffer each time. On a stale cursor (evicted or a restarted shell) the reply is `truncated: true` with a full re-read, never an error. Set json=true for structured per-command records {command, exit_code, duration, output} built from shell-integration marks — easier to reason over than raw text. In visible reads, text wrapped in ⟦suggested, not typed: …⟧ is an unaccepted autosuggest/placeholder rendered at the cursor — the user did NOT type it; it becomes real input only if accepted (typically via the right-arrow key).",
         inputSchema: object([
             "pane_id": paneIDProperty,
             "source": ["type": "string", "enum": ["visible", "recent"], "description": "visible (default) or recent."],
