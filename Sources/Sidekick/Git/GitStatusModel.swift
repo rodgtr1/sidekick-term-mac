@@ -174,7 +174,10 @@ class GitStatusModel {
     }
 
     func setRepositoryPath(_ path: String) {
-        guard let repositoryRoot = gitService.repositoryRoot(from: path) else {
+        // Every OSC7 cwd report re-asserts the path — i.e. once per command any
+        // agent runs — so this runs on the main thread constantly. The memoized
+        // lookup keeps a burst of reports from forking a `git rev-parse` each.
+        guard let repositoryRoot = WorkspaceResolver.cachedGitRoot(from: path) else {
             stopAutoRefresh()
             refreshGeneration += 1
             _repositoryPath = ""
@@ -190,6 +193,12 @@ class GitStatusModel {
             notifyChanged()
             return
         }
+
+        // Same repository as before: the cwd only moved within it (the common
+        // case, since a cd inside the repo re-reports the path). Forcing a
+        // refresh and restarting the watcher here would rerun the whole status
+        // chain on every command; the watcher and fallback poll already cover it.
+        guard repositoryRoot != _repositoryPath else { return }
 
         _repositoryPath = repositoryRoot
         refreshStatus(force: true)
@@ -354,6 +363,7 @@ class GitStatusModel {
         // `--` so a path beginning with "-" can't be parsed as a flag.
         executeGitCommand(["add", "--", file.path]) { [weak self] success in
             if success {
+                self?.applyOptimisticStaging(to: file.path, staged: true)
                 self?.refreshStatus(force: true)
             }
         }
@@ -362,9 +372,65 @@ class GitStatusModel {
     func unstageFile(_ file: GitFileItem) {
         executeGitCommand(["reset", "HEAD", "--", file.path]) { [weak self] success in
             if success {
+                self?.applyOptimisticStaging(to: file.path, staged: false)
                 self?.refreshStatus(force: true)
             }
         }
+    }
+
+    /// Flips one row's staged/unstaged status the moment its `git add`/`git reset`
+    /// returns, so the row's button reflects the new state immediately. The
+    /// confirming refresh runs several git processes and may queue behind an
+    /// in-flight one, which left the button stale for a second or more under load.
+    /// It remains the source of truth: when it lands it overwrites this guess,
+    /// including whatever subtlety (renames, partial adds) the guess got wrong.
+    private func applyOptimisticStaging(to path: String, staged: Bool) {
+        guard let index = files.firstIndex(where: { $0.path == path }) else { return }
+        guard let chars = Self.optimisticStatusChars(for: files[index], staged: staged) else { return }
+
+        files[index] = GitFileItem(path: path, stagedChar: chars.staged, unstagedChar: chars.unstaged)
+        notifyChanged()
+    }
+
+    /// The porcelain status chars `file` takes on after a successful stage
+    /// (`staged: true`) or unstage. Nil when the transition isn't worth guessing —
+    /// a conflicted entry, whose two-char states staging resolves in ways only
+    /// `git status` can report.
+    nonisolated static func optimisticStatusChars(
+        for file: GitFileItem,
+        staged: Bool
+    ) -> (staged: Character, unstaged: Character)? {
+        guard !file.isConflicted else { return nil }
+
+        if staged {
+            // `git add` folds the worktree change into the index: untracked ("??")
+            // becomes an add, a modify or delete keeps its letter in the staged
+            // slot, and an already-clean worktree leaves the index as it was.
+            let stagedChar: Character
+            switch file.unstagedStatus {
+            case .untracked: stagedChar = "A"
+            case .unmodified: stagedChar = statusChar(file.stagedStatus)
+            default: stagedChar = statusChar(file.unstagedStatus)
+            }
+            return (stagedChar, " ")
+        }
+
+        // `git reset HEAD` moves the index change back to the worktree. A staged
+        // add returns to untracked, which porcelain reports in *both* slots
+        // ("??"); anything else drops to its unstaged equivalent.
+        if file.stagedStatus == .added {
+            return ("?", "?")
+        }
+        let unstagedChar: Character
+        switch file.stagedStatus {
+        case .unmodified: unstagedChar = statusChar(file.unstagedStatus)
+        default: unstagedChar = statusChar(file.stagedStatus)
+        }
+        return (" ", unstagedChar)
+    }
+
+    private nonisolated static func statusChar(_ status: GitFileStatus) -> Character {
+        status.rawValue.first ?? " "
     }
 
     func stageAllFiles() {

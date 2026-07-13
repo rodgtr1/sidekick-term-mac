@@ -115,14 +115,84 @@ class TabBarView: NSView {
     }
 
     func updateTabs(_ tabs: [TabModel], activeIndex: Int) {
+        // Pane titles, command status and agent state all push updates here, many
+        // times a second under an active agent. Recreating the buttons each time
+        // cancels an in-progress click (see handleTabMouseDown), so only a change
+        // in tab count — which needs new buttons anyway — may rebuild.
+        let countUnchanged = tabs.count == self.tabs.count && tabs.count == tabButtons.count
         self.tabs = tabs
         self.activeTabIndex = activeIndex
-        rebuildTabButtons()
+        if countUnchanged {
+            refreshTabButtons()
+        } else {
+            rebuildTabButtons()
+        }
         // Start pulsing when something is working; the timer stops itself when
         // nothing is.
         if tabs.contains(where: { $0.agentState == .working }) {
             ensurePulseTimer()
         }
+    }
+
+    /// Updates the existing buttons in place — titles, colors, tooltips, tags and
+    /// the active indicator — without touching the view hierarchy. Callers must
+    /// have verified the tab count is unchanged.
+    private func refreshTabButtons() {
+        let theme = Theme.shared.current
+
+        for (index, tab) in tabs.enumerated() {
+            let tabButton = tabButtons[index]
+            tabButton.attributedTitle = makeAttributedTitle(for: tab)
+            if let commandTooltip = tab.lastCommandTooltip {
+                tabButton.toolTip = "\(tab.title)\n\(commandTooltip)"
+            } else {
+                tabButton.toolTip = tab.title
+            }
+            tabButton.tag = index
+
+            if index == activeTabIndex {
+                tabButton.layer?.backgroundColor = theme.activeTabBackground.cgColor
+                tabButton.contentTintColor = theme.activeTabText
+            } else {
+                tabButton.layer?.backgroundColor = theme.controlBackground.cgColor
+                tabButton.contentTintColor = theme.inactiveTabText
+            }
+
+            if index < closeButtons.count {
+                closeButtons[index].tag = index
+                closeButtons[index].contentTintColor = theme.secondaryText
+            }
+        }
+
+        refreshActiveIndicator()
+    }
+
+    /// Moves (or creates) the single active-tab indicator to sit under whichever
+    /// tab is active now. Frames come from the buttons themselves so this stays
+    /// correct mid-drag, when a button is off its layout position.
+    private func refreshActiveIndicator() {
+        guard activeTabIndex >= 0, activeTabIndex < tabButtons.count else {
+            activeIndicators.forEach { $0.removeFromSuperview() }
+            activeIndicators.removeAll()
+            return
+        }
+
+        let theme = Theme.shared.current
+        let buttonFrame = tabButtons[activeTabIndex].frame
+        let indicatorFrame = NSRect(x: buttonFrame.origin.x, y: 0, width: buttonFrame.width, height: 2)
+
+        if let indicator = activeIndicators.first {
+            indicator.frame = indicatorFrame
+            indicator.layer?.backgroundColor = theme.activeTabBorder.cgColor
+            return
+        }
+
+        let indicator = NSView(frame: indicatorFrame)
+        indicator.wantsLayer = true
+        indicator.layer?.backgroundColor = theme.activeTabBorder.cgColor
+        indicator.layer?.cornerRadius = 1
+        addSubview(indicator)
+        activeIndicators.append(indicator)
     }
 
     private func rebuildTabButtons() {
@@ -344,28 +414,39 @@ class TabBarView: NSView {
                 return
             }
 
-            // The tab bar can be rebuilt mid-drag (title/agent updates run on
-            // the main queue during event tracking); the captured button and
-            // index are stale then, so abort the drag.
-            guard !tabButtons.isEmpty, index < tabs.count,
-                  button === tabButtons[safe: index] || button.superview === self else {
-                rebuildTabButtons()
-                return
-            }
+            // The tab bar can still be rebuilt mid-gesture (a tab opening or
+            // closing on the main queue during event tracking), which leaves the
+            // captured button detached from the current layout.
+            let buttonIsLive = !tabButtons.isEmpty
+                && (button === tabButtons[safe: index] || button.superview === self)
 
             let point = convert(next.locationInWindow, from: nil)
 
             if next.type == .leftMouseUp {
                 if dragging {
+                    // A reorder can't be resolved against a stale button — the
+                    // frame it was slid to no longer means anything.
+                    guard buttonIsLive, index < tabs.count else {
+                        rebuildTabButtons()
+                        return
+                    }
                     let target = dragTargetIndex(for: button)
-                    if target != index, index < tabs.count {
+                    if target != index {
                         delegate?.tabBar(self, didMoveTab: index, to: target)
                     } else {
                         rebuildTabButtons()
                     }
-                } else {
+                } else if index < tabs.count {
+                    // A plain click still selects the tab it started on, even if
+                    // a rebuild invalidated the button underneath: dropping it
+                    // silently made the user click twice.
                     delegate?.tabBar(self, didSelectTab: index)
                 }
+                return
+            }
+
+            guard buttonIsLive, index < tabs.count else {
+                rebuildTabButtons()
                 return
             }
 
