@@ -161,6 +161,10 @@ class PaneSplitController: NSViewController {
                   let index = panes.firstIndex(of: pane),
                   index != activePaneIndex else { continue }
 
+            // This click's job is done — it picked the pane. Keep its mouse
+            // reports out of the TUI inside, so activating a pane can't also
+            // answer the prompt sitting under the pointer.
+            pane.terminalViewController?.suppressMouseReportsForFocusClick()
             setActivePane(index: index)
             return
         }

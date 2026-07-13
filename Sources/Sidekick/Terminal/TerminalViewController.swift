@@ -108,13 +108,28 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
     /// drag (motion with a button held) — the two are byte-identical otherwise.
     private var mouseButtonDown = false
 
+    /// Set while the click that switched pane focus is in flight. That click
+    /// belongs to Sidekick — its job was picking a pane, so its mouse reports
+    /// must not ALSO reach the app inside and pick whatever option sat under
+    /// the pointer. Armed by the pane-activation monitor (which runs before
+    /// the view sees the mouse-down), disarmed by the gesture's release.
+    private var suppressFocusClickReports = false
+
+    /// Arms the focus-click gate for the in-flight click gesture.
+    func suppressReportsForFocusClick() {
+        suppressFocusClickReports = true
+    }
+
     /// Force-clears the button-held latch. The latch is normally cleared by the
     /// release report passing through `send`, but a mouse-up that Sidekick
     /// swallows (a click on a link) never produces one, so the physical mouse-up
     /// handler calls this directly. Otherwise the latch stays stuck `true` and
     /// later hover motion on the alternate screen is mis-forwarded as a drag.
+    /// The focus-click gate is cleared here too: a focusing click over an app
+    /// with mouse reporting off produces no release report to disarm it.
     func clearMouseButtonLatch() {
         mouseButtonDown = false
+        suppressFocusClickReports = false
     }
 
     /// Bytes of a multibyte UTF-8 rune that arrived split across PTY reads,
@@ -159,10 +174,24 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         // Track button state from the press/release reports we forward, so we
         // can tell a hover from a drag below.
-        switch MouseReportClassifier.buttonTransition(data) {
+        let transition = MouseReportClassifier.buttonTransition(data)
+        switch transition {
         case .press:   mouseButtonDown = true
         case .release: mouseButtonDown = false
         case .none:    break
+        }
+
+        // The click that switched pane focus: drop its press, drag motion, and
+        // release so "click to activate this pane" can't double as "answer the
+        // prompt in it". Keystrokes and focus in/out reports still pass.
+        if suppressFocusClickReports {
+            if transition == .release {
+                suppressFocusClickReports = false
+                return
+            }
+            if transition == .press || MouseReportClassifier.isMouseMotionReport(data) {
+                return
+            }
         }
 
         // Pointer motion belongs to Sidekick — selection, scrollback, link
@@ -181,6 +210,15 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
         if MouseReportClassifier.isMouseMotionReport(data) {
             let dragInAltScreen = mouseButtonDown && getTerminal().isCurrentBufferAlternate
             if !dragInAltScreen { return }
+        }
+        // Clicks on the NORMAL screen belong to Sidekick too — the same
+        // decision the scroll-wheel gate makes. Claude Code and other inline
+        // REPLs keep mouse reporting on, so a click that was only meant to
+        // land focus (or check which pane is active) silently picked whatever
+        // prompt option sat under the pointer; answering is arrows + Enter.
+        // Alternate-screen TUIs (vim, lazygit) keep full click support.
+        if transition != .none, !getTerminal().isCurrentBufferAlternate {
+            return
         }
         // Focus and mouse reports are emitted by the emulator itself when the
         // view is focused, clicked, or hovered — the user didn't type them, so
@@ -1427,6 +1465,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     func focusTerminal() {
         view.window?.makeFirstResponder(terminalView)
+    }
+
+    /// The in-flight click's purpose was switching pane focus; its mouse
+    /// reports must not reach the app in this terminal. Called by the
+    /// pane-activation monitor before the view processes the mouse-down.
+    func suppressMouseReportsForFocusClick() {
+        (terminalView as? AgentAwareTerminalView)?.suppressReportsForFocusClick()
     }
 
     /// True when keyboard input is actually going to this terminal (not an
