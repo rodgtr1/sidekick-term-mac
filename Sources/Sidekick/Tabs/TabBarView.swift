@@ -35,6 +35,19 @@ class TabBarView: NSView {
     private let tabHorizontalPadding: CGFloat = 12
     private var lastTabWidth: CGFloat = 120
 
+    /// The button being slid in an in-progress drag-reorder. Title refreshes
+    /// from working agents dirty layout many times a second, and a layout pass
+    /// snaps every button back to its slot — which froze the drag in place.
+    /// repositionTabButtons skips this button while the gesture runs, and lays
+    /// the others out at their preview slots (see previewSlot) so mid-drag
+    /// refreshes reinforce the shifted arrangement instead of undoing it.
+    private var draggingButton: NSButton?
+    private var dragSourceIndex: Int?
+    private var dragPreviewTarget: Int?
+    /// The dragged tab's close button, hidden for the duration of the gesture
+    /// (it would otherwise sit stranded at the origin slot).
+    private var draggedCloseButton: NSButton?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setupView()
@@ -196,6 +209,10 @@ class TabBarView: NSView {
     }
 
     private func rebuildTabButtons() {
+        // A rebuild discards the buttons a drag gesture is tracking; drop the
+        // gesture state with them so preview-slot math doesn't outlive it.
+        clearDragState()
+
         // Remove existing buttons
         tabButtons.forEach { $0.removeFromSuperview() }
         closeButtons.forEach { $0.removeFromSuperview() }
@@ -406,6 +423,7 @@ class TabBarView: NSView {
         let startPoint = convert(event.locationInWindow, from: nil)
         let originalX = button.frame.origin.x
         var dragging = false
+        defer { clearDragState() }
 
         while true {
             guard let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else {
@@ -423,6 +441,7 @@ class TabBarView: NSView {
             let point = convert(next.locationInWindow, from: nil)
 
             if next.type == .leftMouseUp {
+                clearDragState()
                 if dragging {
                     // A reorder can't be resolved against a stale button — the
                     // frame it was slid to no longer means anything.
@@ -433,6 +452,10 @@ class TabBarView: NSView {
                     let target = dragTargetIndex(for: button)
                     if target != index {
                         delegate?.tabBar(self, didMoveTab: index, to: target)
+                        // The delegate restyled the buttons for the new order;
+                        // snap frames to match (the dragged button is still at
+                        // its drop position).
+                        repositionTabButtons()
                     } else {
                         rebuildTabButtons()
                     }
@@ -454,12 +477,28 @@ class TabBarView: NSView {
             if dragging || abs(deltaX) > 6 {
                 if !dragging {
                     dragging = true
+                    draggingButton = button
+                    dragSourceIndex = index
+                    dragPreviewTarget = index
+                    draggedCloseButton = closeButtons[safe: index]
+                    draggedCloseButton?.isHidden = true
                     // Keep the dragged tab above its siblings while it slides.
                     button.removeFromSuperview()
                     addSubview(button)
                 }
                 let maxX = bounds.width - button.frame.width
                 button.frame.origin.x = min(max(0, originalX + deltaX), max(0, maxX))
+
+                // Live shift: as the drag crosses into a new slot, slide the
+                // other tabs to where they would land if dropped here.
+                let target = dragTargetIndex(for: button)
+                if target != dragPreviewTarget {
+                    dragPreviewTarget = target
+                    applyDragPreviewShift()
+                }
+                // Keep the active-tab underline glued to its button, which may
+                // be the one sliding under the cursor.
+                refreshActiveIndicator()
             }
         }
     }
@@ -468,6 +507,45 @@ class TabBarView: NSView {
         guard !tabs.isEmpty else { return 0 }
         let slot = Int(round(button.frame.origin.x / (lastTabWidth + tabSpacing)))
         return min(max(0, slot), tabs.count - 1)
+    }
+
+    /// The slot a button at `index` (array order) should display at, given the
+    /// in-flight drag: tabs between the drag's source and its current hover
+    /// target shift one slot toward the vacated side. Identity outside a drag.
+    private func previewSlot(for index: Int) -> Int {
+        guard let source = dragSourceIndex, let target = dragPreviewTarget else { return index }
+        if index == source { return target }
+        if source < target && index > source && index <= target { return index - 1 }
+        if target < source && index >= target && index < source { return index + 1 }
+        return index
+    }
+
+    /// Animates every non-dragged tab (and its close button) to its preview
+    /// slot for the current hover target.
+    private func applyDragPreviewShift() {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            for (index, button) in tabButtons.enumerated() where button !== draggingButton {
+                let x = CGFloat(previewSlot(for: index)) * (lastTabWidth + tabSpacing)
+                var frame = button.frame
+                frame.origin.x = x
+                button.animator().frame = frame
+                if let closeButton = closeButtons[safe: index] {
+                    var closeFrame = closeButton.frame
+                    closeFrame.origin.x = x + frame.width - closeButtonSize - 8
+                    closeButton.animator().frame = closeFrame
+                }
+            }
+        }
+    }
+
+    private func clearDragState() {
+        draggingButton = nil
+        dragSourceIndex = nil
+        dragPreviewTarget = nil
+        draggedCloseButton?.isHidden = false
+        draggedCloseButton = nil
     }
 
     // MARK: - Right-click menu (rename)
@@ -564,8 +642,10 @@ class TabBarView: NSView {
         lastTabWidth = tabWidth
 
         for (index, button) in tabButtons.enumerated() {
-            let x = CGFloat(index) * (tabWidth + tabSpacing)
-            button.frame = NSRect(x: x, y: 0, width: tabWidth, height: tabHeight)
+            let x = CGFloat(previewSlot(for: index)) * (tabWidth + tabSpacing)
+            if button !== draggingButton {
+                button.frame = NSRect(x: x, y: 0, width: tabWidth, height: tabHeight)
+            }
             if index < closeButtons.count {
                 closeButtons[index].frame = NSRect(
                     x: x + tabWidth - closeButtonSize - 8,
@@ -576,10 +656,9 @@ class TabBarView: NSView {
             }
         }
 
-        if let indicator = activeIndicators.first, activeTabIndex < tabButtons.count {
-            let x = CGFloat(activeTabIndex) * (tabWidth + tabSpacing)
-            indicator.frame = NSRect(x: x, y: 0, width: tabWidth, height: 2)
-        }
+        // Frames may be off their array slots mid-drag; let the indicator
+        // follow the active button wherever it currently sits.
+        refreshActiveIndicator()
     }
 }
 
