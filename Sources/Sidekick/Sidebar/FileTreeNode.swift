@@ -29,8 +29,11 @@ nonisolated final class FileTreeNode: @unchecked Sendable {
 
     var icon: NSImage? {
         if isDirectory {
+            // SF Symbols has no "folder.open"; a nonexistent name returns nil
+            // and the row renders glyph-less, so expanded folders stop looking
+            // like folders. Use the filled variant for the open state instead.
             return isExpanded ?
-                NSImage(systemSymbolName: "folder.open", accessibilityDescription: "Open folder") :
+                NSImage(systemSymbolName: "folder.fill", accessibilityDescription: "Open folder") :
                 NSImage(systemSymbolName: "folder", accessibilityDescription: "Folder")
         } else {
             if #available(macOS 12.0, *) {
@@ -86,9 +89,15 @@ nonisolated final class FileTreeNode: @unchecked Sendable {
         guard isDirectory else { return [] }
 
         do {
+            // Foundation won't enumerate a symlinked directory via the link's
+            // own URL (POSIX "Not a directory"), so scan the resolved target.
+            // Children are rebased back under `url` below, keeping the whole
+            // tree — and the gitignore/reveal path prefixes — in the display
+            // root's path-space.
+            let scanURL = url.resolvingSymlinksInPath()
             let contents = try FileManager.default.contentsOfDirectory(
-                at: url,
-                includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey],
+                at: scanURL,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isHiddenKey],
                 options: [.skipsPackageDescendants]
             )
 
@@ -97,8 +106,24 @@ nonisolated final class FileTreeNode: @unchecked Sendable {
             // each child node's initializer.
             let entries: [(url: URL, isDirectory: Bool)] = contents
                 .map { childURL in
-                    let isDir = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                    return (childURL, isDir)
+                    let values = try? childURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                    var isDir = values?.isDirectory ?? false
+                    // isDirectoryKey describes the link itself, so a symlink to
+                    // a directory reads as a file and can never be expanded.
+                    // Resolve links the way Finder does (pnpm node_modules and
+                    // build trees are full of them); fileExists follows the
+                    // link and is false for broken ones.
+                    if !isDir, values?.isSymbolicLink == true {
+                        var resolvedIsDir: ObjCBool = false
+                        isDir = FileManager.default.fileExists(atPath: childURL.path, isDirectory: &resolvedIsDir)
+                            && resolvedIsDir.boolValue
+                    }
+                    // Rebase entries scanned via a resolved symlink back under
+                    // this node's URL (identical when no link was involved).
+                    let rebased = scanURL == url
+                        ? childURL
+                        : url.appendingPathComponent(childURL.lastPathComponent, isDirectory: isDir)
+                    return (rebased, isDir)
                 }
                 .sorted { lhs, rhs in
                     // Directories first, then alphabetical
