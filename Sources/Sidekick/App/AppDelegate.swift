@@ -30,6 +30,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // Keep the on-disk shell integration scripts in sync with this build
         ShellIntegration.installScripts()
 
+        // Same idea for the CLI helpers the from-source installer copied into
+        // ~/.local/bin: an app upgrade used to leave them behind, and every way
+        // a stale helper fails is silent. Refreshes off the main thread.
+        InstalledHelperRefresher.refreshOnLaunch()
+
         // Clear out yesterday's pasted-image temp files
         DispatchQueue.global(qos: .utility).async {
             ImagePasteStore.pruneOldFiles()

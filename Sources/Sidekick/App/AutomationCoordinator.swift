@@ -442,6 +442,19 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         completion(IPCResponse())
     }
 
+    /// The report that triggered this is being delivered regardless (see the
+    /// call site in IPCServer) — an old helper reporting `busy` is still telling
+    /// the truth about `busy`. What it can't do is speak any part of the contract
+    /// added since it was installed, so the pane it named flags itself once.
+    func ipcServer(
+        _ server: IPCServer,
+        didReceiveStaleAgentStatusReport paneID: UUID,
+        protocolVersion: Int
+    ) {
+        guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else { return }
+        terminal.noteStaleAgentStatusHelper(reportedVersion: protocolVersion)
+    }
+
     private func handlePaneList(completion: @escaping @Sendable (IPCResponse) -> Void) {
         completion(IPCResponse(result: IPCResult(panes: allAutomationPaneInfo())))
     }

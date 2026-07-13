@@ -222,6 +222,27 @@ hooks to `~/.claude/settings.json` and `~/.codex/config.toml`
 (`UserPromptSubmit` → busy, `PermissionRequest` → ready, `Stop` → done).
 Restart open Claude Code/Codex sessions after installing.
 
+#### Keeping the helpers current
+
+The hooks name the `~/.local/bin` copies by absolute path, so those binaries,
+not the ones in the app bundle, are what your agents actually run. Sidekick
+refreshes them on launch: if a helper in `~/.local/bin` differs from the copy
+this build ships, it is replaced with the bundled one (atomically, so a hook
+firing mid-swap never sees a partial binary). Helpers you never installed are
+never created, and only `sidekick-agent-status` and `sidekick-mcp`, the two the
+installer owns, are managed.
+
+So after upgrading Sidekick, relaunch it once and your helpers come along. If
+you run from source, `swift run` builds deliberately skip the refresh (a working
+tree is a moving target, and it would overwrite your installed helper with
+whatever is on the current branch); re-run `scripts/install-agent-status-hooks`
+after pulling instead.
+
+If a pane's hook is still running a helper older than the app's wire protocol,
+Sidekick says so once in that pane, and logs it to
+`~/Library/Logs/Sidekick/Sidekick.log`. The report is still honored: a stale
+helper is a warning, never a rejection.
+
 ## Configuration
 
 Sidekick loads `~/.config/sidekick/config.toml`, created with defaults on

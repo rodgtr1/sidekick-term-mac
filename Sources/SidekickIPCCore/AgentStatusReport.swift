@@ -22,6 +22,37 @@ public enum AgentStatusReport {
     /// The terminal property the OSC 666 sequence carries.
     public static let termprop = "vte.ext.sidekick.agent"
 
+    /// Wire-protocol version of the `agent_status` IPC payload, sent by the hook
+    /// helper and checked by the app. Bump it when the hook contract changes —
+    /// a new required field, a changed status vocabulary, a different addressing
+    /// scheme — so a helper left behind by an app upgrade becomes *visible*
+    /// instead of silently misreporting. (Every mismatch failure mode in this
+    /// path is silent by design: a hook must never disrupt the agent.)
+    ///
+    /// v1: the socket transport itself — pane-addressed `agent_status` with a
+    /// declared version. Helpers older than that send no version field at all.
+    public static let protocolVersion = 1
+
+    /// What a report with no `protocol_version` field means: a pre-handshake
+    /// helper (everything shipped up to and including commit 316e143). Absence
+    /// is information, not an error — those helpers exist in the wild, they just
+    /// can't say so.
+    public static let legacyProtocolVersion = 0
+
+    /// Whether a report came from a helper older than this build speaks.
+    ///
+    /// Deliberately one-directional: a *newer* (unknown) version is never stale
+    /// and must never be rejected — an old app has no business refusing a report
+    /// from a helper that a newer app installed, and the status vocabulary it
+    /// carries is additive.
+    public static func isStale(protocolVersion reported: Int?) -> Bool {
+        (reported ?? legacyProtocolVersion) < protocolVersion
+    }
+
+    /// The payload key carrying `protocolVersion`. Shared so the helper that
+    /// writes it and the app that reads it can't drift.
+    public static let protocolVersionKey = "protocol_version"
+
     /// The four statuses a hook may report. The raw values are what both
     /// transports put on the wire, and what `AgentStateDetector` parses.
     public enum Status: String, Sendable, CaseIterable {
@@ -59,7 +90,15 @@ public enum AgentStatusReport {
 
     /// The pane-addressed IPC command for `status` — the out-of-band transport,
     /// used when the hook has no controlling terminal to write the escape to.
+    ///
+    /// Carries `protocol_version` so the app can tell a helper this build shipped
+    /// from one an upgrade left behind in `~/.local/bin`.
     public static func ipcCommand(status: Status, paneID: String) -> [String: Any] {
-        ["action": "agent_status", "pane_id": paneID, "status": status.rawValue]
+        [
+            "action": "agent_status",
+            "pane_id": paneID,
+            "status": status.rawValue,
+            protocolVersionKey: protocolVersion
+        ]
     }
 }

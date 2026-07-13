@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import SidekickIPCCore
 import SidekickTelemetryCore
 
 // MARK: - IPC Command Types
@@ -33,11 +34,16 @@ nonisolated struct IPCCommand: Codable, Sendable {
     let backlog: Bool?
     /// JSON-encoded `TranscriptUsage` blob for a `report_telemetry` call.
     let telemetry: String?
+    /// Wire-protocol version declared by an `agent_status` report. Absent from
+    /// pre-handshake helpers, which is exactly what makes them detectable —
+    /// see `AgentStatusReport.legacyProtocolVersion`.
+    let protocolVersion: Int?
 
     enum CodingKeys: String, CodingKey {
         case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, since, status, match, format, worktree, force, type, backlog, telemetry
         case paneID = "pane_id"
         case timeoutMS = "timeout_ms"
+        case protocolVersion = "protocol_version"
     }
 }
 
@@ -206,6 +212,22 @@ nonisolated enum IPCCommandType {
     static func from(_ command: IPCCommand) -> IPCCommandType? {
         guard case .command(let commandType) = parse(command) else { return nil }
         return commandType
+    }
+
+    /// The pane and version of an `agent_status` report whose helper is older
+    /// than the wire protocol this build speaks, or nil when there's nothing to
+    /// warn about (a current or future helper, or another command entirely).
+    ///
+    /// Read alongside `parse`, never instead of it: the staleness verdict is a
+    /// *side* observation, so the report itself is delivered either way. A helper
+    /// that can't say what it speaks (no `protocol_version` field) counts as v0 —
+    /// that's every helper shipped before this handshake existed, and the whole
+    /// reason a stale `~/.local/bin` copy was invisible.
+    static func staleAgentStatusReport(_ command: IPCCommand) -> (paneID: UUID, protocolVersion: Int)? {
+        guard command.action == "agent_status",
+              let paneID = uuid(command.paneID),
+              AgentStatusReport.isStale(protocolVersion: command.protocolVersion) else { return nil }
+        return (paneID, command.protocolVersion ?? AgentStatusReport.legacyProtocolVersion)
     }
 
     static func parse(_ command: IPCCommand) -> ParseResult {
@@ -414,6 +436,16 @@ protocol IPCServerDelegate: AnyObject {
         _ server: IPCServer,
         didReceiveCommand command: IPCCommandType,
         completion: @escaping @Sendable (IPCResponse) -> Void
+    )
+
+    /// A pane's `agent_status` hook spoke an older wire protocol than this build.
+    /// Called on the main thread just *before* the report itself is delivered:
+    /// the report is always honored, this is only how the app gets to say that
+    /// the helper behind it needs refreshing.
+    func ipcServer(
+        _ server: IPCServer,
+        didReceiveStaleAgentStatusReport paneID: UUID,
+        protocolVersion: Int
     )
 }
 
@@ -768,6 +800,16 @@ nonisolated final class IPCServer: @unchecked Sendable {
                     self.sendResponse(IPCResponse(ok: false, error: "No delegate"), to: clientFD)
                     close(clientFD)
                     return
+                }
+
+                // A stale helper still gets its report through — this only notes
+                // the version gap so the pane can say so once.
+                if let stale = IPCCommandType.staleAgentStatusReport(command) {
+                    delegate.ipcServer(
+                        self,
+                        didReceiveStaleAgentStatusReport: stale.paneID,
+                        protocolVersion: stale.protocolVersion
+                    )
                 }
 
                 let responded = OnceLatch()

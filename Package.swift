@@ -63,6 +63,10 @@ let package = Package(
                 "SwiftTerm",
                 "TOMLKit",
                 "SidekickTelemetryCore",
+                // The app parses what the CLI helpers send, so it shares their
+                // wire definitions (AgentStatusReport) rather than keeping a
+                // second copy of the protocol version in sync by hand.
+                "SidekickIPCCore",
                 .product(name: "SwiftTreeSitter", package: "SwiftTreeSitter"),
                 .product(name: "TreeSitterSwift", package: "tree-sitter-swift"),
                 .product(name: "TreeSitterGo", package: "tree-sitter-go"),

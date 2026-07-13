@@ -1,4 +1,5 @@
 import Cocoa
+import SidekickIPCCore
 import SwiftTerm
 
 protocol TerminalViewControllerDelegate: AnyObject {
@@ -255,9 +256,15 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     // Dev-server detection
     private var serverBannerDetector = ServerBannerDetector()
-    private var serverBannerView: NSView?
-    private var serverBannerDismissWork: DispatchWorkItem?
     private var detectedServerURL: URL?
+
+    // The pane's one advisory bar (see showBanner): at most one showing at a time.
+    private var bannerView: NSView?
+    private var bannerDismissWork: DispatchWorkItem?
+
+    // True once this pane has warned about a stale agent-status helper, so a hook
+    // firing on every prompt doesn't re-raise the same banner all session.
+    private var warnedStaleAgentStatusHelper = false
 
     // True once the shell has produced any output (prompt drawn). Gates
     // `sendOnShellReady` so a startup command waits for the prompt, not a timer.
@@ -1039,8 +1046,24 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     private func showServerBanner(for url: URL) {
-        hideServerBanner()
         detectedServerURL = url
+        let host = url.host ?? "localhost"
+        let port = url.port.map { ":\($0)" } ?? ""
+        showBanner(title: "Open \(host)\(port) in browser", action: #selector(serverBannerOpenClicked))
+    }
+
+    // MARK: - Pane advisory banner
+
+    /// The pane's advisory bar: a small non-modal strip at the top of the
+    /// terminal with one primary action and a ✕, auto-dismissing after 20s. It
+    /// is the app's lightest way to tell the user something about *this* pane —
+    /// the dev-server offer uses it, and so does the stale-helper warning below.
+    /// One at a time: a second call replaces whatever is showing.
+    ///
+    /// `action` nil makes the title itself the dismiss button, for a banner that
+    /// only has something to say.
+    private func showBanner(title: String, action: Selector?) {
+        hideBanner()
 
         let banner = NSView()
         banner.wantsLayer = true
@@ -1050,23 +1073,21 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         banner.layer?.borderColor = Theme.shared.palette.surface1.cgColor
         banner.translatesAutoresizingMaskIntoConstraints = false
 
-        let host = url.host ?? "localhost"
-        let port = url.port.map { ":\($0)" } ?? ""
-        let openButton = NSButton(
-            title: "Open \(host)\(port) in browser",
+        let titleButton = NSButton(
+            title: title,
             target: self,
-            action: #selector(serverBannerOpenClicked)
+            action: action ?? #selector(bannerDismissClicked)
         )
-        openButton.bezelStyle = .inline
-        openButton.isBordered = false
-        openButton.contentTintColor = AppTheme.accent
-        openButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        openButton.translatesAutoresizingMaskIntoConstraints = false
+        titleButton.bezelStyle = .inline
+        titleButton.isBordered = false
+        titleButton.contentTintColor = action == nil ? AppTheme.mutedText : AppTheme.accent
+        titleButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        titleButton.translatesAutoresizingMaskIntoConstraints = false
 
         let closeButton = NSButton(
             title: "✕",
             target: self,
-            action: #selector(serverBannerDismissClicked)
+            action: #selector(bannerDismissClicked)
         )
         closeButton.bezelStyle = .inline
         closeButton.isBordered = false
@@ -1074,7 +1095,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         closeButton.font = NSFont.systemFont(ofSize: 11)
         closeButton.translatesAutoresizingMaskIntoConstraints = false
 
-        banner.addSubview(openButton)
+        banner.addSubview(titleButton)
         banner.addSubview(closeButton)
         view.addSubview(banner)
 
@@ -1083,39 +1104,67 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             banner.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             banner.heightAnchor.constraint(equalToConstant: 30),
 
-            openButton.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 10),
-            openButton.centerYAnchor.constraint(equalTo: banner.centerYAnchor),
+            titleButton.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 10),
+            titleButton.centerYAnchor.constraint(equalTo: banner.centerYAnchor),
 
-            closeButton.leadingAnchor.constraint(equalTo: openButton.trailingAnchor, constant: 8),
+            closeButton.leadingAnchor.constraint(equalTo: titleButton.trailingAnchor, constant: 8),
             closeButton.trailingAnchor.constraint(equalTo: banner.trailingAnchor, constant: -8),
             closeButton.centerYAnchor.constraint(equalTo: banner.centerYAnchor)
         ])
 
-        serverBannerView = banner
+        bannerView = banner
 
         let dismissWork = DispatchWorkItem { [weak self] in
-            self?.hideServerBanner()
+            self?.hideBanner()
         }
-        serverBannerDismissWork = dismissWork
+        bannerDismissWork = dismissWork
         DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: dismissWork)
     }
 
-    private func hideServerBanner() {
-        serverBannerDismissWork?.cancel()
-        serverBannerDismissWork = nil
-        serverBannerView?.removeFromSuperview()
-        serverBannerView = nil
+    private func hideBanner() {
+        bannerDismissWork?.cancel()
+        bannerDismissWork = nil
+        bannerView?.removeFromSuperview()
+        bannerView = nil
     }
 
     @objc private func serverBannerOpenClicked() {
         if let url = detectedServerURL {
             delegate?.terminalRequestsOpenURL(self, url: url)
         }
-        hideServerBanner()
+        hideBanner()
     }
 
-    @objc private func serverBannerDismissClicked() {
-        hideServerBanner()
+    @objc private func bannerDismissClicked() {
+        hideBanner()
+    }
+
+    // MARK: - Stale agent-status helper
+
+    /// A status hook running against this pane reported over an older wire
+    /// protocol than this build speaks: its `sidekick-agent-status` binary
+    /// predates part of the contract, so some of what it reports (or fails to)
+    /// is going nowhere — silently, because a hook must never disrupt the agent.
+    ///
+    /// Said once per pane, not once per report: the hook fires on every prompt,
+    /// tool call, and stop.
+    func noteStaleAgentStatusHelper(reportedVersion: Int) {
+        guard !warnedStaleAgentStatusHelper else { return }
+        warnedStaleAgentStatusHelper = true
+
+        Log.error(
+            "Pane \(paneID.uuidString): agent-status hook reported wire protocol "
+                + "v\(reportedVersion), but this build speaks v\(AgentStatusReport.protocolVersion). "
+                + "The installed sidekick-agent-status is stale — relaunch Sidekick to refresh "
+                + "~/.local/bin, or re-run scripts/install-agent-status-hooks.",
+            category: "ipc"
+        )
+        // Not "reinstall from Preferences → Agents": that installer dedups hooks
+        // by binary name, so it leaves an existing ~/.local/bin hook entry (and
+        // its stale binary) exactly where it is. Relaunching runs the self-heal,
+        // and the installer script rebuilds the binary in place; both fix the
+        // hook where it already points. The log line names the versions.
+        showBanner(title: "Agent status helper is out of date — relaunch Sidekick or re-run the installer", action: nil)
     }
 
     // MARK: - Shell integration (OSC 133 command marks)

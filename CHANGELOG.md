@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Cmd+W (close tab) and Shift+Cmd+W (close pane) now ask for confirmation before killing sessions, calling out any agents still working there. On by default; disable in Preferences > General or with `confirm_close = false` under `[behavior]`.
+- Agent-status and MCP helpers installed in `~/.local/bin` are refreshed on launch when they differ from the copies the app ships, so an upgrade no longer leaves your Claude/Codex hooks running weeks-old binaries. Absent helpers are never created, and the swap is atomic. Running from source, `swift run` builds skip this; re-run `scripts/install-agent-status-hooks`.
+- The `agent_status` socket report now carries a wire-protocol version. A pane whose hook reports over an older protocol than the app speaks flags it once, in the pane and in the log, instead of failing silently. Reports are always honored, whatever version they declare.
 
 ## 0.2.0 (2026-07-03)
 
