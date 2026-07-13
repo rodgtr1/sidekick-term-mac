@@ -68,11 +68,19 @@ The worktree is created in a sibling `<repo>.worktrees/<branch>` directory from 
 
 ## Coordinate panes
 
-Inspect output already produced:
+Inspect output already produced. Monitoring is state-driven, not a poll: block on a wait (below), then take one bounded read. Never loop on `pane read`.
+
+Prefer `--source visible` for a progress check; it is the screen, so it is bounded and cheap:
 
 ```sh
 sidekick-ctl pane read "$WORKER_PANE" --source visible --lines 60
+```
+
+Reach for `--source recent` only when you genuinely need history. It returns the pane's scrollback transcript plus a `cursor` on stderr; pass that cursor back as `--since` so a follow-up read returns just what arrived after it, instead of the whole buffer again:
+
+```sh
 sidekick-ctl pane read "$WORKER_PANE" --source recent --lines 200
+sidekick-ctl pane read "$WORKER_PANE" --source recent --since "$CURSOR"
 ```
 
 For structured command history instead of a raw screen scrape, add `--json`. It

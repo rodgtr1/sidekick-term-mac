@@ -190,10 +190,14 @@ sidekick-ctl pane split "$SIDEKICK_PANE_ID" \
 sidekick-ctl pane split "$SIDEKICK_PANE_ID" \
   --worktree feature/login --no-focus --exec claude
 
-# Control and inspect a pane
+# Control a pane, then block on it and read once (never poll in a loop)
 sidekick-ctl pane run "$PANE_ID" "Review the API error handling"
-sidekick-ctl pane read "$PANE_ID" --source recent --lines 100
 sidekick-ctl wait agent-status "$PANE_ID" done --timeout 600000
+sidekick-ctl pane read "$PANE_ID" --source visible --lines 60
+
+# Need history rather than a progress peek? Read the scrollback transcript, and
+# pass the cursor it prints back as --since so the next read is only the delta
+sidekick-ctl pane read "$PANE_ID" --source recent --lines 200
 
 # Subscribe to a live JSONL event stream: agent-state transitions,
 # command completions, and edit-approval decisions

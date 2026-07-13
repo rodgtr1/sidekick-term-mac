@@ -33,11 +33,79 @@ nonisolated enum TerminalText {
     /// Keeps the last `lineLimit` newline-delimited lines of `text` (all of it
     /// when `lineLimit` is nil or non-positive). Shared by the pane readers so
     /// line-capping stays identical across visible/recent/delta reads.
+    ///
+    /// Only ever run this on text a terminal has already interpreted (a screen
+    /// scrape, or `transcript`'s output). On a raw byte stream a spinner's
+    /// hundreds of `\r` redraw frames are one "line", so the cap trims nothing.
     static func lastLines(of text: String, limit lineLimit: Int?) -> String {
         guard let lineLimit, lineLimit > 0 else { return text }
         return text.split(separator: "\n", omittingEmptySubsequences: false)
             .suffix(lineLimit)
             .joined(separator: "\n")
+    }
+
+    /// Collapses each carriage-return overwrite run to the frame a screen would
+    /// still be showing: the last non-empty segment written after a `\r`. A TUI
+    /// redraws its spinner or progress bar by rewriting the same line hundreds of
+    /// times, which costs a real terminal nothing but turns a raw byte log into a
+    /// wall of near-identical frames.
+    ///
+    /// Iterates unicode scalars, not characters, because Swift graphemes cluster
+    /// `\r\n` into a single Character — a line-splitter that matches on "\n"
+    /// silently skips every CRLF-terminated line.
+    static func collapseCarriageReturns(_ text: String) -> String {
+        guard text.unicodeScalars.contains("\r") else { return text }
+        var result = ""
+        result.reserveCapacity(text.unicodeScalars.count)
+        // `frame` is what has been written since the last `\r`; `lastDrawn` the
+        // last frame that had content, so a run ending in a bare `\r` (a CRLF, or
+        // an erase-line whose CSI was already stripped) keeps the frame before it
+        // rather than blanking the line.
+        var frame = ""
+        var lastDrawn = ""
+        func endLine() {
+            result += frame.isEmpty ? lastDrawn : frame
+            frame = ""
+            lastDrawn = ""
+        }
+        for scalar in text.unicodeScalars {
+            switch scalar {
+            case "\n":
+                endLine()
+                result.unicodeScalars.append(scalar)
+            case "\r":
+                if !frame.isEmpty { lastDrawn = frame }
+                frame = ""
+            default:
+                frame.unicodeScalars.append(scalar)
+            }
+        }
+        endLine()
+        return result
+    }
+
+    /// Normalizes a raw terminal byte stream into a readable transcript: strips
+    /// CSI *and* OSC control sequences, collapses `\r` redraw runs, and only then
+    /// applies the line cap — cap last, so a noisy TUI can't spend the whole
+    /// budget on redraw frames and control chatter.
+    static func transcript(_ raw: String, limit lineLimit: Int?) -> String {
+        let stripped = stripOSCSequences(stripANSIEscapes(raw))
+        return lastLines(of: collapseCarriageReturns(stripped), limit: lineLimit)
+    }
+
+    /// Caps a dump of the terminal's interpreted line buffer (scrollback +
+    /// screen). The rows carry no escape sequences — the emulator consumed them —
+    /// so this only drops the blank rows the screen keeps below the cursor, which
+    /// would otherwise eat the line budget, and applies the cap.
+    static func transcript(screen: String, limit lineLimit: Int?) -> String {
+        var rows = screen.split(separator: "\n", omittingEmptySubsequences: false)[...]
+        while let last = rows.last, last.allSatisfy(\.isWhitespace) {
+            rows = rows.dropLast()
+        }
+        if let lineLimit, lineLimit > 0 {
+            rows = rows.suffix(lineLimit)
+        }
+        return rows.joined(separator: "\n")
     }
 
     /// The outcome of a cursor-scoped delta read of a rolling output buffer.
@@ -69,7 +137,7 @@ nonisolated enum TerminalText {
     ) -> RecentDelta {
         let cursor = "\(generation):\(total)"
         func full(truncated: Bool) -> RecentDelta {
-            RecentDelta(text: lastLines(of: stripANSIEscapes(buffer), limit: lineLimit),
+            RecentDelta(text: transcript(buffer, limit: lineLimit),
                         cursor: cursor, truncated: truncated)
         }
         guard let since else { return full(truncated: false) }
@@ -83,8 +151,43 @@ nonisolated enum TerminalText {
         // codepoint or trap on a grapheme boundary.
         let utf8 = buffer.utf8
         let start = utf8.index(utf8.startIndex, offsetBy: offset - dropped)
-        let delta = stripANSIEscapes(String(decoding: utf8[start...], as: UTF8.self))
-        return RecentDelta(text: lastLines(of: delta, limit: lineLimit), cursor: cursor, truncated: false)
+        let delta = transcript(String(decoding: utf8[start...], as: UTF8.self), limit: lineLimit)
+        return RecentDelta(text: delta, cursor: cursor, truncated: false)
+    }
+
+    /// Everything a `recent` pane read needs, copied off the terminal on the main
+    /// thread so the normalization (two regex passes, the redraw collapse, the
+    /// line cap) can run on a background queue. `screen` is the interpreted line
+    /// buffer (scrollback + screen), nil on the alternate screen — a full-screen
+    /// TUI's buffer holds no history, so there only the raw stream has one.
+    struct RecentReadSnapshot: Sendable {
+        let screen: String?
+        let buffer: String
+        let total: Int
+        let dropped: Int
+        let generation: Int
+    }
+
+    /// Resolves a `recent` read from a `RecentReadSnapshot`, off the main thread.
+    ///
+    /// A full read (no cursor, or a stale one that has to re-sync) is served from
+    /// the interpreted line buffer when there is one: the emulator already applied
+    /// the `\r`, backspaces, erase-lines and cursor moves that the raw stream only
+    /// describes, so its text collapses TUI redraw noise for free. Delta reads keep
+    /// the raw byte cursor — cursors stay `generation:total` against the rolling
+    /// buffer — and get the same normalization on the way out.
+    static func recentRead(_ snapshot: RecentReadSnapshot, since: String?, lineLimit: Int?) -> RecentDelta {
+        let delta = recentDelta(
+            buffer: snapshot.buffer,
+            total: snapshot.total,
+            dropped: snapshot.dropped,
+            generation: snapshot.generation,
+            since: since,
+            lineLimit: lineLimit)
+        let isFullRead = since == nil || delta.truncated
+        guard isFullRead, let screen = snapshot.screen else { return delta }
+        return RecentDelta(text: transcript(screen: screen, limit: lineLimit),
+                           cursor: delta.cursor, truncated: delta.truncated)
     }
 
     /// Parses a `"<generation>:<offset>"` cursor, returning the byte offset only

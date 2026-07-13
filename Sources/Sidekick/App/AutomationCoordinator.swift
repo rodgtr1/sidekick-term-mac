@@ -586,9 +586,17 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         } else if source == "recent" {
             // Only the recent-output buffer has a stable cursor; a `since` delta
             // read reports the new cursor (and `truncated` when it re-synced).
-            let delta = terminal.recentOutputDelta(since: since, lineLimit: lines)
-            completion(IPCResponse(result: IPCResult(
-                text: delta.text, cursor: delta.cursor, truncated: delta.truncated ? true : nil)))
+            //
+            // IPC commands run on the main thread, and normalizing a recent read
+            // is real work: two regex passes over a 64KB stream, a redraw collapse,
+            // a line cap. So copy the pane's buffers here (cheap) and do the rest
+            // on a background queue — `sendResponse` already runs off main.
+            let snapshot = terminal.recentReadSnapshot()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let read = TerminalText.recentRead(snapshot, since: since, lineLimit: lines)
+                completion(IPCResponse(result: IPCResult(
+                    text: read.text, cursor: read.cursor, truncated: read.truncated ? true : nil)))
+            }
         } else {
             completion(IPCResponse(result: IPCResult(text: terminal.visibleScreenText(lineLimit: lines))))
         }

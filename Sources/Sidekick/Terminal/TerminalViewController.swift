@@ -1275,22 +1275,41 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         TerminalText.lastLines(of: readVisibleScreenText(), limit: lineLimit)
     }
 
-    func recentOutputText(lineLimit: Int? = nil) -> String {
-        TerminalText.lastLines(of: TerminalText.stripANSIEscapes(automationOutput), limit: lineLimit)
-    }
-
-    /// A cursor-scoped delta of the recent-output buffer, scoped to this pane's
-    /// shell PID so a cursor from a previous shell reads as truncated. See
-    /// `TerminalText.recentDelta` for the delta/truncation semantics.
-    func recentOutputDelta(since: String?, lineLimit: Int? = nil) -> (text: String, cursor: String, truncated: Bool) {
-        let delta = TerminalText.recentDelta(
+    /// Copies what a `recent` read needs off this pane, cheaply, so the caller can
+    /// normalize it on a background queue: the rolling raw buffer with its cursor
+    /// counters (scoped to this pane's shell PID, so a cursor minted by a previous
+    /// shell reads as truncated) plus the interpreted line buffer. See
+    /// `TerminalText.recentRead` for the delta/truncation semantics.
+    func recentReadSnapshot() -> TerminalText.RecentReadSnapshot {
+        TerminalText.RecentReadSnapshot(
+            screen: interpretedBufferText(),
             buffer: automationOutput,
             total: automationOutputTotalBytes,
             dropped: automationOutputDroppedBytes,
-            generation: Int(shellPID),
-            since: since,
-            lineLimit: lineLimit)
-        return (delta.text, delta.cursor, delta.truncated)
+            generation: Int(shellPID))
+    }
+
+    /// The terminal's interpreted line buffer (scrollback + screen) as plain rows,
+    /// or nil on the alternate screen, which by definition keeps no scrollback: a
+    /// full-screen TUI's history exists only in the raw output stream.
+    ///
+    /// SwiftTerm exposes scrollback rows only as a whole-buffer dump (`buffer.lines`
+    /// itself is internal), so this walks the buffer rather than just its tail. It
+    /// is bounded by the scrollback cap, and it is the only main-thread work a
+    /// recent read now does — the strips and the line cap run against this copy.
+    private func interpretedBufferText() -> String? {
+        let terminal = terminalView.getTerminal()
+        guard !terminal.isCurrentBufferAlternate else { return nil }
+        return String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+    }
+
+    /// The recent-output buffer with just the CSI escapes stripped — the shape the
+    /// `wait output` matchers are fed chunk by chunk. Pane reads normalize much
+    /// harder (`TerminalText.transcript`); the matchers deliberately don't, so a
+    /// needle can't fall into a seam between this seed and the chunks appended
+    /// after it.
+    private func matcherSeedText() -> String {
+        TerminalText.stripANSIEscapes(automationOutput)
     }
 
     // MARK: - Streaming output match (for `wait output`)
@@ -1307,11 +1326,11 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// stream. Returns nil (and does not register) when the needle is already
     /// present in the current buffer, so the caller can resolve immediately.
     func registerOutputMatcher(_ needle: String, onMatch: @escaping () -> Void) -> UUID? {
-        if recentOutputText().contains(needle) || visibleScreenText().contains(needle) {
+        if matcherSeedText().contains(needle) || visibleScreenText().contains(needle) {
             return nil
         }
         let id = UUID()
-        let matcher = StreamingMatcher(needle: needle, seed: recentOutputText())
+        let matcher = StreamingMatcher(needle: needle, seed: matcherSeedText())
         outputMatchers[id] = OutputMatcher(matcher: matcher, onMatch: onMatch)
         return id
     }

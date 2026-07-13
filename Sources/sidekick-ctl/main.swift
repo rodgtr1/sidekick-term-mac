@@ -371,6 +371,9 @@ struct SidekickCtl {
           pane focus|close <pane-id>
           pane send-text <pane-id> <text> | send-key <pane-id> <key> | run <pane-id> <command>
           pane read <pane-id> [--source visible|recent] [--lines count] [--since cursor] [--json]
+                              wait first, then read once; never poll in a loop.
+                              --source visible (default) is the screen: use it to check
+                              progress. --source recent is the scrollback transcript
                               --since returns only recent output after a prior read's
                               cursor (printed to stderr); re-reads in full on a stale one
           wait agent-status <pane-id> <idle|working|ready|done> [--timeout ms]
