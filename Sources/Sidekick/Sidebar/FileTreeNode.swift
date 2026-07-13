@@ -161,6 +161,33 @@ nonisolated final class FileTreeNode: @unchecked Sendable {
         }
     }
 
+    /// Whether `other` describes exactly what this subtree currently displays:
+    /// same entry, same dimming flags (isHidden/isGitIgnored drive it), same
+    /// loaded/expanded shape, and the same children in the same order. Used to
+    /// drop a rebuild that would repaint identical rows — the common case, since
+    /// an agent editing file *contents* doesn't change the listing.
+    ///
+    /// Unloaded directories compare equal without descending: they show no rows,
+    /// and neither side has children to compare. Requiring `isLoaded` to match
+    /// keeps a live subtree that the fresh scan wouldn't have loaded (a folder
+    /// the user collapsed, whose cached children may now be stale) from
+    /// surviving the skip. Pure — no I/O, no AppKit.
+    func isStructurallyIdentical(to other: FileTreeNode) -> Bool {
+        guard url.path == other.url.path,
+              isDirectory == other.isDirectory,
+              isHidden == other.isHidden,
+              isGitIgnored == other.isGitIgnored,
+              isExpanded == other.isExpanded,
+              isLoaded == other.isLoaded,
+              children.count == other.children.count else { return false }
+
+        for (lhs, rhs) in zip(children, other.children) where !lhs.isStructurallyIdentical(to: rhs) {
+            return false
+        }
+
+        return true
+    }
+
     var path: String {
         return url.path
     }

@@ -53,6 +53,10 @@ class FileTreeViewController: NSViewController {
     /// Bumped on every full tree rebuild so a slow background build that has
     /// been superseded by a newer one is discarded instead of clobbering it.
     private var loadGeneration = 0
+    /// Set while `expandLoadedItems` walks the tree. The expand/collapse
+    /// delegates skip their icon-refreshing `reloadItem` during the walk — the
+    /// reload that precedes it already redrew every row.
+    private var isBulkExpanding = false
     /// A directory the owning sidebar asked us to load before the view loaded
     /// (lazy panel creation). `rebuildTree` renders into `outlineView`, which
     /// doesn't exist yet, so the request is deferred to `viewDidLoad`.
@@ -222,6 +226,18 @@ class FileTreeViewController: NSViewController {
             )
             DispatchQueue.main.async {
                 guard let self = self, self.loadGeneration == generation else { return }
+
+                // FSEvents fire on every file an agent writes, but content edits
+                // don't change the listing — the scan comes back describing the
+                // rows already on screen. Swapping it in anyway costs a full
+                // reloadData plus an expansion walk on the main thread, which
+                // queues ahead of the user's clicks. Keep the live tree instead.
+                if let liveRoot = self.rootNode, liveRoot.isStructurallyIdentical(to: newRoot) {
+                    Log.debug("🌳 Tree unchanged (gen \(generation)); skipping reload", category: "sidebar")
+                    self.attemptRevealPending()
+                    return
+                }
+
                 self.rootNode = newRoot
                 Log.debug("📁 Root node loaded with \(newRoot.children.count) children", category: "sidebar")
                 self.outlineView.reloadData()
@@ -323,8 +339,13 @@ class FileTreeViewController: NSViewController {
                         child.commitChildren(scanned)
                     }
                     child.isExpanded = true
+                    // `child` is still collapsed here (nothing expanded it), so the
+                    // reload has no descendant rows to rebuild; batch it with the
+                    // expansion so both land in one layout pass.
+                    self.outlineView.beginUpdates()
                     self.outlineView.reloadItem(child, reloadChildren: true)
                     self.outlineView.expandItem(child)
+                    self.outlineView.endUpdates()
                     self.revealStep(target: target, in: child)
                 }
             }
@@ -415,7 +436,19 @@ class FileTreeViewController: NSViewController {
         }
     }
 
+    /// Restores expansion after a reload. Batched: every `expandItem` re-enters
+    /// `shouldExpandItem`, so without `isBulkExpanding` a wide tree would queue
+    /// one async `reloadItem` per expanded folder on top of the `reloadData`
+    /// that already redrew all of them.
     private func expandLoadedItems(from node: FileTreeNode) {
+        isBulkExpanding = true
+        outlineView.beginUpdates()
+        expandLoadedItemsRecursive(from: node)
+        outlineView.endUpdates()
+        isBulkExpanding = false
+    }
+
+    private func expandLoadedItemsRecursive(from node: FileTreeNode) {
         guard node.isDirectory else { return }
 
         if node === rootNode || node.isExpanded {
@@ -423,7 +456,7 @@ class FileTreeViewController: NSViewController {
         }
 
         for child in node.children {
-            expandLoadedItems(from: child)
+            expandLoadedItemsRecursive(from: child)
         }
     }
 
@@ -701,14 +734,43 @@ extension FileTreeViewController: NSOutlineViewDelegate {
                 let scanned = scanTarget.scanChildren(showHidden: currentShowHidden, gitIgnoreChecker: currentGitIgnoreChecker)
                 DispatchQueue.main.async { [weak node] in
                     guard let self = self, let node = node else { return }
-                    if !node.isLoaded {
+
+                    // Only the commit that first publishes children matches the
+                    // zero-child row count AppKit cached while the node was
+                    // unloaded; if something else (a reveal) got there first, the
+                    // rows already exist and inserting them again would desync.
+                    let didCommit = !node.isLoaded
+                    if didCommit {
                         node.commitChildren(scanned)
                     }
-                    self.outlineView.reloadItem(node, reloadChildren: true)
+
+                    self.outlineView.beginUpdates()
+                    if didCommit, self.outlineView.isItemExpanded(node) {
+                        // AppKit expanded the node the moment we returned true and
+                        // cached zero children for it, so the committed children are
+                        // the entire delta: insert exactly those rows, plus a
+                        // childless reload of the node itself for its open-folder
+                        // icon. reloadItem(reloadChildren: true) would instead throw
+                        // away and rebuild every descendant row view, and that Auto
+                        // Layout cascade is what stalls clicks on a large folder.
+                        self.outlineView.reloadItem(node)
+                        if !node.children.isEmpty {
+                            self.outlineView.insertItems(
+                                at: IndexSet(integersIn: 0..<node.children.count),
+                                inParent: node,
+                                withAnimation: []
+                            )
+                        }
+                    } else {
+                        // The node isn't expanded (collapsed while the scan ran) or
+                        // was already loaded: no zero-row cache to insert into.
+                        self.outlineView.reloadItem(node, reloadChildren: true)
+                    }
                     self.outlineView.expandItem(node)
+                    self.outlineView.endUpdates()
                 }
             }
-        } else {
+        } else if !isBulkExpanding {
             // Item is already loaded, just reload to update icon
             DispatchQueue.main.async {
                 outlineView.reloadItem(node, reloadChildren: false)
@@ -723,8 +785,10 @@ extension FileTreeViewController: NSOutlineViewDelegate {
         node.isExpanded = false
 
         // Reload the item to update its icon (from folder.open to folder)
-        DispatchQueue.main.async {
-            outlineView.reloadItem(node, reloadChildren: false)
+        if !isBulkExpanding {
+            DispatchQueue.main.async {
+                outlineView.reloadItem(node, reloadChildren: false)
+            }
         }
 
         return true
