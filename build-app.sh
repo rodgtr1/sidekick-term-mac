@@ -85,6 +85,18 @@ echo "📋 Adding sidekick-telemetry helper..."
 cp ".build/release/sidekick-telemetry" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-telemetry"
 chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-telemetry"
 
+# Bundle the sidekick-panes agent skill (must land before the signing step
+# below, which seals Contents/Resources). Preferences -> Agents installs it into
+# ~/.claude/skills etc. from here, and InstalledSkillRefresher re-syncs it on
+# every launch — so an app-only user, with no repo and no scripts, still gets
+# the skill their agents read, and still gets it updated.
+echo "📋 Adding sidekick-panes skill..."
+SKILL_SOURCE=".claude/skills/sidekick-panes"
+SKILL_DEST="${BUILD_DIR}/${BUNDLE_NAME}/Contents/Resources/skills/sidekick-panes"
+mkdir -p "${SKILL_DEST}/agents"
+cp "${SKILL_SOURCE}/SKILL.md" "${SKILL_DEST}/SKILL.md"
+cp "${SKILL_SOURCE}/agents/openai.yaml" "${SKILL_DEST}/agents/openai.yaml"
+
 # Code-sign the bundle (helpers first, main app last) with a stable identity.
 if security find-identity -p codesigning -v 2>/dev/null | grep -q "${SIGN_IDENTITY}"; then
     echo "🔏 Signing with '${SIGN_IDENTITY}'..."

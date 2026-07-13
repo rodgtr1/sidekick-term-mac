@@ -7,7 +7,10 @@ import Foundation
 /// this uses the helper binaries shipped inside the app bundle, so it works
 /// on machines that never had the source tree. Safe to run repeatedly — every
 /// step is idempotent and existing user configuration is preserved.
-enum AgentIntegrationInstaller {
+///
+/// `nonisolated`: this is file IO and text munging with no UI state, and
+/// `reconcileOnLaunch` runs it on a utility queue so launch never blocks on it.
+nonisolated enum AgentIntegrationInstaller {
     enum AgentID: CaseIterable {
         case claude
         case codex
@@ -52,73 +55,97 @@ enum AgentIntegrationInstaller {
         }
     }
 
-    private static var home: URL {
+    /// The user's home. A parameter on every entry point that reads or writes
+    /// under it, defaulting to this, so tests run against a temp home and never
+    /// touch the real `~/.claude`, `~/.codex`, or `~/.pi`.
+    static var home: URL {
         FileManager.default.homeDirectoryForCurrentUser
     }
 
-    /// The helper CLIs live alongside the main executable, both in the app
+    /// Where the helper CLIs live: alongside the main executable, both in the app
     /// bundle (Contents/MacOS) and in SwiftPM build output (.build/<config>).
-    private static func helperURL(named name: String) -> URL? {
-        guard let executableDirectory = Bundle.main.executableURL?
-            .deletingLastPathComponent() else { return nil }
-        let url = executableDirectory.appendingPathComponent(name)
+    /// Injectable for the same reason as `home`.
+    static var bundledHelperDirectory: URL? {
+        Bundle.main.executableURL?.deletingLastPathComponent()
+    }
+
+    private static func helperURL(named name: String, in directory: URL?) -> URL? {
+        guard let directory else { return nil }
+        let url = directory.appendingPathComponent(name)
         return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
     }
 
     // MARK: - Detection
 
-    static func status(of agent: AgentID) -> Status {
+    static func status(
+        of agent: AgentID,
+        home: URL = home,
+        helperDirectory: URL? = bundledHelperDirectory
+    ) -> Status {
         switch agent {
         case .claude:
             guard directoryExists(home.appendingPathComponent(".claude")) else { return .notDetected }
-            guard helperURL(named: "sidekick-agent-status") != nil else { return .helperMissing }
-            let settings = (try? String(
-                contentsOf: home.appendingPathComponent(".claude/settings.json"),
-                encoding: .utf8
-            )) ?? ""
+            guard helperURL(named: "sidekick-agent-status", in: helperDirectory) != nil else { return .helperMissing }
+            let settings = claudeSettingsText(home: home)
             guard settings.contains("sidekick-agent-status") else { return .available }
             // A pre-PermissionRequest install lacks the needs-input hook; prompt
             // a reinstall so addClaudeHook idempotently adds it.
             guard settings.contains("PermissionRequest") else { return .available }
             // A pre-SessionStart telemetry install keeps a stale context meter
             // after /clear; prompt a reinstall so the reset hook gets added.
-            if isTelemetryHelperBundled, !settings.contains("SessionStart") { return .available }
-            return telemetryFullyInstalled(in: settings) ? .installed : .available
+            if isTelemetryHelperBundled(helperDirectory), !settings.contains("SessionStart") { return .available }
+            return telemetryFullyInstalled(in: settings, helperDirectory: helperDirectory) ? .installed : .available
         case .codex:
             guard directoryExists(home.appendingPathComponent(".codex")) else { return .notDetected }
-            guard helperURL(named: "sidekick-agent-status") != nil else { return .helperMissing }
-            let config = (try? String(
-                contentsOf: home.appendingPathComponent(".codex/config.toml"),
-                encoding: .utf8
-            )) ?? ""
+            guard helperURL(named: "sidekick-agent-status", in: helperDirectory) != nil else { return .helperMissing }
+            let config = codexConfigText(home: home)
             guard config.contains("sidekick-agent-status") else { return .available }
             // A pre-PreToolUse install lacks the busy-refinement hook; prompt a
             // reinstall so installCodex idempotently adds it.
             guard config.contains("[[hooks.PreToolUse]]") else { return .available }
-            return telemetryFullyInstalled(in: config) ? .installed : .available
+            return telemetryFullyInstalled(in: config, helperDirectory: helperDirectory) ? .installed : .available
         case .pi:
             guard directoryExists(home.appendingPathComponent(".pi/agent")) else { return .notDetected }
-            let extensionURL = home.appendingPathComponent(".pi/agent/extensions/sidekick-status.ts")
-            guard let ext = try? String(contentsOf: extensionURL, encoding: .utf8) else { return .available }
+            guard let ext = try? String(contentsOf: piExtensionURL(home: home), encoding: .utf8) else { return .available }
             // The telemetry-enabled extension defines reportTelemetry.
-            if isTelemetryHelperBundled, !ext.contains("reportTelemetry") { return .available }
+            if isTelemetryHelperBundled(helperDirectory), !ext.contains("reportTelemetry") { return .available }
             return .installed
         }
+    }
+
+    private static func claudeSettingsURL(home: URL) -> URL {
+        home.appendingPathComponent(".claude/settings.json")
+    }
+
+    private static func codexConfigURL(home: URL) -> URL {
+        home.appendingPathComponent(".codex/config.toml")
+    }
+
+    private static func piExtensionURL(home: URL) -> URL {
+        home.appendingPathComponent(".pi/agent/extensions/sidekick-status.ts")
+    }
+
+    private static func claudeSettingsText(home: URL) -> String {
+        (try? String(contentsOf: claudeSettingsURL(home: home), encoding: .utf8)) ?? ""
+    }
+
+    private static func codexConfigText(home: URL) -> String {
+        (try? String(contentsOf: codexConfigURL(home: home), encoding: .utf8)) ?? ""
     }
 
     /// Whether the telemetry helper is bundled and thus expected in a fully
     /// installed integration. When it isn't (a build without the helper), the
     /// status shouldn't perpetually read "available".
-    private static var isTelemetryHelperBundled: Bool {
-        helperURL(named: "sidekick-telemetry") != nil
+    private static func isTelemetryHelperBundled(_ helperDirectory: URL?) -> Bool {
+        helperURL(named: "sidekick-telemetry", in: helperDirectory) != nil
     }
 
     /// True when an integration that has the status hook is also wired for
     /// telemetry — i.e. the config already references `sidekick-telemetry`, or
     /// the helper isn't bundled to install one. Drives the reinstall prompt when
     /// a pre-telemetry integration is detected.
-    private static func telemetryFullyInstalled(in config: String) -> Bool {
-        !isTelemetryHelperBundled || config.contains("sidekick-telemetry")
+    private static func telemetryFullyInstalled(in config: String, helperDirectory: URL?) -> Bool {
+        !isTelemetryHelperBundled(helperDirectory) || config.contains("sidekick-telemetry")
     }
 
     private static func directoryExists(_ url: URL) -> Bool {
@@ -127,13 +154,164 @@ enum AgentIntegrationInstaller {
             && isDirectory.boolValue
     }
 
+    // MARK: - Launch reconciliation
+
+    /// Whether this agent's config already names our status helper (or, for Pi,
+    /// has our extension) — i.e. the user opted in at some point, by clicking
+    /// Install here or by running `scripts/install-agent-status-hooks`. It is the
+    /// evidence `reconcile` requires before it will edit anything.
+    static func integrationInstalled(_ agent: AgentID, home: URL = home) -> Bool {
+        switch agent {
+        case .claude: return claudeSettingsText(home: home).contains("sidekick-agent-status")
+        case .codex: return codexConfigText(home: home).contains("sidekick-agent-status")
+        case .pi: return FileManager.default.fileExists(atPath: piExtensionURL(home: home).path)
+        }
+    }
+
+    /// What a launch reconciliation did for one agent.
+    enum ReconcileOutcome: Equatable {
+        /// The integration was missing part of the current hook contract, and the
+        /// missing part was added.
+        case reconciled
+        /// Already speaks the current contract. Nothing was written — the file
+        /// isn't even opened for writing.
+        case upToDate
+        /// No integration to maintain. Reconciliation never creates one.
+        case notInstalled
+        case failed(String)
+    }
+
+    /// Brings already-installed integrations up to the hook contract this build
+    /// speaks, on launch.
+    ///
+    /// The problem it solves: hook *entries* go stale the same way hook *binaries*
+    /// do. When the contract gains an event (as it has twice already —
+    /// PermissionRequest, then the telemetry SessionStart), a user who installed
+    /// before it existed keeps a settings file that never mentions it, and the
+    /// symptom is silence: the pane just never reports that state. From source,
+    /// `install.sh` re-runs the installer and fixes this. A user who only ever
+    /// downloads the `.app` has no repo and no script, so the app has to do it,
+    /// or "launch the new app and you're done" is a lie for every future event.
+    ///
+    /// Why it is safe to edit a user's settings file on launch:
+    ///   - It never bootstraps. Without `integrationInstalled` evidence — the
+    ///     config already naming our helper — we do not open the file. Uninstall
+    ///     the integration and the app stops touching it, permanently.
+    ///   - It writes only when something is genuinely missing (`status` reports
+    ///     `.available` for an installed integration only when part of the current
+    ///     contract is absent). A current settings file is never rewritten, so the
+    ///     common launch touches nothing at all.
+    ///   - It is additive and idempotent: `install` merges into the parsed file,
+    ///     dedups by helper name + argument (so a from-source install at
+    ///     `~/.local/bin` is not duplicated by a bundle-path entry), preserves
+    ///     every unrelated key, and writes atomically.
+    ///
+    /// The cost, stated plainly: a user who deletes *one* of our hook entries but
+    /// keeps the rest gets it back on the next launch. Removing the integration —
+    /// all of our entries — is the way to opt out, and it sticks. That trade buys
+    /// every `.app` user a hook contract that repairs itself.
+    static func reconcileOnLaunch() {
+        // Same gate as the helper refresh: a dev build is a moving target, and
+        // the from-source path has its own explicit installer.
+        guard InstalledHelperRefresher.isRunningFromAppBundle else {
+            Log.debug("Hook reconcile: skipped, not running from an app bundle", category: "app")
+            return
+        }
+
+        DispatchQueue.global(qos: .utility).async {
+            for (agent, outcome) in reconcile().sorted(by: { $0.key.displayName < $1.key.displayName }) {
+                switch outcome {
+                case .reconciled:
+                    Log.info(
+                        "Hook reconcile: \(agent.displayName)'s Sidekick hooks were missing part of this "
+                            + "build's contract and have been updated",
+                        category: "app"
+                    )
+                case .failed(let reason):
+                    Log.error("Hook reconcile: could not update \(agent.displayName): \(reason)", category: "app")
+                case .upToDate, .notInstalled:
+                    Log.debug("Hook reconcile: \(agent.displayName) — \(outcome)", category: "app")
+                }
+            }
+        }
+    }
+
+    /// The reconciliation itself. Home and helper directories are parameters so
+    /// tests run in a temp home and never touch the real one.
+    @discardableResult
+    static func reconcile(
+        home: URL = home,
+        helperDirectory: URL? = bundledHelperDirectory,
+        agents: [AgentID] = AgentID.allCases,
+        bundledSkill: URL? = InstalledSkillRefresher.bundledSkillDirectory
+    ) -> [AgentID: ReconcileOutcome] {
+        var outcomes: [AgentID: ReconcileOutcome] = [:]
+        for agent in agents {
+            guard integrationInstalled(agent, home: home) else {
+                outcomes[agent] = .notInstalled
+                continue
+            }
+            switch status(of: agent, home: home, helperDirectory: helperDirectory) {
+            case .installed:
+                outcomes[agent] = .upToDate
+            case .notDetected:
+                // The agent's config directory is gone but its integration text
+                // isn't — nothing coherent to maintain.
+                outcomes[agent] = .notInstalled
+            case .helperMissing:
+                outcomes[agent] = .failed("sidekick-agent-status is missing from the app bundle")
+            case .available:
+                do {
+                    try install(agent, home: home, helperDirectory: helperDirectory, bundledSkill: bundledSkill)
+                    outcomes[agent] = .reconciled
+                } catch {
+                    outcomes[agent] = .failed(error.localizedDescription)
+                }
+            }
+        }
+        return outcomes
+    }
+
     // MARK: - Install
 
-    static func install(_ agent: AgentID) throws {
+    static func install(
+        _ agent: AgentID,
+        home: URL = home,
+        helperDirectory: URL? = bundledHelperDirectory,
+        bundledSkill: URL? = InstalledSkillRefresher.bundledSkillDirectory
+    ) throws {
         switch agent {
-        case .claude: try installClaude()
-        case .codex: try installCodex()
-        case .pi: try installPi()
+        case .claude: try installClaude(home: home, helperDirectory: helperDirectory)
+        case .codex: try installCodex(home: home, helperDirectory: helperDirectory)
+        case .pi: try installPi(home: home, helperDirectory: helperDirectory)
+        }
+
+        // The pane-orchestration skill (what teaches the agent to drive
+        // sidekick-ctl and the MCP verbs) is part of the integration, and this is
+        // the only installer an app-only user ever runs — from source,
+        // scripts/install-agent-status-hooks writes the same files. Best-effort:
+        // the hooks are what the button promises, and a skill that failed to copy
+        // must not fail the wiring that did land.
+        do {
+            try InstalledSkillRefresher.install(
+                into: skillRoot(for: agent, home: home),
+                bundledSkillDirectory: bundledSkill
+            )
+        } catch {
+            Log.error(
+                "Agent integration: installed \(agent.displayName) hooks but could not install the "
+                    + "\(InstalledSkillRefresher.skillName) skill: \(error.localizedDescription)",
+                category: "app"
+            )
+        }
+    }
+
+    /// Where this agent loads user skills from.
+    static func skillRoot(for agent: AgentID, home: URL = home) -> URL {
+        switch agent {
+        case .claude: return home.appendingPathComponent(".claude/skills", isDirectory: true)
+        case .codex: return home.appendingPathComponent(".codex/skills", isDirectory: true)
+        case .pi: return home.appendingPathComponent(".pi/agent/skills", isDirectory: true)
         }
     }
 
@@ -434,12 +612,12 @@ enum AgentIntegrationInstaller {
         return nil
     }
 
-    private static func installClaude() throws {
-        guard let statusBinary = helperURL(named: "sidekick-agent-status") else {
+    private static func installClaude(home: URL, helperDirectory: URL?) throws {
+        guard let statusBinary = helperURL(named: "sidekick-agent-status", in: helperDirectory) else {
             throw InstallError.helperMissing
         }
 
-        let settingsURL = home.appendingPathComponent(".claude/settings.json")
+        let settingsURL = claudeSettingsURL(home: home)
         var settings: [String: Any] = [:]
         if let data = try? Data(contentsOf: settingsURL), !data.isEmpty {
             guard let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -458,7 +636,7 @@ enum AgentIntegrationInstaller {
         // Telemetry (Claude-first): a second Stop hook reports per-pane token
         // usage to the dashboard. Best-effort — registered only when the helper
         // is bundled; it dedups against the status Stop hook by binary name.
-        if let telemetryBinary = helperURL(named: "sidekick-telemetry") {
+        if let telemetryBinary = helperURL(named: "sidekick-telemetry", in: helperDirectory) {
             addClaudeHook(to: &hooks, event: "Stop", command: shellQuotedIfNeeded(telemetryBinary.path))
             // SessionStart (startup, /clear, resume) re-reports or resets the
             // pane's telemetry so the context meter doesn't keep showing the
@@ -545,13 +723,13 @@ enum AgentIntegrationInstaller {
         }
     }
 
-    private static func installCodex() throws {
-        guard let statusBinary = helperURL(named: "sidekick-agent-status") else {
+    private static func installCodex(home: URL, helperDirectory: URL?) throws {
+        guard let statusBinary = helperURL(named: "sidekick-agent-status", in: helperDirectory) else {
             throw InstallError.helperMissing
         }
 
-        let configURL = home.appendingPathComponent(".codex/config.toml")
-        var config = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
+        let configURL = codexConfigURL(home: home)
+        var config = codexConfigText(home: home)
 
         config = ensureCodexHooksEnabled(in: config)
 
@@ -585,7 +763,7 @@ enum AgentIntegrationInstaller {
         // Telemetry: a Stop hook reporting per-pane token usage, parsing Codex's
         // rollout schema (hence the "codex" argument). Best-effort, dedup by the
         // helper name + flavor.
-        if let telemetryBinary = helperURL(named: "sidekick-telemetry"),
+        if let telemetryBinary = helperURL(named: "sidekick-telemetry", in: helperDirectory),
            !config.contains("sidekick-telemetry codex"),
            !config.contains("sidekick-telemetry' codex") {
             let command = "\(shellQuotedIfNeeded(telemetryBinary.path)) codex"
@@ -669,26 +847,22 @@ enum AgentIntegrationInstaller {
         return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private static func installPi() throws {
-        let extensionsDirectory = home.appendingPathComponent(".pi/agent/extensions")
+    private static func installPi(home: URL, helperDirectory: URL?) throws {
+        let extensionURL = piExtensionURL(home: home)
         try FileManager.default.createDirectory(
-            at: extensionsDirectory,
+            at: extensionURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         // Embed the absolute telemetry-helper path (best-effort: empty when the
         // helper isn't bundled, in which case the extension skips telemetry).
-        let telemetryPath = helperURL(named: "sidekick-telemetry")?.path ?? ""
+        let telemetryPath = helperURL(named: "sidekick-telemetry", in: helperDirectory)?.path ?? ""
         let escaped = telemetryPath
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         let source = piExtensionSource.replacingOccurrences(
             of: "__SIDEKICK_TELEMETRY_BIN__", with: escaped
         )
-        try source.write(
-            to: extensionsDirectory.appendingPathComponent("sidekick-status.ts"),
-            atomically: true,
-            encoding: .utf8
-        )
+        try source.write(to: extensionURL, atomically: true, encoding: .utf8)
     }
 
     /// Pi status + telemetry extension. Mirror of scripts/pi-sidekick-status.ts —
@@ -765,7 +939,7 @@ enum AgentIntegrationInstaller {
     """#
 }
 
-private extension String {
+private nonisolated extension String {
     func trimmingTrailingNewlines() -> String {
         var result = self
         while result.hasSuffix("\n") {

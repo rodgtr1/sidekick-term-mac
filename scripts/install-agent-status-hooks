@@ -1,17 +1,109 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Wires Claude Code / Codex / Pi to report agent status to Sidekick: builds the
+# helper binaries into ~/.local/bin, installs the sidekick-panes skill, and adds
+# the hook entries that name those binaries.
+#
+# Run it once, by hand, to opt in. After that it is maintenance, and maintenance
+# is automatic: install.sh re-runs it (--refresh-only) on every from-source
+# install, and an installed .app self-heals the same files on launch. Nobody
+# should have to remember this script exists.
+#
+# Options:
+#   --refresh-only        Do nothing unless the integration is already installed.
+#                         This is how install.sh calls it: opted-in users get a
+#                         silent refresh, everyone else is left alone with a hint.
+#   --binaries-from DIR   Take sidekick-agent-status / sidekick-mcp from DIR
+#                         instead of building them. install.sh passes the app
+#                         bundle it just installed, which skips a redundant
+#                         release build AND guarantees the ~/.local/bin helpers
+#                         are byte-identical to the ones inside that app.
+
+usage() {
+    cat <<'EOF'
+Usage: install-agent-status-hooks [--refresh-only] [--binaries-from DIR]
+
+  --refresh-only        Do nothing unless the integration is already installed.
+  --binaries-from DIR   Take the helper binaries from DIR instead of building.
+EOF
+}
+
+refresh_only=0
+binaries_from=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --refresh-only) refresh_only=1 ;;
+        --binaries-from)
+            [ $# -ge 2 ] || { echo "--binaries-from needs a directory" >&2; exit 2; }
+            binaries_from="$2"
+            shift
+            ;;
+        --binaries-from=*) binaries_from="${1#*=}" ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bin_dir="${HOME}/.local/bin"
 status_bin="${bin_dir}/sidekick-agent-status"
 mcp_bin="${bin_dir}/sidekick-mcp"
 skill_source="${repo}/.claude/skills/sidekick-panes"
+claude_settings="${HOME}/.claude/settings.json"
+codex_config="${HOME}/.codex/config.toml"
+
+# Has this machine ever opted in? Two kinds of evidence, either one is enough:
+# a hook entry naming our status helper, or the helpers themselves sitting in
+# ~/.local/bin. (Hooks written by the app's own Preferences -> Agents installer
+# name the copy inside the bundle, and count too — the user opted into hooks
+# either way, and the entry dedup below keys on the binary name, not its path,
+# so refreshing an app-installed integration adds no duplicate entries.)
+integration_installed() {
+    if [ -e "$status_bin" ] || [ -e "$mcp_bin" ]; then
+        return 0
+    fi
+    for config in "$claude_settings" "$codex_config"; do
+        if [ -f "$config" ] && grep -q 'sidekick-agent-status' "$config"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [ "$refresh_only" -eq 1 ] && ! integration_installed; then
+    cat <<EOF
+Agent status integration is not installed, so there is nothing to refresh.
+
+To hook Claude Code/Codex/Pi into Sidekick's agents panel (one time — install.sh
+and the app keep it current from then on):
+
+  ${repo}/scripts/install-agent-status-hooks
+EOF
+    exit 0
+fi
 
 mkdir -p "$bin_dir"
-swift build --package-path "$repo" -c release --product sidekick-agent-status
-swift build --package-path "$repo" -c release --product sidekick-mcp
-install -m 0755 "$repo/.build/release/sidekick-agent-status" "$status_bin"
-install -m 0755 "$repo/.build/release/sidekick-mcp" "$mcp_bin"
+
+if [ -n "$binaries_from" ]; then
+    # Binaries handed to us (install.sh passing the app bundle it just
+    # installed). Nothing to build.
+    for helper in sidekick-agent-status sidekick-mcp; do
+        if [ ! -f "${binaries_from}/${helper}" ]; then
+            echo "❌ ${binaries_from}/${helper} not found — build the app first (./build-app.sh)." >&2
+            exit 1
+        fi
+    done
+    install -m 0755 "${binaries_from}/sidekick-agent-status" "$status_bin"
+    install -m 0755 "${binaries_from}/sidekick-mcp" "$mcp_bin"
+else
+    swift build --package-path "$repo" -c release --product sidekick-agent-status
+    swift build --package-path "$repo" -c release --product sidekick-mcp
+    install -m 0755 "$repo/.build/release/sidekick-agent-status" "$status_bin"
+    install -m 0755 "$repo/.build/release/sidekick-mcp" "$mcp_bin"
+fi
 
 # Install the same pane-orchestration skill for Claude Code, Codex, and Pi.
 # All three load Agent Skills standard SKILL.md files; Pi reads ~/.pi/agent/skills.
@@ -21,7 +113,7 @@ for skill_root in "${HOME}/.claude/skills" "${HOME}/.codex/skills" "${HOME}/.pi/
     install -m 0644 "${skill_source}/agents/openai.yaml" "${skill_root}/sidekick-panes/agents/openai.yaml"
 done
 
-python3 - "$HOME/.claude/settings.json" "$status_bin" <<'PY'
+python3 - "$claude_settings" "$status_bin" <<'PY'
 import json
 import pathlib
 import sys
@@ -37,11 +129,25 @@ else:
 
 hooks = data.setdefault("hooks", {})
 
+def signature(command):
+    """Binary name + arguments: '/a/b/sidekick-agent-status busy' -> 'sidekick-agent-status busy'.
+
+    Hooks are deduped on this rather than the full command, so an entry pointing
+    at the copy inside Sidekick.app (what the app's Preferences -> Agents
+    installer writes) counts as the same hook as one pointing at ~/.local/bin,
+    and re-running this script over an app-installed integration adds no
+    duplicate entries. Mirrors AgentIntegrationInstaller.addClaudeHook.
+    """
+    parts = (command or "").replace("'", "").split()
+    if not parts:
+        return ""
+    return " ".join([parts[0].rsplit("/", 1)[-1]] + parts[1:])
+
 def add_hook(event, command, matcher=None):
     groups = hooks.setdefault(event, [])
     for group in groups:
         for hook in group.get("hooks", []):
-            if hook.get("type") == "command" and hook.get("command") == command:
+            if hook.get("type") == "command" and signature(hook.get("command")) == signature(command):
                 return
     group = {"hooks": [{"type": "command", "command": command}]}
     if matcher:
@@ -88,7 +194,7 @@ add_hook("SessionEnd", f"{status_bin} idle")
 path.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
-python3 - "$HOME/.codex/config.toml" "$status_bin" <<'PY'
+python3 - "$codex_config" "$status_bin" <<'PY'
 import json
 import pathlib
 import re
@@ -128,8 +234,29 @@ commands = {
     "Stop": f"{status_bin} done",
 }
 
+def signature(command):
+    """Binary name + arguments — see the Claude block above for why we dedup on this."""
+    parts = (command or "").replace("'", "").split()
+    if not parts:
+        return ""
+    return " ".join([parts[0].rsplit("/", 1)[-1]] + parts[1:])
+
+def event_has_command(event, command):
+    """True when a [[hooks.<event>]] table already runs this hook (any path)."""
+    wanted = signature(command)
+    table = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[["):
+            table = stripped
+        elif stripped.startswith("command") and table and table.startswith(f"[[hooks.{event}"):
+            value = stripped.split("=", 1)[1].strip().strip('"')
+            if signature(value) == wanted:
+                return True
+    return False
+
 for event, command in commands.items():
-    if command in text and f"[[hooks.{event}]]" in text:
+    if event_has_command(event, command):
         continue
     text = text.rstrip() + "\n\n" + "\n".join([
         f"[[hooks.{event}]]",

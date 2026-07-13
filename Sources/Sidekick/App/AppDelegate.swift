@@ -35,6 +35,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // a stale helper fails is silent. Refreshes off the main thread.
         InstalledHelperRefresher.refreshOnLaunch()
 
+        // ...and for the pane-orchestration skill the installers copied into the
+        // agents' skills directories, so an upgraded app doesn't leave agents
+        // reading last month's instructions for driving it.
+        InstalledSkillRefresher.refreshOnLaunch()
+
+        // Binaries and skills are files we own outright; hook *entries* live in
+        // the user's own settings.json / config.toml, so this one only adds what
+        // an already-installed integration is missing from the current contract,
+        // and never bootstraps one. It is what makes "launch the new app and
+        // you're done" true for someone who has no repo and no scripts.
+        AgentIntegrationInstaller.reconcileOnLaunch()
+
         // Clear out yesterday's pasted-image temp files
         DispatchQueue.global(qos: .utility).async {
             ImagePasteStore.pruneOldFiles()

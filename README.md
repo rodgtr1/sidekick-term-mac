@@ -77,6 +77,9 @@ open build/Sidekick.dmg
 ./install.sh
 ```
 
+Upgrading later is those same two commands, and nothing else: see
+[Upgrading](#upgrading).
+
 The app isn't notarized yet, so on first launch you may need to go to
 System Settings → Privacy & Security → "Open Anyway" (macOS no longer
 supports right-click → Open to bypass this on recent versions).
@@ -211,32 +214,54 @@ pane, creates (or reuses) a worktree for that branch in a sibling
 ### Claude/Codex Agent Status Hooks
 
 Sidekick can drive tab status indicators from Claude Code and Codex
-lifecycle hooks, which is more reliable than parsing terminal text:
+lifecycle hooks, which is more reliable than parsing terminal text. Opt in
+either from the app (**Preferences → Agents**, one button per agent) or, from a
+source checkout, with:
 
 ```bash
 scripts/install-agent-status-hooks
 ```
 
-This builds `sidekick-agent-status`, installs it to `~/.local/bin`, and adds
-hooks to `~/.claude/settings.json` and `~/.codex/config.toml`
-(`UserPromptSubmit` → busy, `PermissionRequest` → ready, `Stop` → done).
-Restart open Claude Code/Codex sessions after installing.
+This builds `sidekick-agent-status`, installs it to `~/.local/bin`, installs the
+`sidekick-panes` skill for each agent, and adds hooks to
+`~/.claude/settings.json` and `~/.codex/config.toml` (`UserPromptSubmit` → busy,
+`PermissionRequest` → ready, `Stop` → done). Restart open Claude Code/Codex
+sessions after installing.
 
-#### Keeping the helpers current
+That is a one-time opt-in, and the only time you run it by hand. Keeping it
+current afterwards is the upgrade path's job.
 
-The hooks name the `~/.local/bin` copies by absolute path, so those binaries,
-not the ones in the app bundle, are what your agents actually run. Sidekick
-refreshes them on launch: if a helper in `~/.local/bin` differs from the copy
-this build ships, it is replaced with the bundled one (atomically, so a hook
-firing mid-swap never sees a partial binary). Helpers you never installed are
-never created, and only `sidekick-agent-status` and `sidekick-mcp`, the two the
-installer owns, are managed.
+## Upgrading
 
-So after upgrading Sidekick, relaunch it once and your helpers come along. If
-you run from source, `swift run` builds deliberately skip the refresh (a working
-tree is a moving target, and it would overwrite your installed helper with
-whatever is on the current branch); re-run `scripts/install-agent-status-hooks`
-after pulling instead.
+Two paths, each complete on its own:
+
+- **From source**: `./build-app.sh && ./install.sh`. Having installed the app,
+  `install.sh` refreshes the integration you already have: the `~/.local/bin`
+  helpers, the `sidekick-panes` skill, and the hook entries. It does that by
+  re-running `scripts/install-agent-status-hooks` for you, against the app bundle
+  it just installed, so there is no second release build. If you never opted in,
+  it changes nothing and prints the one line telling you how.
+- **Installed .app**: launch it. On launch Sidekick replaces any `~/.local/bin`
+  helper that differs from the one this build ships (atomically, so a hook firing
+  mid-swap never sees a partial binary), re-syncs the installed `sidekick-panes`
+  skill the same way, and adds any hook entry the contract has gained since you
+  installed.
+
+What Sidekick will not do on launch is create something you never installed. A
+helper you don't have is not written; a skills directory you don't have is not
+created; an agent whose config never mentioned Sidekick is not edited. The one
+file that is yours rather than ours, `settings.json` or `config.toml`, is touched
+only when an integration is already there and is missing part of the current hook
+contract; a current one is never opened for writing. The corollary, stated
+plainly: delete a single Sidekick hook entry and the next launch puts it back,
+because on disk that is indistinguishable from an install predating the entry.
+Removing the integration, meaning all of Sidekick's entries, is the way to opt
+out, and that does stick.
+
+Running from source with `swift run` deliberately skips all of this: a working
+tree is a moving target, and a feature branch would otherwise overwrite your
+installed helpers with whatever is on it. Re-run `./install.sh` (or
+`scripts/install-agent-status-hooks`) after pulling instead.
 
 If a pane's hook is still running a helper older than the app's wire protocol,
 Sidekick says so once in that pane, and logs it to

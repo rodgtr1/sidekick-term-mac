@@ -167,33 +167,14 @@ nonisolated enum InstalledHelperRefresher {
         return (attributes?[.type] as? FileAttributeType) == .typeSymbolicLink
     }
 
-    /// Replaces `destination` with `data`, atomically.
+    /// Replaces `destination` with `data`, atomically and still executable.
     ///
-    /// A hook can fire at any moment — including while we are writing — and it
-    /// execs this exact path. So the new bytes land in a temp file *in the same
-    /// directory* (same filesystem, so the rename can't fall back to a copy), get
-    /// their 0755 before they are reachable under the real name, and only then
-    /// take the name via `rename(2)`. A hook that starts during the swap sees
-    /// either the whole old binary or the whole new one; a half-written file is
-    /// never on the path an agent might exec.
+    /// Atomicity is not a nicety here: a hook can fire at any moment — including
+    /// while we are writing — and it execs this exact path. `AtomicFile.replace`
+    /// renames the finished, 0755 file into place, so a hook that starts during
+    /// the swap execs either the whole old binary or the whole new one; a
+    /// half-written file is never on the path an agent might exec.
     private static func replace(_ destination: URL, with data: Data, fileManager: FileManager) throws {
-        let directory = destination.deletingLastPathComponent()
-        let temp = directory.appendingPathComponent(
-            ".\(destination.lastPathComponent).\(UUID().uuidString).new"
-        )
-        do {
-            try data.write(to: temp, options: .atomic)
-            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temp.path)
-            guard rename(temp.path, destination.path) == 0 else {
-                throw NSError(
-                    domain: NSPOSIXErrorDomain,
-                    code: Int(errno),
-                    userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(errno))]
-                )
-            }
-        } catch {
-            try? fileManager.removeItem(at: temp)
-            throw error
-        }
+        try AtomicFile.replace(destination, with: data, permissions: 0o755, fileManager: fileManager)
     }
 }

@@ -1,11 +1,14 @@
 #!/bin/bash
 
-# Install Sidekick.app to Applications
+# Install Sidekick.app to Applications, and bring an existing agent-status
+# integration along with it. ./build-app.sh && ./install.sh is the whole
+# from-source upgrade: no follow-up script to remember.
 
 set -e
 
 APP_NAME="Sidekick.app"
 BUILD_DIR="build"
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ ! -d "${BUILD_DIR}/${APP_NAME}" ]; then
     echo "❌ ${APP_NAME} not found. Run ./build-app.sh first."
@@ -51,6 +54,23 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-ctl" /usr/local/bin/sidekick-ctl
     sudo ln -sf "/Applications/${APP_NAME}/Contents/MacOS/sidekick-agent-status" /usr/local/bin/sidekick-agent-status
     echo "✅ CLI tools installed"
+fi
+
+# Refresh the agent-status integration — the ~/.local/bin helpers, the
+# sidekick-panes skill, and the hook entries in ~/.claude/settings.json and
+# ~/.codex/config.toml. The installer script does the work (and the opt-in
+# detection): if this machine never opted in it changes nothing and just prints
+# how to. --binaries-from points it at the app we just installed, so it copies
+# those exact binaries instead of kicking off a second release build.
+echo ""
+echo "🔄 Refreshing agent integration..."
+if ! "${REPO_DIR}/scripts/install-agent-status-hooks" \
+        --refresh-only \
+        --binaries-from "/Applications/${APP_NAME}/Contents/MacOS"; then
+    # A refresh failure is not an install failure: the app is in /Applications
+    # either way, and it self-heals these same files on launch.
+    echo "⚠️  Could not refresh the agent integration. Sidekick is installed; run"
+    echo "    scripts/install-agent-status-hooks by hand to see what went wrong."
 fi
 
 echo ""
