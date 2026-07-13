@@ -105,6 +105,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "SidekickAgentStatus",
+            dependencies: ["SidekickIPCCore"],
             path: "Sources/sidekick-agent-status",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])

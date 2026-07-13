@@ -349,6 +349,8 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             handleSetAgentState(.done, completion: completion)
         case .agentIdle:
             handleSetAgentState(.idle, completion: completion)
+        case .agentStatus(let paneID, let state):
+            handleAgentStatus(paneID: paneID, state: state, completion: completion)
         case .paneList:
             handlePaneList(completion: completion)
         case .agentList:
@@ -421,6 +423,23 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     private func handleSetAgentState(_ state: AgentState, completion: @escaping @Sendable (IPCResponse) -> Void) {
         host?.automationSetActiveTabAgentState(state)
         completion(IPCResponse(ok: true))
+    }
+
+    /// A status hook reporting for the pane it ran in. Routed to that pane's
+    /// detector, which treats it exactly like the OSC 666 escape it would have
+    /// written had it had a controlling terminal — including standing the text
+    /// heuristics down for the rest of the agent's life in this pane.
+    private func handleAgentStatus(
+        paneID: UUID,
+        state: AgentState,
+        completion: @escaping @Sendable (IPCResponse) -> Void
+    ) {
+        guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
+            completion(IPCResponse(ok: false, error: "Terminal pane not found"))
+            return
+        }
+        terminal.applyAgentStatusReport(state)
+        completion(IPCResponse())
     }
 
     private func handlePaneList(completion: @escaping @Sendable (IPCResponse) -> Void) {

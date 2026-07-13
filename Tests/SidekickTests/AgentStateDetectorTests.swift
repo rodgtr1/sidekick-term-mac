@@ -126,6 +126,74 @@ final class AgentStateDetectorTests: XCTestCase {
         XCTAssertEqual(detector.state, .done)
     }
 
+    // MARK: - Long thinking stretches (the `idle`-while-thinking bug)
+
+    /// One tick of Claude Code's spinner, captured from a live pane: erase the
+    /// line, draw the frame, return the cursor. Note what it does *not* contain —
+    /// see `testClaudeSpinnerFramesCarryNoWorkingCue`.
+    private func claudeSpinnerFrame(_ glyph: String, elapsed: String) -> String {
+        "\u{001B}[2K\u{001B}[38;5;213m\(glyph)\u{001B}[0m Deciphering… (\(elapsed) · ↓ 21.9k tokens)\r"
+    }
+
+    /// The observed bug: a pane that had been thinking for minutes reported
+    /// `idle`, so `wait agent-status working` never fired. Once the hook's report
+    /// reaches the pane (it now does — see AgentStatusReportTests), nothing in the
+    /// quiet minutes that follow may knock the state back off `working`: not the
+    /// done-after-quiet timer, and not the heuristics reading redraw frames.
+    func testHookedAgentStaysWorkingThroughMinutesOfSpinnerRedraws() {
+        // A quiet period far shorter than the stretch we simulate: if the timer
+        // were armed under an explicit status at all, it would fire here.
+        let detector = AgentStateDetector(doneQuietPeriod: 0.05, blockedPollInterval: 0.05)
+        detector.readVisibleScreen = { "✽ Deciphering… (3m 15s · ↓ 21.9k tokens)" }
+
+        // UserPromptSubmit → busy. This is the report that was being dropped.
+        detector.handleStatusReport(.working)
+        XCTAssertEqual(detector.state, .working)
+        XCTAssertTrue(detector.hasExplicitStatus)
+
+        // Minutes of thinking, whose only output is the spinner rewriting one line.
+        let glyphs = ["✻", "✽", "✢", "·"]
+        for tick in 0..<240 {
+            detector.processHeuristics(
+                chunk: claudeSpinnerFrame(glyphs[tick % 4], elapsed: "\(tick / 60)m \(tick % 60)s"))
+            if tick % 40 == 0 { spinMainRunLoop(for: 0.06) }  // outlast the quiet period
+            XCTAssertEqual(detector.state, .working, "state left working at tick \(tick)")
+        }
+
+        // And a final stretch of complete silence — no chunks at all.
+        spinMainRunLoop(for: 0.2)
+        XCTAssertEqual(detector.state, .working)
+
+        // The turn ends the way it started: with a hook report (Stop → done).
+        detector.handleStatusReport(.done)
+        XCTAssertEqual(detector.state, .done)
+    }
+
+    /// Why the fix had to restore the hook's report rather than tune the cue list.
+    /// Claude Code's spinner names its thinking with a randomized gerund
+    /// ("Deciphering…", "Percolating…"), and the "esc to interrupt" footer is
+    /// truncated to fit the pane ("esc to i…"). An un-hooked pane therefore sees
+    /// no working cue for the entire run — the heuristics cannot cover this, and
+    /// widening them to "any word + ellipsis" would fire on ordinary output.
+    func testClaudeSpinnerFramesCarryNoWorkingCue() {
+        let frame = claudeSpinnerFrame("✽", elapsed: "3m 15s")
+        XCTAssertFalse(AgentStateDetector.containsAgentWorkingCue(TerminalText.normalize(frame)))
+        XCTAssertFalse(AgentStateDetector.containsAgentWorkingCue(
+            "⏵⏵ auto mode on (shift+tab to cycle) · esc to i…"))
+        // The cues it does catch are unchanged — an agent that spells it out.
+        XCTAssertTrue(AgentStateDetector.containsAgentWorkingCue("thinking… (esc to interrupt)"))
+    }
+
+    func testReportedStatusIsAuthoritativeLikeAnOSCToken() {
+        let detector = AgentStateDetector()
+        detector.handleStatusReport(.working)
+        XCTAssertTrue(detector.hasExplicitStatus)
+        // Heuristics stand down for a socket-reported status exactly as they do
+        // for the OSC 666 escape — it is the same report by another road.
+        detector.processHeuristics(chunk: "Do you want to proceed?")
+        XCTAssertEqual(detector.state, .working)
+    }
+
     func testBlockedPollingDetectsPromptOnQuietScreen() {
         let detector = AgentStateDetector(doneQuietPeriod: 60, blockedPollInterval: 0.05)
         var screen = "✻ Working…"

@@ -176,18 +176,35 @@ nonisolated enum TerminalText {
     /// describes, so its text collapses TUI redraw noise for free. Delta reads keep
     /// the raw byte cursor — cursors stay `generation:total` against the rolling
     /// buffer — and get the same normalization on the way out.
+    ///
+    /// The screen-served case never calls `recentDelta`: that would normalize the
+    /// whole raw buffer (two regex passes and a redraw collapse over up to 64KB of
+    /// a spinning TUI's byte stream) only to discard the text for the screen's. The
+    /// two fields it did contribute are recomputed here directly, both trivially:
+    /// the cursor is `generation:total`, and `truncated` is whether `since` failed
+    /// to resolve.
     static func recentRead(_ snapshot: RecentReadSnapshot, since: String?, lineLimit: Int?) -> RecentDelta {
-        let delta = recentDelta(
+        // Same staleness rule `recentDelta` applies: a cursor is usable only when
+        // it parses, names this generation, and still points inside the retained
+        // window. Anything else re-syncs as a full read flagged `truncated`.
+        let staleCursor = since.map { token in
+            guard let offset = parseRecentCursor(token, generation: snapshot.generation) else { return true }
+            return offset < snapshot.dropped || offset > snapshot.total
+        } ?? false
+        let isFullRead = since == nil || staleCursor
+
+        if isFullRead, let screen = snapshot.screen {
+            return RecentDelta(text: transcript(screen: screen, limit: lineLimit),
+                               cursor: "\(snapshot.generation):\(snapshot.total)",
+                               truncated: staleCursor)
+        }
+        return recentDelta(
             buffer: snapshot.buffer,
             total: snapshot.total,
             dropped: snapshot.dropped,
             generation: snapshot.generation,
             since: since,
             lineLimit: lineLimit)
-        let isFullRead = since == nil || delta.truncated
-        guard isFullRead, let screen = snapshot.screen else { return delta }
-        return RecentDelta(text: transcript(screen: screen, limit: lineLimit),
-                           cursor: delta.cursor, truncated: delta.truncated)
     }
 
     /// Parses a `"<generation>:<offset>"` cursor, returning the byte offset only

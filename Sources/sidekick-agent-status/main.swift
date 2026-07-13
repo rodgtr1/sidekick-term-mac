@@ -1,26 +1,30 @@
 import Foundation
+import SidekickIPCCore
 
-private let termprop = "vte.ext.sidekick.agent"
+// Invoked by an agent's status hooks (Claude Code, Codex, Pi) to tell Sidekick
+// what the agent is doing: busy on a prompt, waiting on the user, done, gone.
+//
+// Two transports, tried in order (see AgentStatusReport for the why):
+//   1. an OSC 666 escape written to /dev/tty, which the pane's terminal picks
+//      out of its own output stream, and
+//   2. the Sidekick control socket, addressed to $SIDEKICK_PANE_ID — the only
+//      route open to a hook process spawned without a controlling terminal,
+//      which is how Claude Code spawns them.
+//
+// A hook must never disrupt the agent: every failure path exits 0 silently.
 
-let status: String
-switch CommandLine.arguments.dropFirst().first {
-case "busy", "working", "running":
-    status = "busy"
-case "ready", "prompt", "waiting", "needs-user", "needs_user":
-    status = "ready"
-case "done", "finished", "complete":
-    status = "done"
-case "idle", "clear", "reset":
-    status = "idle"
-default:
+let status: AgentStatusReport.Status
+if let parsed = AgentStatusReport.status(fromArgument: CommandLine.arguments.dropFirst().first) {
+    status = parsed
+} else {
     FileHandle.standardError.write(Data("usage: sidekick-agent-status busy|ready|done|idle\n".utf8))
     exit(2)
 }
 
-/// Reads the `message` from a Claude Code hook payload on stdin, if present.
-/// Hooks always receive JSON on stdin, so we only read when stdin is a pipe
-/// (never a TTY, which would block an interactive invocation).
-private func hookMessage() -> String? {
+/// Reads the `message` from a hook payload on stdin, if present. Hooks always
+/// receive JSON on stdin, so we only read when stdin is a pipe (never a TTY,
+/// which would block an interactive invocation).
+func hookMessage() -> String? {
     guard isatty(FileHandle.standardInput.fileDescriptor) == 0 else { return nil }
     let data = FileHandle.standardInput.readDataToEndOfFile()
     guard !data.isEmpty,
@@ -29,22 +33,36 @@ private func hookMessage() -> String? {
     return message
 }
 
-// Claude Code's Notification hook fires both for genuine permission requests
-// ("Claude needs your permission to use Bash") AND for the idle reminder
-// ("Claude is waiting for your input") that arrives ~60s after a turn ends.
-// The idle reminder must not flip a finished agent back to "Needs input", so
-// when reporting `ready` we inspect the hook payload and suppress that case —
-// leaving the pane in whatever state the Stop/Done hook last set.
-if status == "ready",
-   let message = hookMessage()?.lowercased(),
-   message.contains("waiting for your input") {
+if AgentStatusReport.isIdleReminder(status: status, hookMessage: hookMessage()) {
     exit(0)
 }
 
-let sequence = "\u{001B}]666;\(termprop)=\(status)\u{001B}\\"
+/// Writes the OSC 666 sequence to the controlling terminal. False when there
+/// isn't one — a hook spawned detached from the pane's tty (Claude Code) opens
+/// /dev/tty with ENXIO, and the report has to go around through the socket.
+func reportOverTTY(_ status: AgentStatusReport.Status) -> Bool {
+    guard let data = AgentStatusReport.escapeSequence(for: status).data(using: .utf8),
+          let tty = FileHandle(forWritingAtPath: "/dev/tty") else { return false }
+    defer { try? tty.close() }
+    do {
+        try tty.write(contentsOf: data)
+        return true
+    } catch {
+        return false
+    }
+}
 
-if let data = sequence.data(using: .utf8),
-   let tty = FileHandle(forWritingAtPath: "/dev/tty") {
-    tty.write(data)
-    try? tty.close()
+/// Reports over Sidekick's control socket, addressed to the pane whose shell the
+/// hook ran in. False when not running inside a Sidekick pane (no pane ID in the
+/// environment) or the app isn't listening.
+func reportOverSocket(_ status: AgentStatusReport.Status) -> Bool {
+    guard let paneID = ProcessInfo.processInfo.environment["SIDEKICK_PANE_ID"],
+          !paneID.isEmpty else { return false }
+    return SidekickIPCClient().sendFireAndForget(
+        AgentStatusReport.ipcCommand(status: status, paneID: paneID)
+    )
+}
+
+if !reportOverTTY(status) {
+    _ = reportOverSocket(status)
 }

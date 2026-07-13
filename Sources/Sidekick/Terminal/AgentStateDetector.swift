@@ -61,6 +61,14 @@ final class AgentStateDetector {
     /// (they don't flip the pane hook-authoritative).
     func handleStatusToken(_ raw: String) {
         guard let state = Self.state(fromStatus: raw) else { return }
+        handleStatusReport(state)
+    }
+
+    /// Applies an explicit status report that arrived out of band — over the
+    /// control socket rather than as an OSC 666 escape in the pane's output.
+    /// It is the same report by another road (a hook with no controlling
+    /// terminal can't write the escape), so it carries the same authority.
+    func handleStatusReport(_ state: AgentState) {
         applyExplicitState(state)
     }
 

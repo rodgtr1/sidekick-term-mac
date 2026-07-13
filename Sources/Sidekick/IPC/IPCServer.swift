@@ -174,6 +174,7 @@ nonisolated enum IPCCommandType {
     case agentBusy
     case agentDone
     case agentIdle
+    case agentStatus(paneID: UUID, state: AgentState)
     case paneList
     case agentList
     case paneCurrent(paneID: UUID?)
@@ -230,6 +231,17 @@ nonisolated enum IPCCommandType {
             return .command(.agentDone)
         case "agent_idle":
             return .command(.agentIdle)
+        case "agent_status":
+            // The pane-scoped report `sidekick-agent-status` sends when it has no
+            // controlling terminal to write the OSC 666 escape to. Unlike the
+            // legacy `agent_*` verbs above (which set the *active tab's* state),
+            // this names its pane and feeds that pane's detector, so a hook firing
+            // in a background pane lands where it belongs. The status vocabulary
+            // is the hooks' own ("busy"), not AgentState's raw values.
+            guard let paneID = uuid(command.paneID),
+                  let rawStatus = command.status,
+                  let state = AgentStateDetector.state(fromStatus: rawStatus) else { return .invalidArguments }
+            return .command(.agentStatus(paneID: paneID, state: state))
         case "pane_list":
             return .command(.paneList)
         case "agent_list":

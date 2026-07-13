@@ -945,7 +945,18 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         // While a command is running (between OSC 133 C and D), accumulate its
         // output for the command-record history. ANSI is stripped at finalize.
-        commandRecorder.appendOutput(output)
+        //
+        // The alternate screen is read here, at processing time, rather than
+        // when the bytes arrived: this runs on the main queue one dispatch after
+        // the PTY read, and the flag flips mid-stream when the TUI switches
+        // buffers. So the on/off boundary is only accurate to a chunk — a chunk
+        // that both leaves the alt screen and prints a summary is captured
+        // whole, one that prints and then enters it is dropped whole. That's the
+        // right trade: the alternative is re-scanning every chunk for the
+        // enter/leave escapes to split it, at real cost, to salvage bytes that
+        // sit either side of a redraw frame.
+        commandRecorder.appendOutput(
+            output, onAlternateScreen: terminalView.getTerminal().isCurrentBufferAlternate)
     }
 
     private func detectAgentState(from output: String) {
@@ -1245,6 +1256,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     func send(text: String) {
         // Send text to the terminal
         terminalView.send(txt: text)
+    }
+
+    /// An agent hook reported this pane's state over the control socket instead
+    /// of as an OSC 666 escape in the output stream — the route taken when the
+    /// hook process has no controlling terminal to write the escape to (Claude
+    /// Code spawns its hooks detached). Same authority as the in-band report.
+    func applyAgentStatusReport(_ state: AgentState) {
+        agentStateDetector.handleStatusReport(state)
     }
 
     @discardableResult

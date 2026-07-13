@@ -48,6 +48,32 @@ final class CommandRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.recentRecords().last?.output, "")
     }
 
+    func testAlternateScreenOutputIsNotCaptured() {
+        // A full-screen TUI between the C and D marks (claude, vim): everything
+        // it writes is redraw for a screen that keeps no history, so none of it
+        // belongs in the record.
+        var recorder = CommandRecorder()
+        recorder.commandStarted(command: "claude")
+        for tick in 0..<200 {
+            recorder.appendOutput("\u{001B}[2K✻ Thinking… (\(tick)s)\r", onAlternateScreen: true)
+        }
+        _ = recorder.commandFinished(exitCode: 0)
+        XCTAssertEqual(recorder.recentRecords().last?.output, "")
+    }
+
+    func testOutputEitherSideOfTheAlternateScreenIsStillCaptured() {
+        // A command that prints, goes full-screen, then prints a summary on the
+        // way out keeps both halves — only the TUI's redraw window is dropped.
+        var recorder = CommandRecorder()
+        recorder.commandStarted(command: "vim notes.md")
+        recorder.appendOutput("opening notes.md\n", onAlternateScreen: false)
+        recorder.appendOutput("\u{001B}[2K~\u{001B}[3;1H~\r", onAlternateScreen: true)
+        recorder.appendOutput("\"notes.md\" 12L written\n", onAlternateScreen: false)
+        _ = recorder.commandFinished(exitCode: 0)
+        XCTAssertEqual(recorder.recentRecords().last?.output,
+                       "opening notes.md\n\"notes.md\" 12L written")
+    }
+
     func testRecordsCappedAndLimitApplied() {
         var recorder = CommandRecorder()
         for i in 0..<105 {

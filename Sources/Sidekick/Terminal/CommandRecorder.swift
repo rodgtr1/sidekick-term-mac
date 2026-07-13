@@ -81,8 +81,16 @@ nonisolated struct CommandRecorder {
 
     /// Accumulates output for the in-flight command (no-op when none is
     /// running). ANSI is stripped at finalize.
-    mutating func appendOutput(_ chunk: String) {
-        guard inFlightCommand != nil else { return }
+    ///
+    /// `onAlternateScreen` chunks are dropped: when the foreground command is a
+    /// full-screen TUI (claude, codex, vim) the whole C..D window is redraw
+    /// frames for a screen that keeps no history, so capturing it fills the
+    /// 256KB record with noise no one can read. The caller passes the screen it
+    /// saw rather than the recorder consulting a terminal, so this stays a pure
+    /// struct. The same command still gets the output it printed before going
+    /// full-screen and the summary it prints after leaving.
+    mutating func appendOutput(_ chunk: String, onAlternateScreen: Bool = false) {
+        guard inFlightCommand != nil, !onAlternateScreen else { return }
         TerminalText.appendBounded(chunk, to: &inFlightOutput, cap: Self.maxCommandOutputChars)
     }
 
