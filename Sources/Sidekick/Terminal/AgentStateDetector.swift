@@ -117,14 +117,27 @@ final class AgentStateDetector {
     /// A genuine keystroke reached the terminal.
     ///
     /// Hook-equipped agents report every transition over OSC 666, so input
-    /// must never move agent state: Working comes from UserPromptSubmit /
+    /// almost never moves agent state: Working comes from UserPromptSubmit /
     /// PreToolUse, Ready from Notification, Done from Stop. Guessing from
     /// keystrokes is what stranded finished agents on "Working" once their
     /// pane was focused. (Focus/mouse reports are already filtered upstream,
     /// but real keystrokes are silenced here too — the next hook is
     /// authoritative and effectively instant.)
-    func handleUserInput() {
-        if hasExplicitStatus { return }
+    ///
+    /// The one exception is answering a prompt from `.ready`: no hook fires
+    /// when the user approves a permission prompt or answers AskUserQuestion
+    /// (the docs are explicit about this), so the next authoritative busy is
+    /// the tool's own PostToolUse — after the approved tool has finished. The
+    /// answer keystroke itself is the only signal at that instant, so an
+    /// Enter or an option digit optimistically flips ready → working; every
+    /// later hook report still overrides. `.done` stays untouchable.
+    func handleUserInput(bytes: ArraySlice<UInt8>? = nil) {
+        if hasExplicitStatus {
+            if state == .ready, let bytes, Self.isPromptAnswerKey(bytes) {
+                notifyStateChange(.working)
+            }
+            return
+        }
 
         recentOutput = ""
         agentDoneTimer?.invalidate()
@@ -134,6 +147,21 @@ final class AgentStateDetector {
             notifyStateChange(.working)
             scheduleDoneAfterQuietPeriod()
         }
+    }
+
+    /// Whether an input chunk plausibly ANSWERS an interactive agent prompt:
+    /// Enter (also the last byte of a paste-then-submit), or a bare option
+    /// digit (Claude's numbered prompt shortcuts select-and-submit without
+    /// Enter). Arrows (CSI sequences), Escape, and letters — someone composing
+    /// "tell Claude what to do differently" feedback — don't count: moving a
+    /// selection or writing text answers nothing yet. A digit typed INTO such
+    /// feedback text is indistinguishable from a shortcut and mis-flips
+    /// briefly; the submit that follows resumes the agent and the next hook
+    /// report re-asserts the truth either way.
+    nonisolated static func isPromptAnswerKey(_ bytes: ArraySlice<UInt8>) -> Bool {
+        guard let last = bytes.last else { return false }
+        if last == 0x0D || last == 0x0A { return true }             // CR / LF
+        return bytes.count == 1 && (0x31...0x39).contains(last)     // '1'-'9'
     }
 
     /// Returns agent tracking to a clean slate (state idle, heuristics

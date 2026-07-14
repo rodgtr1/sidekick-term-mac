@@ -146,6 +146,8 @@ final class AgentHookReconcileTests: XCTestCase {
         // The events the old install never had.
         XCTAssertTrue(try hookCommands(event: "PermissionRequest").contains { $0.hasSuffix("sidekick-agent-status ready") })
         XCTAssertTrue(try hookCommands(event: "PreToolUse").contains { $0.hasSuffix("sidekick-agent-status busy") })
+        XCTAssertTrue(try hookCommands(event: "PostToolUse").contains { $0.hasSuffix("sidekick-agent-status busy") })
+        XCTAssertTrue(try hookCommands(event: "PostToolUseFailure").contains { $0.hasSuffix("sidekick-agent-status busy") })
         XCTAssertTrue(try hookCommands(event: "SessionEnd").contains { $0.hasSuffix("sidekick-agent-status idle") })
         XCTAssertTrue(try hookCommands(event: "SessionStart").contains { $0.hasSuffix("sidekick-telemetry") })
     }

@@ -108,6 +108,67 @@ final class AgentStateDetectorTests: XCTestCase {
         XCTAssertEqual(detector.state, .done)
     }
 
+    // No hook fires when the user ANSWERS a permission prompt or an
+    // AskUserQuestion — the next authoritative busy is the tool's PostToolUse,
+    // after the approved tool already ran. The answer keystroke is the only
+    // signal at that instant, so it may flip ready → working; nothing else may
+    // move a hook-authoritative pane.
+
+    func testAnswerKeystrokeFlipsHookAuthoritativeReadyToWorking() {
+        let enter = AgentStateDetector()
+        enter.handleStatusToken("ready")
+        enter.handleUserInput(bytes: [0x0D][...])                    // Enter
+        XCTAssertEqual(enter.state, .working)
+
+        let digit = AgentStateDetector()
+        digit.handleStatusToken("ready")
+        digit.handleUserInput(bytes: [UInt8]("2".utf8)[...])         // option shortcut
+        XCTAssertEqual(digit.state, .working)
+    }
+
+    func testNonAnswerKeystrokesLeaveHookAuthoritativeReadyAlone() {
+        let detector = AgentStateDetector()
+        detector.handleStatusToken("ready")
+
+        detector.handleUserInput(bytes: [UInt8]("\u{1B}[B".utf8)[...]) // arrow down
+        XCTAssertEqual(detector.state, .ready)
+        detector.handleUserInput(bytes: [UInt8]("y".utf8)[...])        // typing feedback
+        XCTAssertEqual(detector.state, .ready)
+        detector.handleUserInput(bytes: [0x1B][...])                   // bare Escape
+        XCTAssertEqual(detector.state, .ready)
+        detector.handleUserInput()                                     // no byte info
+        XCTAssertEqual(detector.state, .ready)
+    }
+
+    func testAnswerKeystrokeNeverMovesHookAuthoritativeDoneOrWorking() {
+        // .done stays untouchable — flipping it on input is the old
+        // stranded-on-Working bug this guard exists for.
+        let done = AgentStateDetector()
+        done.handleStatusToken("done")
+        done.handleUserInput(bytes: [0x0D][...])
+        XCTAssertEqual(done.state, .done)
+
+        let working = AgentStateDetector()
+        working.handleStatusToken("busy")
+        working.handleUserInput(bytes: [0x0D][...])
+        XCTAssertEqual(working.state, .working)
+    }
+
+    func testAnswerKeystrokeFlipKeepsHookAuthority() {
+        // The optimistic flip is a display correction, not a return to
+        // heuristics: the pane stays hook-authoritative and the next report
+        // still rules.
+        let detector = AgentStateDetector()
+        detector.handleStatusToken("ready")
+        detector.handleUserInput(bytes: [0x0D][...])
+        XCTAssertEqual(detector.state, .working)
+        XCTAssertTrue(detector.hasExplicitStatus)
+        detector.processHeuristics(chunk: "Do you want to proceed?")   // must be ignored
+        XCTAssertEqual(detector.state, .working)
+        detector.handleStatusToken("done")
+        XCTAssertEqual(detector.state, .done)
+    }
+
     func testResetReArmsHeuristics() {
         let detector = AgentStateDetector()
         detector.handleStatusToken("busy")

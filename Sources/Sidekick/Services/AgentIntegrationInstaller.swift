@@ -91,6 +91,10 @@ nonisolated enum AgentIntegrationInstaller {
             // A pre-PermissionRequest install lacks the needs-input hook; prompt
             // a reinstall so addClaudeHook idempotently adds it.
             guard settings.contains("PermissionRequest") else { return .available }
+            // A pre-PostToolUse install strands an answered permission prompt on
+            // "Needs input" until the next PreToolUse or Stop. (Checking the
+            // Failure variant covers both — install adds the pair together.)
+            guard settings.contains("PostToolUseFailure") else { return .available }
             // A pre-SessionStart telemetry install keeps a stale context meter
             // after /clear; prompt a reinstall so the reset hook gets added.
             if isTelemetryHelperBundled(helperDirectory), !settings.contains("SessionStart") { return .available }
@@ -341,6 +345,15 @@ nonisolated enum AgentIntegrationInstaller {
         // Notification is kept as a secondary trigger for the idle/gated case;
         // the helper suppresses its "waiting for your input" idle reminder.
         ("Notification", "ready"),
+        // No hook fires when the user ANSWERS a permission prompt, so a pane
+        // sat on "Needs input" from PermissionRequest until the next
+        // PreToolUse or Stop. Tool completion is the earliest authoritative
+        // busy signal after an approval (and the only one at all for
+        // AskUserQuestion, whose tool call completes the moment the user
+        // answers). Kept Claude-only until Codex's PostToolUse support is
+        // verified.
+        ("PostToolUse", "busy"),
+        ("PostToolUseFailure", "busy"), // a failed tool still means Claude resumes
         ("SessionEnd", "idle")          // clears the tab from the agents panel
     ]
 

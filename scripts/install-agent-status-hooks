@@ -172,21 +172,26 @@ def remove_hook(event, signature):
     else:
         hooks.pop(event, None)
 
-# Earlier versions registered a "PermissionRequest" ready hook, but Claude Code
-# has no such event so it never fired (leaving the agent stuck on "Working").
-# "Notification" now carries the ready signal; drop the dead hook.
-remove_hook("PermissionRequest", "sidekick-agent-status")
-
 # The PreToolUse diff-review hook (sidekick-hook) is no longer shipped — it
 # duplicated Claude Code's own approval prompt. Strip it from older installs.
 remove_hook("PreToolUse", "sidekick-hook")
 
+# This event list mirrors AgentIntegrationInstaller (statusHooks +
+# sharedRefinementHooks + claudeOnlyStatusHooks); the two installers write the
+# same contract or the app's launch reconcile "repairs" a script install on
+# every start. An earlier version of this script removed PermissionRequest as
+# nonexistent, but current Claude Code fires it whenever a permission prompt
+# is shown — it is the primary "needs input" signal.
 add_hook("UserPromptSubmit", f"{status_bin} busy")
-# Claude Code fires "Notification" when it needs permission or input. There is
-# no "PermissionRequest" event, so the old mapping never reported "ready".
 add_hook("Notification", f"{status_bin} ready")
-# Flips "ready" back to "busy" as soon as an approved tool starts running.
+add_hook("PermissionRequest", f"{status_bin} ready")
+# Marks the pane busy the instant a tool call starts.
 add_hook("PreToolUse", f"{status_bin} busy")
+# No hook fires when the user ANSWERS a permission prompt; tool completion is
+# the earliest authoritative busy signal after an approval, so an answered
+# prompt doesn't sit on "Needs input" until the next PreToolUse or Stop.
+add_hook("PostToolUse", f"{status_bin} busy")
+add_hook("PostToolUseFailure", f"{status_bin} busy")
 add_hook("Stop", f"{status_bin} done")
 # Clears the tab from the agents panel when the session ends.
 add_hook("SessionEnd", f"{status_bin} idle")
@@ -228,9 +233,13 @@ def ensure_hooks_enabled(text):
 
 text = ensure_hooks_enabled(text)
 
+# Mirrors AgentIntegrationInstaller.installCodex (statusHooks +
+# sharedRefinementHooks) so the app's launch reconcile doesn't "repair" a
+# script install on every start.
 commands = {
     "UserPromptSubmit": f"{status_bin} busy",
     "PermissionRequest": f"{status_bin} ready",
+    "PreToolUse": f"{status_bin} busy",
     "Stop": f"{status_bin} done",
 }
 

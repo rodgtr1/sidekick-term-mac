@@ -101,7 +101,9 @@ enum MouseReportClassifier {
 
 private final class AgentAwareTerminalView: LocalProcessTerminalView {
     var onOutput: ((String) -> Void)?
-    var onInput: (() -> Void)?
+    /// Carries the keystroke's bytes so the agent-state detector can tell a
+    /// prompt-answering key (Enter, option digit) from arrows or typing.
+    var onInput: ((ArraySlice<UInt8>) -> Void)?
 
     /// Whether a mouse button is currently held, tracked from the press/release
     /// reports we forward. Lets `send` tell a hover (motion, no button) from a
@@ -225,7 +227,7 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
         // they must not count as "the user is working" (that flipped a finished
         // agent back to Working whenever its tab was activated).
         if !MouseReportClassifier.isTerminalGeneratedReport(data) {
-            onInput?()
+            onInput?(data)
         }
         super.send(source: source, data: data)
     }
@@ -566,9 +568,10 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
                 self?.queueAgentDetection(output)
             }
         }
-        agentAwareTerminalView.onInput = { [weak self] in
+        agentAwareTerminalView.onInput = { [weak self] data in
+            let bytes = [UInt8](data)
             DispatchQueue.main.async {
-                self?.handleTerminalInput()
+                self?.handleTerminalInput(bytes[...])
             }
         }
         terminalView = agentAwareTerminalView
@@ -1297,8 +1300,8 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         terminalView.scrollDown(lines: target - currentTop)
     }
 
-    private func handleTerminalInput() {
-        agentStateDetector.handleUserInput()
+    private func handleTerminalInput(_ bytes: ArraySlice<UInt8>) {
+        agentStateDetector.handleUserInput(bytes: bytes)
     }
 
     private func readVisibleScreenText() -> String {
