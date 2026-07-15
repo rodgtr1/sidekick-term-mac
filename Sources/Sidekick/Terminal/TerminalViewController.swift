@@ -1277,19 +1277,6 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         terminalView.scrollUp(lines: currentTop - target)
     }
 
-    /// Scrolls so the prompt at absolute scrollback `row` lands at the top of
-    /// the view — used by the commands timeline's jump-to action. Clamps to the
-    /// available scrollback and pins to the bottom for a row that's still on the
-    /// live screen.
-    func jumpToPrompt(row: Int) {
-        let currentTop = terminalView.getTerminal().buffer.yDisp
-        if row < currentTop {
-            terminalView.scrollUp(lines: currentTop - row)
-        } else if row > currentTop {
-            terminalView.scrollDown(lines: row - currentTop)
-        }
-    }
-
     /// Scrolls so the next prompt below the current view lands at the top.
     func scrollToNextPrompt() {
         let currentTop = terminalView.getTerminal().buffer.yDisp

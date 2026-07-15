@@ -876,8 +876,6 @@ class MainWindowController: NSWindowController {
     func syncSidebarToActiveTab() {
         // Keep the agents panel's highlighted row on the active tab's agent.
         sidebarContainerView.refreshAgents()
-        // Point the commands timeline at the active pane's history.
-        sidebarContainerView.refreshCommands()
 
         guard let directory = currentSidebarDirectoryForActiveTab() else { return }
         sidebarContainerView.updateFileTree(path: directory)
@@ -986,10 +984,6 @@ extension MainWindowController: SidebarContainerDelegate {
 
     func sidebarContainerActiveRepoRoot(_ container: SidebarContainerView) -> String? {
         worktreeFlowController.activeRepoRoot()
-    }
-
-    func sidebarContainerActiveTerminal(_ container: SidebarContainerView) -> TerminalViewController? {
-        tabs[safe: activeTabIndex]?.activePane?.terminalViewController
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenWorktree path: String) {
@@ -1468,9 +1462,6 @@ extension MainWindowController: TabHost {
 
     func updateSidebarDirectory(_ path: String) {
         sidebarContainerView.updateFileTree(path: path)
-        // Activating a different pane in the same tab lands here (not
-        // syncSidebarToActiveTab), so refresh the commands timeline too.
-        sidebarContainerView.refreshCommands()
     }
     // syncSidebarToActiveTab() and refreshAgentsBadge() are defined on the
     // class above and satisfy the rest of TabHost.

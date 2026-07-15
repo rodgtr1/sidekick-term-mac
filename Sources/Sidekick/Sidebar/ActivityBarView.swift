@@ -12,7 +12,6 @@ enum SidebarPanel: String, CaseIterable {
     case git = "Git"
     case worktrees = "Worktrees"
     case hosts = "Hosts"
-    case commands = "Commands"
 
     var icon: String {
         switch self {
@@ -21,7 +20,6 @@ enum SidebarPanel: String, CaseIterable {
         case .worktrees: return "arrow.triangle.branch"
         case .search: return "magnifyingglass"
         case .agents: return "sparkles"
-        case .commands: return "list.bullet.rectangle"
         case .hosts: return "server.rack"
         }
     }
@@ -35,7 +33,6 @@ enum SidebarPanel: String, CaseIterable {
         case .agents: return "⌘⇧A"
         case .hosts: return "⌘⇧H"
         case .worktrees: return ""
-        case .commands: return ""
         }
     }
 
@@ -49,7 +46,6 @@ enum SidebarPanel: String, CaseIterable {
         case .agents: return "sparkle"
         case .hosts: return "server"
         case .worktrees: return "source-control"   // unused: falls back to SF Symbol
-        case .commands: return "output"
         }
     }
 
