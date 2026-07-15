@@ -264,6 +264,20 @@ final class AgentHookReconcileTests: XCTestCase {
         let ext = try text(of: piExtensionURL)
         XCTAssertTrue(ext.contains("reportTelemetry"))
         XCTAssertTrue(ext.contains(helpers.appendingPathComponent("sidekick-telemetry").path))
+        // The current contract also routes file edits through the approval desk.
+        XCTAssertTrue(ext.contains("show_diff"))
+    }
+
+    func testPiExtensionWithoutEditGateIsReconciled() throws {
+        // A telemetry-era extension that predates the edit-gate: ours, but stale
+        // because it never routes edits through the desk. Reconcile must add it.
+        try write(
+            "// sidekick extension\nfunction reportTelemetry() {}\n",
+            to: piExtensionURL
+        )
+
+        XCTAssertEqual(reconcile([.pi])[.pi], .reconciled)
+        XCTAssertTrue(try text(of: piExtensionURL).contains("show_diff"))
     }
 
     func testPiWithoutTheExtensionIsNotTouched() throws {
