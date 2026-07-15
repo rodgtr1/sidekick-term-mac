@@ -80,6 +80,7 @@ class KeyboardShortcutsPanel: NSPanel {
 
         // General
         (.preferences, "Open preferences", "General"),
+        (.toggleArcade, "Toggle the arcade panel (enable in Preferences ▸ Extras)", "General"),
     ]
 
     private func loadShortcuts() {

@@ -37,6 +37,12 @@ protocol PaletteCommandHost: AnyObject {
     func showQuickOpen()
     func showPreferences()
     func openConfigFile()
+
+    // Extras
+    /// Whether the optional arcade module is enabled in config ([arcade]
+    /// enabled = true). Off by default; gates both the ⌃` chord and the
+    /// palette entry.
+    var isArcadeEnabled: Bool { get }
 }
 
 /// Owns the ⇧⌘P command palette and the `KeyboardCommand` dispatch table —
@@ -48,6 +54,9 @@ final class PaletteCommandRegistry {
     private weak var host: PaletteCommandHost?
     /// Retained so ⇧⌘P reuses one panel instead of stacking duplicates.
     private var commandPalette: CommandPalettePanel?
+    /// Retained so ⌃` toggles one panel whose in-memory game state survives
+    /// hide/show; recreating it per toggle would restart the game.
+    private var arcadePanel: ArcadePanel?
 
     init(host: PaletteCommandHost) {
         self.host = host
@@ -111,7 +120,24 @@ final class PaletteCommandRegistry {
                 self?.host?.openConfigFile()
             }
         )
+
+        // Optional extras only appear while enabled in config.
+        if host?.isArcadeEnabled == true {
+            actions.append(
+                PaletteAction(title: "Toggle Arcade", subtitle: KeyboardCommand.toggleArcade.displayShortcut, symbolName: "gamecontroller") { [weak self] in
+                    self?.toggleArcade()
+                }
+            )
+        }
         return actions
+    }
+
+    func toggleArcade() {
+        guard let host, host.isArcadeEnabled else { return }
+        if arcadePanel == nil {
+            arcadePanel = ArcadePanel()
+        }
+        arcadePanel?.toggle(relativeTo: host.paletteHostWindow)
     }
 
     func perform(_ command: KeyboardCommand) {
@@ -159,6 +185,8 @@ final class PaletteCommandRegistry {
             break // handled in handleKeyDown
         case .focusAgentAttention:
             host.focusAgentAttentionTab()
+        case .toggleArcade:
+            toggleArcade()
         }
     }
 }

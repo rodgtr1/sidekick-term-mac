@@ -1253,6 +1253,12 @@ extension MainWindowController {
             return false
         }
 
+        // With the arcade disabled (the default), ⌃` falls through to the
+        // terminal rather than being swallowed by a no-op command.
+        if command == .toggleArcade && !isArcadeEnabled {
+            return false
+        }
+
         // Cmd+V only intercepts when the pasteboard holds an image (pasted
         // as a temp PNG path); otherwise fall through to normal paste.
         if command == .pasteIntoTerminal {
@@ -1603,6 +1609,10 @@ extension MainWindowController: PaletteCommandHost {
 
     func findInActiveTerminal() {
         tabs[safe: activeTabIndex]?.activePane?.terminalViewController?.showFindBar()
+    }
+
+    var isArcadeEnabled: Bool {
+        config.arcade?.enabled ?? false
     }
 }
 

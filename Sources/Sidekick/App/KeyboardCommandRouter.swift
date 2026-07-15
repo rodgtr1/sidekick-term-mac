@@ -22,6 +22,7 @@ enum KeyboardCommand: Equatable {
     case zoomReset
     case pasteIntoTerminal
     case focusAgentAttention
+    case toggleArcade
 }
 
 extension KeyboardCommand {
@@ -55,6 +56,7 @@ extension KeyboardCommand {
         case .focusPane(let forward): return forward ? "⌘]" : "⌘["
         case .pasteIntoTerminal: return "⌘V"
         case .focusAgentAttention: return "⇧⌘J"
+        case .toggleArcade: return "⌃`"
         default: return nil
         }
     }
@@ -77,6 +79,13 @@ struct KeyboardCommandRouter {
 
         if keyCode == 48 && (modifiers == .control || modifiers == [.control, .shift]) {
             return .cycleTabs(forward: !modifiers.contains(.shift))
+        }
+
+        // ⌃` (Quake-terminal heritage). Routed unconditionally; the window
+        // controller drops it when [arcade] is disabled so the chord falls
+        // through to the terminal instead of being swallowed.
+        if keyCode == 50 && modifiers == .control {
+            return .toggleArcade
         }
 
         if modifiers == [.command, .shift] {

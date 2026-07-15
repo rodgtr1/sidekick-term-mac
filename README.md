@@ -169,6 +169,50 @@ via `⌘K` ("Keyboard Shortcuts").
 | `⌘B` | Toggle sidebar |
 | `⌘=` / `⌘-` / `⌘0` | Zoom in / out / reset |
 | `⌘,` | Preferences |
+| `` ⌃` `` | Toggle the arcade panel (opt-in, see below) |
+
+## Extras
+
+Optional modules, all off by default. Enable them in Preferences ▸ Extras
+or per section in `~/.config/sidekick/config.toml`.
+
+**Arcade** (`[arcade] enabled = true`): a floating panel of mini-games for
+the dead time while agents churn, in the spirit of Ghostty's and iTerm2's
+quick-terminal windows. `` ⌃` `` toggles it; hiding pauses the game and
+everything is remembered across toggles and app relaunches in
+`~/.config/sidekick/arcade.json`. Games are self-contained modules behind
+an `ArcadeGame` protocol, with a picker in the panel. A handful so far:
+
+- **Blocks**: a falling-blocks classic. Ghost piece, hold, 7-bag, levels.
+- **Depth Ladder**: an endless tower of picross-style deduction puzzles,
+  built for 90-second check-ins between agent runs. Floors grow from 5x5
+  to 15x15 as you descend; your permanent stat is your depth. Wrong fills
+  cost one of three mistakes; a failed floor burns one of three daily
+  lanterns, and at zero the tower goes dark until midnight. Every puzzle
+  is generated solvable by pure line logic, never guessing.
+- **Two Lines**: the opposite of a game — a palate cleanser. Each open
+  shows one gentle prompt ("a sound you can hear right now") and a small
+  text box; write a line or two, or don't. Entries append to
+  `~/.config/sidekick/two-lines.md`, a plain markdown journal you own.
+  No scores, no streaks, no fail state; drafts survive closing the panel.
+- **The Grove**: a bonsai in text that grows very slowly in real time, one
+  tick per three hours you are away, capped so a week off is a pleasant jump
+  rather than a stranger. Open it to prune a branch, bend one a few degrees,
+  plant a seed, or just look; it cannot die and there is no right shape.
+  Three species as moods (pine, maple, willow); plantings and clearings are
+  logged to `~/.config/sidekick/grove.md`, a plain markdown file you own.
+- **The Walk**: an endless procedural landscape strolled a few steps at a
+  time, described in spare field-notebook prose. Space takes a step; biomes
+  drift along a plausible map, weather shifts on a slow chain, and now and
+  then there is a small finding: a gull's feather, a worn coin, a fox skull.
+  No destination and no counter to fill. Findings and each new place accrue
+  in `~/.config/sidekick/the-walk.md`, a plain markdown journal you own.
+- **Slow Cartography**: mapping a generated coastline by hand, a few pen
+  strokes per visit. Drag to survey; the world is invisible until you draw
+  it, so the chart is only ever what you have traced. Name a bay whatever you
+  like, sketch in a hill, watch the shoreline emerge where land meets sea.
+  The pen holds a little ink per visit and refills on open; nothing counts
+  down. Export sheets to `~/.config/sidekick/atlas.md`, an atlas you own.
 
 ## MCP Server
 

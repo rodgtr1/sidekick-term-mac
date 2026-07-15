@@ -7,8 +7,15 @@ class PreferencesWindowController: NSWindowController {
 
     // UI Elements
     private var contentView: NSView!
-    private var tabView: NSTabView!
+    private var tabViewController: PreferencesTabViewController!
     private var themeObserver: ThemeObserver?
+
+    /// One size for every pane. Each tab's view controller reports this as its
+    /// preferredContentSize, so switching tabs never resizes the window — the
+    /// old NSTabView let wide panes (Approvals, Notifications) grow the window
+    /// on selection while seven top tabs truncated their labels.
+    static let paneSize = NSSize(width: 560, height: 500)
+    static let selectedTabDefaultsKey = "PreferencesSelectedTab"
 
     // General Tab
     private var opacitySlider: NSSlider!
@@ -47,6 +54,9 @@ class PreferencesWindowController: NSWindowController {
     private var alwaysAskField: NSTextField!
     private var worktreeAutoApproveCheckbox: NSButton!
 
+    // Extras Tab
+    private var arcadeEnabledCheckbox: NSButton!
+
     // Notifications Tab
     private var notificationsEnabledCheckbox: NSButton!
     private var notifyNeedsInputCheckbox: NSButton!
@@ -81,12 +91,15 @@ class PreferencesWindowController: NSWindowController {
     private func applyThemeColors() {
         window?.backgroundColor = AppTheme.windowBackground
         contentView?.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-        for item in tabView.tabViewItems {
-            item.view?.wantsLayer = true
-            item.view?.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        // Default every label to primary, then restore the secondary value
+        // labels. Recolor per pane (not just contentView) because the tab
+        // controller detaches unselected panes from the view hierarchy.
+        for item in tabViewController.tabViewItems {
+            guard let paneView = item.viewController?.view else { continue }
+            paneView.wantsLayer = true
+            paneView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+            recolorLabels(in: paneView, color: AppTheme.primaryText)
         }
-        // Default every label to primary, then restore the secondary value labels.
-        recolorLabels(in: contentView, color: AppTheme.primaryText)
         [opacityLabel, fontSizeLabel, editorFontSizeLabel, shellIntegrationStatusLabel].forEach {
             $0?.textColor = AppTheme.secondaryText
         }
@@ -113,21 +126,16 @@ class PreferencesWindowController: NSWindowController {
         window.title = "Preferences"
         window.delegate = self
         window.titlebarAppearsTransparent = false
-        // A sane floor so chrome stays usable; taller content scrolls, and the
-        // user can grow the window to reveal a whole pane at once.
-        window.minSize = NSSize(width: 500, height: 360)
-        window.center()
+        // Fixed width so the toolbar tabs and panes always fit; only the
+        // height resizes (taller content scrolls either way).
+        window.minSize = NSSize(width: Self.paneSize.width, height: 420)
+        window.maxSize = NSSize(width: Self.paneSize.width, height: 1200)
         window.isMovableByWindowBackground = true
         window.backgroundColor = AppTheme.windowBackground
     }
 
     private func setupUI() {
         guard let window = window else { return }
-
-        contentView = NSView(frame: window.contentView?.bounds ?? .zero)
-        contentView.wantsLayer = true
-        contentView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-        window.contentView = contentView
 
         setupTabView()
         setupGeneralTab()
@@ -137,14 +145,29 @@ class PreferencesWindowController: NSWindowController {
         setupApprovalsTab()
         setupNotificationsTab()
         setupAppearanceTab()
-        layoutViews()
+        setupExtrasTab()
+
+        window.contentViewController = tabViewController
+        contentView = tabViewController.view
+        contentView.wantsLayer = true
+        contentView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+
+        // Reopen on the tab the user last had selected, then size and center
+        // (contentViewController assignment above may have resized the frame).
+        if let saved = UserDefaults.standard.string(forKey: Self.selectedTabDefaultsKey),
+           let index = tabViewController.tabViewItems.firstIndex(where: { $0.identifier as? String == saved }) {
+            tabViewController.selectedTabViewItemIndex = index
+        }
+        window.setContentSize(Self.paneSize)
+        window.center()
+        window.title = tabViewController.tabViewItems[safe: tabViewController.selectedTabViewItemIndex]?.label ?? "Preferences"
     }
 
     private func setupTabView() {
-        tabView = NSTabView()
-        tabView.tabViewType = .topTabsBezelBorder
-        tabView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(tabView)
+        tabViewController = PreferencesTabViewController()
+        // Toolbar-style tabs (icon + label, like System Settings): they never
+        // truncate the way seven-plus segmented top tabs did at this width.
+        tabViewController.tabStyle = .toolbar
     }
 
     /// A themed pane whose content scrolls when it's taller than the tab area.
@@ -178,12 +201,17 @@ class PreferencesWindowController: NSWindowController {
     }
 
     /// Wrap a built pane view in a tab and append it. Call order here (in
-    /// setupUI) is the visible tab order.
-    private func addTab(_ view: NSView, identifier: String, label: String) {
-        let item = NSTabViewItem(identifier: identifier)
+    /// setupUI) is the visible tab order. Every pane reports the same
+    /// preferredContentSize so tab switches never resize the window.
+    private func addTab(_ view: NSView, identifier: String, label: String, symbol: String) {
+        let paneController = NSViewController()
+        paneController.view = view
+        paneController.preferredContentSize = Self.paneSize
+        let item = NSTabViewItem(viewController: paneController)
+        item.identifier = identifier
         item.label = label
-        item.view = view
-        tabView.addTabViewItem(item)
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        tabViewController.addTabViewItem(item)
     }
 
     /// The right-aligned monospaced value label paired with a slider.
@@ -253,7 +281,7 @@ class PreferencesWindowController: NSWindowController {
         form.leadingControl(rawConfigButton, gapAbove: 10)
         form.finish()
 
-        addTab(generalView, identifier: "general", label: "General")
+        addTab(generalView, identifier: "general", label: "General", symbol: "gearshape")
     }
 
     private func setupTerminalTab() {
@@ -313,7 +341,7 @@ class PreferencesWindowController: NSWindowController {
         form.leadingControl(shellIntegrationButton, gapAbove: 10)
         form.finish()
 
-        addTab(terminalView, identifier: "terminal", label: "Terminal")
+        addTab(terminalView, identifier: "terminal", label: "Terminal", symbol: "terminal")
     }
 
     private func setupAgentsTab() {
@@ -347,7 +375,7 @@ class PreferencesWindowController: NSWindowController {
         updateAgentIntegrationStatuses()
         form.finish()
 
-        addTab(agentsView, identifier: "agents", label: "Agents")
+        addTab(agentsView, identifier: "agents", label: "Agents", symbol: "sparkles")
     }
 
     private func setupApprovalsTab() {
@@ -424,7 +452,7 @@ class PreferencesWindowController: NSWindowController {
         form.fullWidth(worktreeAutoApproveHelp, gapAbove: 6)
         form.finish()
 
-        addTab(approvalsView, identifier: "approvals", label: "Approvals")
+        addTab(approvalsView, identifier: "approvals", label: "Approvals", symbol: "checkmark.shield")
     }
 
     private func setupNotificationsTab() {
@@ -504,7 +532,7 @@ class PreferencesWindowController: NSWindowController {
         form.fullWidth(graceHelp, gapAbove: 6)
         form.finish()
 
-        addTab(notificationsView, identifier: "notifications", label: "Notifications")
+        addTab(notificationsView, identifier: "notifications", label: "Notifications", symbol: "bell")
     }
 
     /// A small right-aligned numeric text field for integer preferences.
@@ -542,7 +570,7 @@ class PreferencesWindowController: NSWindowController {
         form.leadingControl(themePopup, gapAbove: 10, width: 200)
         form.finish()
 
-        addTab(appearanceView, identifier: "appearance", label: "Appearance")
+        addTab(appearanceView, identifier: "appearance", label: "Appearance", symbol: "paintbrush")
     }
 
     private func setupEditorTab() {
@@ -590,16 +618,33 @@ class PreferencesWindowController: NSWindowController {
         form.checkbox(showHiddenFilesCheckbox, gapAbove: 12)
         form.finish()
 
-        addTab(editorView, identifier: "editor", label: "Editor")
+        addTab(editorView, identifier: "editor", label: "Editor", symbol: "square.and.pencil")
     }
 
-    private func layoutViews() {
-        NSLayoutConstraint.activate([
-            tabView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
-            tabView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            tabView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            tabView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20)
-        ])
+    private func setupExtrasTab() {
+        let (extrasView, extrasContent) = makeScrollingPane()
+        let form = PreferencesFormBuilder(container: extrasContent)
+
+        arcadeEnabledCheckbox = NSButton(
+            checkboxWithTitle: "Enable the arcade panel (⌃`)",
+            target: self,
+            action: #selector(arcadeEnabledChanged(_:))
+        )
+        arcadeEnabledCheckbox.font = NSFont.systemFont(ofSize: 13)
+
+        let arcadeBlurb = Self.wrappingLabel(
+            "Mini-games in a floating panel for the dead time while agents run. ⌃` toggles it; hiding pauses the game, and boards and best scores survive relaunches. While disabled, the shortcut passes through to the terminal.",
+            fontSize: 12,
+            maxLines: 4,
+            preferredWidth: 420
+        )
+
+        form.fieldLabel("Arcade:", gapAbove: 30)
+        form.checkbox(arcadeEnabledCheckbox, gapAbove: 10)
+        form.fullWidth(arcadeBlurb, gapAbove: 6)
+        form.finish()
+
+        addTab(extrasView, identifier: "extras", label: "Extras", symbol: "puzzlepiece")
     }
 
     private func loadCurrentSettings() {
@@ -678,6 +723,9 @@ class PreferencesWindowController: NSWindowController {
         backgroundGraceField.integerValue = notifications.backgroundGraceSeconds
         updateNotificationControlsEnabled()
 
+        // Load extras settings (defaults when the section is absent).
+        arcadeEnabledCheckbox.state = (config.arcade?.enabled ?? false) ? .on : .off
+
         updateShellIntegrationStatus()
     }
 
@@ -732,6 +780,16 @@ class PreferencesWindowController: NSWindowController {
     @objc private func restoreSessionChanged(_ sender: NSButton) {
         let enabled = sender.state == .on
         mutateConfig { $0.behavior.restoreSession = enabled }
+    }
+
+    @objc private func arcadeEnabledChanged(_ sender: NSButton) {
+        let enabled = sender.state == .on
+        mutateConfig {
+            if $0.arcade == nil {
+                $0.arcade = ArcadeConfig()
+            }
+            $0.arcade?.enabled = enabled
+        }
     }
 
     @objc private func confirmCloseChanged(_ sender: NSButton) {
@@ -1124,5 +1182,19 @@ extension PreferencesWindowController: NSWindowDelegate {
         // Nothing to flush: every control persists its own field on change via
         // mutateConfig. Writing the whole snapshot here would clobber any
         // external edits made while this window was open (M4).
+    }
+}
+
+/// Toolbar-style tab controller that titles the window after the selected
+/// tab (System Settings behavior) and remembers the selection so Preferences
+/// reopens where the user left it.
+private final class PreferencesTabViewController: NSTabViewController {
+    override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        super.tabView(tabView, didSelect: tabViewItem)
+        guard let tabViewItem else { return }
+        view.window?.title = tabViewItem.label
+        if let identifier = tabViewItem.identifier as? String {
+            UserDefaults.standard.set(identifier, forKey: PreferencesWindowController.selectedTabDefaultsKey)
+        }
     }
 }

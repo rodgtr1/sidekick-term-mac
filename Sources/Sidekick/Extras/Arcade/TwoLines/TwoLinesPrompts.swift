@@ -1,0 +1,152 @@
+import Foundation
+
+/// The prompt library. Ground rules for additions: concrete over abstract,
+/// outward over inward, gentle over profound. A good prompt makes you look
+/// up from the screen or reach into a specific memory; it never assigns
+/// homework, and none of them require a good answer.
+nonisolated enum TwoLinesPrompts {
+    static let all: [String] = [
+        // Right here, right now
+        "a sound you can hear right now",
+        "the farthest sound you can hear",
+        "the quietest thing in the room",
+        "what the light is doing",
+        "the nearest shadow",
+        "something round",
+        "something blue nearby",
+        "a color you can see exactly three of",
+        "the oldest thing in the room",
+        "something within reach you've never really looked at",
+        "the texture under your fingers",
+        "what's directly above you",
+        "the ceiling, given more attention than it's used to",
+        "the floor beneath you",
+        "the feeling of this chair",
+        "the temperature, as a feeling not a number",
+        "a smell in the air right now",
+        "the weather, without using the word for it",
+        "the season, caught in one detail",
+        "what this hour of day feels like",
+        "the nearest green thing",
+        "something in the room that's slightly broken but still works",
+        "the most worn object you can see",
+        "the noise your home makes when it thinks no one is listening",
+        "your drink, described to someone who's never had one",
+        "what your hands have done so far today",
+        "the most suspicious object nearby",
+        "something here that will outlive you",
+        "the newest thing you can see",
+        "a piece of clutter you've stopped seeing",
+
+        // Out the window
+        "whatever is out the nearest window",
+        "the sky, right now",
+        "the shape of the clouds today",
+        "a window you like, anywhere in the world",
+        "the view from a window you once knew well",
+        "what the trees are doing",
+        "the street at this exact moment",
+        "a bird you noticed once and still remember",
+        "an animal you've locked eyes with",
+
+        // The body
+        "your posture, reported honestly",
+        "your breath, just one of them",
+        "something your body does well without being asked",
+        "where your shoulders are",
+        "the last thing that made you laugh",
+        "what hunger feels like today, if it's around",
+        "how tired you are, in weather terms",
+
+        // Memory: places
+        "the first room you remember",
+        "your earliest kitchen",
+        "a door you remember",
+        "a road you've walked a hundred times",
+        "a tree you could find blindfolded",
+        "a place you've only been once",
+        "a shop that no longer exists",
+        "a corner of a house you once lived in",
+        "a gate, fence, or wall you remember",
+        "a river, lake, or sea you know personally",
+        "a place you go to think",
+        "the smell of a workplace from your past",
+        "a staircase you remember",
+        "a parking lot that meant something",
+        "the best hiding spot you ever had",
+
+        // Memory: senses
+        "a sound from childhood",
+        "a smell that means home",
+        "a smell you'd bottle if you could",
+        "what winter smells like",
+        "the taste of one particular summer",
+        "a food you haven't eaten in years",
+        "a meal someone once cooked for you",
+        "the sound rain makes where you grew up",
+        "a song you loved before you had taste",
+        "the feel of an old car you rode in",
+        "what mornings sounded like in your childhood home",
+
+        // People
+        "someone you saw today but don't know",
+        "the way someone you love says hello",
+        "a laugh you can still hear",
+        "hands you remember",
+        "someone's handwriting",
+        "a voice you know instantly on the phone",
+        "the last stranger who was kind to you",
+        "a teacher, in one sentence",
+        "someone you think of when you use a particular object",
+        "a habit you inherited",
+        "advice you ignored, fondly",
+
+        // Objects and possessions
+        "what's in your pocket or bag, chosen at random",
+        "an object you own that's older than you",
+        "something you made with your hands",
+        "something you rescued from being thrown away",
+        "a tool you enjoy using",
+        "something borrowed you never returned",
+        "your shoes and where they've been",
+        "something you're wearing and where it came from",
+        "the heaviest thing you carried this week",
+        "a book as a physical object, not its contents",
+        "something small you're glad exists",
+        "an object you'd grab in a fire, after the obvious ones",
+        "the cheapest thing you use every day",
+        "a gift you still have",
+
+        // Words and small wonders
+        "a word you like the sound of",
+        "the sound of your own name, heard fresh",
+        "a phrase someone in your family always said",
+        "a fact you love that serves no purpose",
+        "something you know by heart without trying",
+        "a sign or label you've read a thousand times",
+        "the last thing you looked up out of pure curiosity",
+
+        // Time
+        "what dusk does to a room",
+        "the last time you were early, and the waiting",
+        "something that took you years to appreciate",
+        "a moment today that already feels far away",
+        "the part of today you'd keep",
+        "what you were doing an hour ago, as a scene",
+        "yesterday, in one image",
+        "something you did today for the last time, maybe, without knowing",
+
+        // Slightly sideways
+        "water, the last time you really noticed it",
+        "a machine you have affection for",
+        "the moon, last time you saw it",
+        "a smell you disliked as a kid and don't mind now",
+        "something invisible you rely on",
+        "a sound that means work is over",
+        "the most honest object in the house",
+        "a place you know only at one time of day",
+        "something ordinary seen from very close up",
+        "the oldest light you can see (sun counts)",
+        "a threshold you cross every day"
+    ]
+}

@@ -14,6 +14,7 @@ public struct Config: Codable {
     public var approval: ApprovalConfig?  // Make optional for backwards compatibility
     public var telemetry: TelemetryConfig?  // Make optional for backwards compatibility
     public var notifications: NotificationsConfig?  // Make optional for backwards compatibility
+    public var arcade: ArcadeConfig?  // Make optional for backwards compatibility
 
     /// True when this value is the defaults returned because the on-disk file
     /// existed but could not be read or parsed — as opposed to a legitimate
@@ -25,7 +26,7 @@ public struct Config: Codable {
     // Only the real config sections are (de)coded; `loadDidFail` is transient
     // and its default keeps synthesized Codable happy without persisting it.
     enum CodingKeys: String, CodingKey {
-        case theme, font, cursor, window, behavior, shell, diff, editor, approval, telemetry, notifications
+        case theme, font, cursor, window, behavior, shell, diff, editor, approval, telemetry, notifications, arcade
     }
 
     public init() {
@@ -40,6 +41,7 @@ public struct Config: Codable {
         self.approval = ApprovalConfig()
         self.telemetry = TelemetryConfig()
         self.notifications = NotificationsConfig()
+        self.arcade = ArcadeConfig()
     }
 
     public static func load(from path: String = "~/.config/sidekick/config.toml") -> Config {
@@ -261,6 +263,14 @@ long_running_threshold_seconds = 30
 #   before completion/failure notifications fire (a quick tab-away shouldn't
 #   ping). Does not affect needs_input. Default 0 (fire whenever inactive).
 background_grace_seconds = 0
+
+[arcade]
+# Optional mini-games in a floating panel, toggled with ctrl+` — something to
+# keep your hands busy while agents run. Strictly opt-in: when false (the
+# default) the shortcut passes through to the terminal and no palette entry
+# appears. Also toggleable in Preferences ▸ Extras. Game state and high
+# scores persist across launches in ~/.config/sidekick/arcade.json.
+enabled = false
 """
 
         // Create directory if needed
@@ -670,6 +680,23 @@ public struct EditorConfig: Codable {
         self.fontSize = try container.decodeIfPresent(Int.self, forKey: .fontSize) ?? 13
         self.showHiddenFiles = try container.decodeIfPresent(Bool.self, forKey: .showHiddenFiles) ?? false
         self.fontFamily = try container.decodeIfPresent(String.self, forKey: .fontFamily) ?? ""
+    }
+}
+
+// MARK: - Arcade Configuration
+/// Gate for the optional arcade panel (Extras/Arcade). Strictly opt-in:
+/// while disabled the ⌃` chord falls through to the terminal and the
+/// command palette hides its entry.
+nonisolated public struct ArcadeConfig: Codable, Sendable {
+    public var enabled: Bool
+
+    public init() {
+        self.enabled = false
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
     }
 }
 
