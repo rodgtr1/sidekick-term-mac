@@ -785,15 +785,17 @@ nonisolated enum AgentIntegrationInstaller {
 
         config = ensureCodexHooksEnabled(in: config)
 
-        // Codex's PreToolUse hook can carry a permission decision, so in
-        // principle it could feed Sidekick's in-app diff-approval queue the way
-        // the retired Claude edit hook once tried to. It stays in-terminal:
-        // Codex already renders the diff and the approve/deny prompt in its own
-        // TUI, and reproducing that in Sidekick would mean reconstructing each
-        // file's before/after from the apply_patch payload and blocking the hook
-        // on an IPC round-trip — duplicating a prompt Codex shows well already.
-        // The PermissionRequest -> "ready" hook still surfaces the wait in the
-        // agents panel, so the pane flags that it needs input either way.
+        // Codex gets no edit-gate hook, deliberately. Verified against the
+        // openai/codex source (hooks/src/engine/output_parser.rs), the official
+        // hooks docs, and codex-cli 0.144.3's embedded schemas: a Codex
+        // PreToolUse hook can only veto — a bare permissionDecision "allow" is
+        // rejected as unsupported — so an approve can't suppress Codex's own
+        // prompt, and a desk round-trip would double-prompt (the bug that got
+        // the original sidekick-hook removed). PermissionRequest CAN allow, but
+        // it only fires when Codex would already prompt, so it can't gate edits
+        // under the workspace-write/bypass flags Sidekick launches with. Codex
+        // keeps its flag-based approvals; the PermissionRequest -> "ready" hook
+        // still surfaces the wait in the agents panel either way.
         for (event, state) in statusHooks + sharedRefinementHooks {
             let command = "\(shellQuotedIfNeeded(statusBinary.path)) \(state)"
             let signature = "sidekick-agent-status \(state)"

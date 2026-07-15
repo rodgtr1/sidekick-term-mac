@@ -32,11 +32,20 @@ guard against discarding uncommitted work), and Hosts (jump straight into an
 **Agent orchestration**: an Agents dashboard with live state per tab and a
 per-agent context-usage bar (green → yellow → red as a session's context
 window fills up); macOS notifications and dock bounces when an agent needs
-input or finishes; an inline diff approval panel with accept/reject/"remember
-for this session"; and a configurable approval policy (ask every edit,
-auto-approve edits, Claude's safety-checked Auto mode, or fully autonomous)
-with always-allow/always-ask glob overrides for things like `.env` and
-secrets. One action spins up an isolated
+input or finishes; and an approval desk that reviews agent file edits before
+they land. Claude Code edits are intercepted by a PreToolUse hook and Pi
+edits by the Sidekick extension; both carry the edit to an inline diff card
+in the Agents panel (accept, reject, or remember for the file, folder, or
+session), and the desk's verdict answers the agent's own permission question,
+so there is exactly one prompt, not two. The approval policy is configurable
+(ask every edit, auto-approve edits, Claude's safety-checked Auto mode, or
+fully autonomous) with `auto_allow`/`always_ask` glob overrides: an
+`always_ask` path like `.env` parks at the desk even in fully autonomous
+mode, and a rejection there holds. If Sidekick isn't running, the gate stays
+silent and the agent's normal prompting takes over; nothing breaks. Codex
+edits keep Codex's own in-terminal approvals: its hooks can veto a tool call
+but not approve one, so routing them through the desk would just prompt
+twice. One action spins up an isolated
 git worktree, optionally launching an agent straight into it, so parallel
 agents never fight over the same working tree.
 
@@ -125,11 +134,20 @@ bar:
 - **Claude Code**: adds hooks to `~/.claude/settings.json` so prompt
   submission, tool use, permission requests, and session end/stop map to
   Sidekick's busy/ready/done/idle states, plus a hook that reports token
-  usage and cost.
+  usage and cost, plus the edit gate: a PreToolUse hook on Edit/Write that
+  routes each file edit through the approval desk and answers Claude's
+  permission question with the reviewer's decision.
 - **Codex**: enables `hooks = true` and adds equivalent `[[hooks.<event>]]`
-  blocks to `~/.codex/config.toml`.
+  status blocks to `~/.codex/config.toml`. Codex file edits are not routed
+  through the approval desk: Codex's hooks can deny a tool call but cannot
+  approve one (verified against the Codex source and its CLI's hook schemas),
+  so a desk round-trip would duplicate Codex's own prompt. Codex keeps its
+  flag-based approvals, and its permission prompts still surface as "Needs
+  input" in the Agents panel.
 - **Pi**: drops a TypeScript extension into `~/.pi/agent/extensions/` that
-  reports status over OSC 666 and forwards session transcripts for telemetry.
+  reports status over OSC 666, forwards session transcripts for telemetry,
+  and routes Pi's `edit`/`write` tools through the approval desk with the
+  same fail-open contract as the Claude gate.
 
 Approval behavior (ask-every-edit, auto-approve edits, Claude's Auto mode,
 or fully autonomous) lives in the separate **Approvals** tab, not here.
@@ -291,6 +309,12 @@ blink = true
 padding = 8
 opacity = 0.9
 enable_blur = true
+
+[approval]
+mode = "ask"                 # ask | auto | claude-auto | bypass; flags applied to agents launched in panes
+auto_allow = []              # globs approved silently even under "ask", e.g. ["docs/**"]
+always_ask = []              # globs that always park at the approval desk, even under auto/bypass, e.g. [".env"]
+worktree_auto_approve = false # silently approve edits that stay inside a pane's own registered worktree
 
 [behavior]
 scrollback_lines = 10000     # -1 for unlimited
