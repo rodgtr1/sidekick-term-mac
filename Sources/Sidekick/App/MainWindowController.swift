@@ -256,12 +256,13 @@ class MainWindowController: NSWindowController {
         }
     }
 
-    /// Effective Sidekick approval level ("ask"/"auto"/"bypass"): the persistent
-    /// `[approval]` mode, but the per-session ⇧⌘A toggle forces at least "auto"
-    /// and never downgrades a configured "bypass".
+    /// Effective Sidekick approval level ("ask"/"auto"/"claude-auto"/"bypass"):
+    /// the persistent `[approval]` mode, but the per-session ⇧⌘A toggle forces
+    /// at least "auto" and never downgrades a configured "claude-auto" or
+    /// "bypass" (both already auto-approve more than the toggle grants).
     private var effectiveApprovalMode: String {
         let configMode = (config.approval?.mode ?? "ask").lowercased()
-        if configMode == "bypass" { return "bypass" }
+        if configMode == "bypass" || configMode == "claude-auto" { return configMode }
         if sessionAutoApproveEdits { return "auto" }
         return configMode == "auto" ? "auto" : "ask"
     }

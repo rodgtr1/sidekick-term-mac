@@ -189,6 +189,12 @@ show_hidden_files = false
 #              workspace-write --ask-for-approval on-request. File edits apply
 #              without a prompt (risky Bash like `git push` still prompts). Works
 #              even on corporate machines that disable bypass mode.
+#   "claude-auto" — Claude: --permission-mode auto (Claude Code's "Auto" mode).
+#              Everything auto-approves, but a safety classifier checks each
+#              action against your request and blocks destructive commands and
+#              hostile-content-driven actions; explicit "ask" permission rules
+#              still prompt. Needs Claude Code 2.1.207+ and an Opus 4.6+/Sonnet
+#              4.6+ model. Codex has no analog and gets the same flags as "auto".
 #   "bypass" — Claude: --permission-mode bypassPermissions; Codex: --sandbox
 #              danger-full-access --ask-for-approval never. No prompts at all.
 #              Claude falls back to "acceptEdits" when a managed policy disables
@@ -429,11 +435,15 @@ public struct BehaviorConfig: Codable {
 // MARK: - Approval Configuration
 nonisolated public struct ApprovalConfig: Codable, Sendable {
     /// How agents launched in panes prompt before acting:
-    /// "ask"    — leave Claude Code's normal per-edit prompting (default).
-    /// "auto"   — auto-approve file edits (maps to Claude's `acceptEdits`);
-    ///            risky Bash still prompts.
-    /// "bypass" — auto-approve everything (maps to Claude's `bypassPermissions`),
-    ///            falling back to `acceptEdits` where a managed policy blocks it.
+    /// "ask"         — leave Claude Code's normal per-edit prompting (default).
+    /// "auto"        — auto-approve file edits (maps to Claude's `acceptEdits`);
+    ///                 risky Bash still prompts.
+    /// "claude-auto" — Claude's Auto mode (`--permission-mode auto`): everything
+    ///                 auto-approves, but a safety classifier checks each action
+    ///                 against the request and blocks destructive or hostile ones.
+    ///                 Claude-specific; Codex gets the same flags as "auto".
+    /// "bypass"      — auto-approve everything (maps to Claude's `bypassPermissions`),
+    ///                 falling back to `acceptEdits` where a managed policy blocks it.
     public var mode: String
 
     /// Globs whose edits are approved silently even while `mode = "ask"`.
@@ -474,11 +484,11 @@ nonisolated public struct ApprovalConfig: Codable, Sendable {
         worktreeAutoApprove = try container.decodeIfPresent(Bool.self, forKey: .worktreeAutoApprove) ?? worktreeAutoApprove
     }
 
-    /// True when edits should be approved without a popup — both "auto" and the
-    /// broader "bypass" auto-approve edits.
+    /// True when edits should be approved without a popup — "auto",
+    /// "claude-auto", and the broader "bypass" all auto-approve edits.
     public var autoApprove: Bool {
         let m = mode.lowercased()
-        return m == "auto" || m == "bypass"
+        return m == "auto" || m == "claude-auto" || m == "bypass"
     }
 }
 

@@ -189,6 +189,7 @@ final class AgentIntegrationInstallerTests: XCTestCase {
         XCTAssertNil(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "ask"))
         XCTAssertNil(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "unknown"))
         XCTAssertEqual(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "auto"), "acceptEdits")
+        XCTAssertEqual(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "claude-auto"), "auto")
         // Without a managed disable policy, bypass maps straight through. (The
         // managed-disable fallback to acceptEdits depends on a system file and
         // isn't exercised here.)
@@ -203,6 +204,12 @@ final class AgentIntegrationInstallerTests: XCTestCase {
         XCTAssertEqual(
             AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "auto"),
             ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]
+        )
+        // Codex has no analog to Claude's Auto mode, so claude-auto degrades to
+        // the same sandboxed flags as auto.
+        XCTAssertEqual(
+            AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "claude-auto"),
+            AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "auto")
         )
         XCTAssertEqual(
             AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "bypass"),

@@ -367,6 +367,16 @@ nonisolated enum AgentIntegrationInstaller {
     /// Claude Code's "no prompts at all" permission mode.
     static let bypassMode = "bypassPermissions"
 
+    /// Claude Code's Auto mode: auto-approves everything, but a background
+    /// safety classifier checks each action against the user's request and
+    /// blocks destructive commands or actions driven by hostile content;
+    /// explicit `ask` permission rules still prompt. Sits between `acceptEdits`
+    /// (edits only, no oversight of Bash) and `bypassPermissions` (everything,
+    /// no oversight at all). Requires Claude Code 2.1.207+ and an Opus 4.6+ /
+    /// Sonnet 4.6+ model; an older CLI rejects the flag at launch, which is why
+    /// this maps only from the explicit "claude-auto" level, never silently.
+    static let claudeAutoPermissionMode = "auto"
+
     /// The defaultMode values Sidekick manages. On returning to "ask" we clear
     /// only these, leaving a user's own pick (e.g. "plan") intact.
     static let managedModes: Set<String> = [autoApproveMode, bypassMode]
@@ -462,12 +472,14 @@ nonisolated enum AgentIntegrationInstaller {
         return (permissions["disableBypassPermissionsMode"] as? String) == "disable"
     }
 
-    /// Maps a Sidekick approval level ("ask"/"auto"/"bypass") to the Claude Code
-    /// `permissions.defaultMode`, or `nil` for normal prompting. Centralizes the
-    /// agent-specific mapping so callers only deal in the abstract level.
+    /// Maps a Sidekick approval level ("ask"/"auto"/"claude-auto"/"bypass") to
+    /// the Claude Code permission mode, or `nil` for normal prompting.
+    /// Centralizes the agent-specific mapping so callers only deal in the
+    /// abstract level.
     static func claudeMode(forApprovalMode mode: String) -> String? {
         switch mode.lowercased() {
         case "auto": return autoApproveMode
+        case "claude-auto": return claudeAutoPermissionMode
         case "bypass": return bypassMode
         default: return nil
         }
@@ -495,7 +507,9 @@ nonisolated enum AgentIntegrationInstaller {
     /// gracefully on its own without Sidekick pre-checking the policy.
     static func codexApprovalFlags(forApprovalMode mode: String) -> [String] {
         switch mode.lowercased() {
-        case "auto":
+        // Codex has no classifier-supervised analog to Claude's Auto mode, so
+        // "claude-auto" degrades to the same sandboxed flags as "auto".
+        case "auto", "claude-auto":
             return ["--sandbox", codexAutoSettings.sandbox, "--ask-for-approval", codexAutoSettings.approval]
         case "bypass":
             return ["--sandbox", codexBypassSettings.sandbox, "--ask-for-approval", codexBypassSettings.approval]

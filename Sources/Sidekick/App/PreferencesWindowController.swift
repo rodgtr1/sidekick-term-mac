@@ -358,13 +358,14 @@ class PreferencesWindowController: NSWindowController {
         approvalModePopup.addItems(withTitles: [
             "Ask before every edit",
             "Auto-approve edits",
+            "Auto (Claude decides, safety-checked)",
             "Auto-approve everything (no prompts)"
         ])
         approvalModePopup.target = self
         approvalModePopup.action = #selector(approvalModeChanged(_:))
 
         let modeHelp = Self.wrappingLabel(
-            "Edits are applied without prompting; risky commands still ask. \"Everything\" skips all prompts. Applies to new agents — toggle per session with ⇧⌘A.",
+            "\"Auto-approve edits\" applies edits without prompting; risky commands still ask. \"Auto\" is Claude's Auto mode: no prompts, but a safety model blocks destructive or off-task actions (Claude Code 2.1.207+). \"Everything\" skips all prompts with no checks. Applies to new agents — toggle per session with ⇧⌘A.",
             fontSize: 11,
             maxLines: 6,
             preferredWidth: 420
@@ -827,7 +828,7 @@ class PreferencesWindowController: NSWindowController {
     }
 
     /// Approval mode strings indexed to match the popup item order.
-    private static let approvalModes = ["ask", "auto", "bypass"]
+    private static let approvalModes = ["ask", "auto", "claude-auto", "bypass"]
 
     private static func approvalModeIndex(_ mode: String) -> Int {
         approvalModes.firstIndex(of: mode.lowercased()) ?? 0

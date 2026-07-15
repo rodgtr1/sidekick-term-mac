@@ -34,8 +34,9 @@ per-agent context-usage bar (green → yellow → red as a session's context
 window fills up); macOS notifications and dock bounces when an agent needs
 input or finishes; an inline diff approval panel with accept/reject/"remember
 for this session"; and a configurable approval policy (ask every edit,
-auto-approve edits, or fully autonomous) with always-allow/always-ask glob
-overrides for things like `.env` and secrets. One action spins up an isolated
+auto-approve edits, Claude's safety-checked Auto mode, or fully autonomous)
+with always-allow/always-ask glob overrides for things like `.env` and
+secrets. One action spins up an isolated
 git worktree, optionally launching an agent straight into it, so parallel
 agents never fight over the same working tree.
 
@@ -130,8 +131,8 @@ bar:
 - **Pi**: drops a TypeScript extension into `~/.pi/agent/extensions/` that
   reports status over OSC 666 and forwards session transcripts for telemetry.
 
-Approval behavior (auto-approve vs. ask-every-edit vs. fully autonomous)
-lives in the separate **Approvals** tab, not here.
+Approval behavior (ask-every-edit, auto-approve edits, Claude's Auto mode,
+or fully autonomous) lives in the separate **Approvals** tab, not here.
 
 ## Keyboard Shortcuts
 
