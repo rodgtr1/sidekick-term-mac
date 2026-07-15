@@ -700,12 +700,25 @@ private final class ApprovalCardView: NSView {
         diffButton.controlSize = .small
         diffButton.font = NSFont.systemFont(ofSize: 11)
 
-        for entry in Self.rememberScopes {
-            rememberPopup.addItem(withTitle: entry.title)
+        // `always_ask` outranks every "remember" grant in policy, so on such a
+        // card every scope but "Just this once" would be a silent no-op. Drop the
+        // popup for a muted note instead of offering choices that do nothing.
+        let rememberControl: NSView
+        if approval.isAlwaysAsk {
+            let alwaysAskLabel = NSTextField(labelWithString: "always asks")
+            alwaysAskLabel.font = NSFont.systemFont(ofSize: 11)
+            alwaysAskLabel.textColor = AppTheme.mutedText
+            alwaysAskLabel.toolTip = "This path matches an always_ask rule, so it prompts every time — a remembered grant can't cover it."
+            rememberControl = alwaysAskLabel
+        } else {
+            for entry in Self.rememberScopes {
+                rememberPopup.addItem(withTitle: entry.title)
+            }
+            rememberPopup.controlSize = .small
+            rememberPopup.font = NSFont.systemFont(ofSize: 11)
+            rememberPopup.toolTip = "Whether to keep approving similar edits for the rest of this session"
+            rememberControl = rememberPopup
         }
-        rememberPopup.controlSize = .small
-        rememberPopup.font = NSFont.systemFont(ofSize: 11)
-        rememberPopup.toolTip = "Whether to keep approving similar edits for the rest of this session"
 
         let rejectButton = NSButton(title: "Reject", target: self, action: #selector(rejectClicked))
         rejectButton.bezelStyle = .rounded
@@ -728,7 +741,7 @@ private final class ApprovalCardView: NSView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(fileLabel)
         stack.addArrangedSubview(metaLabel)
-        stack.addArrangedSubview(rememberPopup)
+        stack.addArrangedSubview(rememberControl)
         stack.addArrangedSubview(buttonRow)
         addSubview(stack)
 

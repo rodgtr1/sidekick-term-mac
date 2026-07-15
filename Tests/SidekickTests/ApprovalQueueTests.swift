@@ -58,6 +58,30 @@ final class ApprovalQueueTests: XCTestCase {
         XCTAssertEqual(queue.count(forPane: nil), 0)
     }
 
+    func testWithdrawRemovesEntryWithoutFiringCompletion() {
+        let queue = ApprovalQueue()
+        var fired = false
+        let id = queue.enqueue(paneID: nil, path: "/tmp/gone.txt", old: "", new: "x") { _ in fired = true }
+
+        let withdrawn = queue.withdraw(id: id)
+        XCTAssertEqual(withdrawn?.path, "/tmp/gone.txt")
+        XCTAssertTrue(queue.pending.isEmpty)
+        XCTAssertFalse(fired, "a withdrawn entry drops its held completion unfired — the socket is dead")
+
+        // A resolve racing the withdrawal (or a second withdraw) is a no-op.
+        queue.resolve(id: id, outcome: .rejected)
+        XCTAssertNil(queue.withdraw(id: id))
+        XCTAssertFalse(fired)
+    }
+
+    func testEnqueueCarriesAlwaysAskFlag() {
+        let queue = ApprovalQueue()
+        queue.enqueue(paneID: nil, path: "/tmp/.env", old: "", new: "x", isAlwaysAsk: true) { _ in }
+        queue.enqueue(paneID: nil, path: "/tmp/a.txt", old: "", new: "x") { _ in }
+        XCTAssertTrue(queue.pending[0].isAlwaysAsk)
+        XCTAssertFalse(queue.pending[1].isAlwaysAsk, "default is false when not an always_ask path")
+    }
+
     func testEnqueueAndResolvePostChangeNotifications() {
         let queue = ApprovalQueue()
         final class Counter: @unchecked Sendable { var value = 0 }
@@ -76,16 +100,36 @@ final class ApprovalQueueTests: XCTestCase {
 
 @MainActor
 final class DiffApprovalCoordinatorQueueTests: XCTestCase {
+    private final class Recorder {
+        var lines: [String] = []
+        /// Net parked count per pane, driven by onParkedStatusChange.
+        var parked: [UUID: Int] = [:]
+    }
+
     private func makeCoordinator(
         host: StubApprovalHost,
         queue: ApprovalQueue
-    ) -> (DiffApprovalCoordinator, events: () -> [String]) {
-        final class Events { var lines: [String] = [] }
-        let events = Events()
-        let coordinator = DiffApprovalCoordinator(host: host, queue: queue) { path, decision in
-            events.lines.append("\(decision):\((path as NSString).lastPathComponent)")
+    ) -> (DiffApprovalCoordinator, recorder: Recorder) {
+        let recorder = Recorder()
+        let coordinator = DiffApprovalCoordinator(
+            host: host,
+            queue: queue,
+            onParkedStatusChange: { paneID, parked in
+                recorder.parked[paneID, default: 0] += parked ? 1 : -1
+            }
+        ) { path, decision in
+            recorder.lines.append("\(decision):\((path as NSString).lastPathComponent)")
         }
-        return (coordinator, { events.lines })
+        return (coordinator, recorder)
+    }
+
+    /// Drains the main queue so the disconnect handler's async hop to main (the
+    /// real path runs it off a background watcher thread) actually executes
+    /// before the assertions read the result.
+    private func drainMainQueue() {
+        let done = expectation(description: "main queue drained")
+        DispatchQueue.main.async { done.fulfill() }
+        wait(for: [done], timeout: 1)
     }
 
     func testAutoApproveBypassesQueue() {
@@ -93,32 +137,121 @@ final class DiffApprovalCoordinatorQueueTests: XCTestCase {
         host.shouldAutoApproveEdits = true
         host.automationWindow = NSWindow()
         let queue = ApprovalQueue()
-        let (coordinator, events) = makeCoordinator(host: host, queue: queue)
+        let (coordinator, recorder) = makeCoordinator(host: host, queue: queue)
 
         var accepted: Bool?
         coordinator.requestApproval(paneID: nil, path: "/tmp/auto.txt", old: "", new: "x") { accepted = $0 }
 
         XCTAssertEqual(accepted, true)
         XCTAssertTrue(queue.pending.isEmpty)
-        XCTAssertEqual(events(), ["accepted:auto.txt"])
+        XCTAssertEqual(recorder.lines, ["accepted:auto.txt"])
+        XCTAssertTrue(recorder.parked.isEmpty, "a silent allow never parks, so it never flips status")
     }
 
     func testAskModeParksInQueueUntilResolved() {
         let host = StubApprovalHost()
         host.automationWindow = NSWindow()
         let queue = ApprovalQueue()
-        let (coordinator, events) = makeCoordinator(host: host, queue: queue)
+        let (coordinator, recorder) = makeCoordinator(host: host, queue: queue)
 
         var accepted: Bool?
         coordinator.requestApproval(paneID: nil, path: "/tmp/ask.txt", old: "", new: "x") { accepted = $0 }
 
         XCTAssertNil(accepted)
         XCTAssertEqual(queue.pending.count, 1)
-        XCTAssertEqual(events(), ["pending:ask.txt"])
+        XCTAssertEqual(recorder.lines, ["pending:ask.txt"])
 
         queue.resolve(id: queue.pending[0].id, outcome: ApprovalOutcome(accepted: true, remember: .none))
         XCTAssertEqual(accepted, true)
-        XCTAssertEqual(events(), ["pending:ask.txt", "accepted:ask.txt"])
+        XCTAssertEqual(recorder.lines, ["pending:ask.txt", "accepted:ask.txt"])
+    }
+
+    func testParkedEntryFlipsPaneStatusToNeedsInputAndBack() {
+        let host = StubApprovalHost()
+        host.automationWindow = NSWindow()
+        let queue = ApprovalQueue()
+        let (coordinator, recorder) = makeCoordinator(host: host, queue: queue)
+        let pane = UUID()
+
+        coordinator.requestApproval(paneID: pane, path: "/tmp/ask.txt", old: "", new: "x") { _ in }
+        XCTAssertEqual(recorder.parked[pane], 1, "an edit waiting at the desk flips the pane to needs input")
+
+        queue.resolve(id: queue.pending[0].id, outcome: .rejected)
+        XCTAssertEqual(recorder.parked[pane], 0, "resolving returns the pane to working")
+    }
+
+    func testUnscopedParkedEntryFlipsNoPaneStatus() {
+        let host = StubApprovalHost()
+        host.automationWindow = NSWindow()
+        let queue = ApprovalQueue()
+        let (coordinator, recorder) = makeCoordinator(host: host, queue: queue)
+
+        // A hook that reported no pane has nothing to flip.
+        coordinator.requestApproval(paneID: nil, path: "/tmp/ask.txt", old: "", new: "x") { _ in }
+        XCTAssertTrue(recorder.parked.isEmpty)
+    }
+
+    func testClientDropWithdrawsEntryAndReturnsPaneToWorking() {
+        let host = StubApprovalHost()
+        host.automationWindow = NSWindow()
+        let queue = ApprovalQueue()
+        let (coordinator, recorder) = makeCoordinator(host: host, queue: queue)
+        let pane = UUID()
+
+        var resolved: Bool?
+        var disconnect: (@Sendable () -> Void)?
+        coordinator.requestApproval(
+            paneID: pane, path: "/tmp/ask.txt", old: "", new: "x",
+            registerDisconnect: { disconnect = $0 }
+        ) { resolved = $0 }
+
+        XCTAssertEqual(queue.pending.count, 1)
+        XCTAssertEqual(recorder.parked[pane], 1)
+
+        // The hook process dies at the desk: the server-side drop handler fires.
+        disconnect?()
+        drainMainQueue()
+        XCTAssertTrue(queue.pending.isEmpty, "the orphaned entry withdraws")
+        XCTAssertNil(resolved, "no accept/reject reaches the dead socket")
+        XCTAssertEqual(recorder.lines, ["pending:ask.txt", "withdrawn:ask.txt"])
+        XCTAssertEqual(recorder.parked[pane], 0, "the withdrawn pane returns to working")
+    }
+
+    func testClientDropAfterResolveIsNoOp() {
+        let host = StubApprovalHost()
+        host.automationWindow = NSWindow()
+        let queue = ApprovalQueue()
+        let (coordinator, recorder) = makeCoordinator(host: host, queue: queue)
+        let pane = UUID()
+
+        var disconnect: (@Sendable () -> Void)?
+        coordinator.requestApproval(
+            paneID: pane, path: "/tmp/ask.txt", old: "", new: "x",
+            registerDisconnect: { disconnect = $0 }
+        ) { _ in }
+
+        queue.resolve(id: queue.pending[0].id, outcome: ApprovalOutcome(accepted: true, remember: .none))
+        XCTAssertEqual(recorder.parked[pane], 0)
+
+        // A drop that lands after a human already answered must not re-withdraw
+        // or double-flip the status.
+        disconnect?()
+        drainMainQueue()
+        XCTAssertEqual(recorder.lines, ["pending:ask.txt", "accepted:ask.txt"])
+        XCTAssertEqual(recorder.parked[pane], 0)
+    }
+
+    func testAlwaysAskEntryIsFlaggedOnTheQueue() {
+        let host = StubApprovalHost()
+        host.automationWindow = NSWindow()
+        host.approvalConfig.alwaysAsk = [".env"]
+        let queue = ApprovalQueue()
+        let (coordinator, _) = makeCoordinator(host: host, queue: queue)
+
+        coordinator.requestApproval(paneID: nil, path: "/tmp/.env", old: "", new: "x") { _ in }
+        coordinator.requestApproval(paneID: nil, path: "/tmp/a.txt", old: "", new: "x") { _ in }
+        XCTAssertTrue(queue.pending[0].isAlwaysAsk, "an always_ask path is flagged so its card hides the remember popup")
+        XCTAssertFalse(queue.pending[1].isAlwaysAsk)
     }
 
     func testNoWindowFailsOpenExceptAlwaysAsk() {

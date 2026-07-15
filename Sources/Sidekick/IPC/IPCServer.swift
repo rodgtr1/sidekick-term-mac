@@ -432,9 +432,16 @@ protocol IPCServerDelegate: AnyObject {
     /// Called on the main thread. The delegate may call `completion`
     /// synchronously, or hold it and respond later (e.g. after the user
     /// accepts/rejects a diff) — the client socket stays open until then.
+    ///
+    /// `registerDisconnect` lets a deferring delegate arm a handler the server
+    /// runs if the client hangs up BEFORE `completion` fires — the server watches
+    /// the parked socket for the drop. Used by the edit-approval desk to withdraw
+    /// an entry whose hook process died while it waited. A delegate that answers
+    /// promptly (or whose wait can't outlive the client) simply doesn't call it.
     func ipcServer(
         _ server: IPCServer,
         didReceiveCommand command: IPCCommandType,
+        onClientDisconnect registerDisconnect: @escaping (@escaping @Sendable () -> Void) -> Void,
         completion: @escaping @Sendable (IPCResponse) -> Void
     )
 
@@ -449,20 +456,63 @@ protocol IPCServerDelegate: AnyObject {
     )
 }
 
-/// A thread-safe "fire exactly once" latch. `claim()` returns true only for the
-/// first caller. Used to guard a deferred IPC completion against a delegate that
-/// invokes it more than once: a reference-captured latch is data-race free where
-/// a captured `var Bool` is not, so this satisfies strict concurrency's
+/// Coordinates a deferred IPC request between the two paths that can end it: the
+/// delegate finally calling `completion`, or the client hanging up while the
+/// request is still parked. Exactly one wins, so the response is written and the
+/// fd closed exactly once.
+///
+/// `claim()` returns true only for the first caller — it guards a deferred
+/// completion against a delegate that invokes it more than once, and lets the
+/// completion path know it beat any drop. A reference-captured latch is data-race
+/// free where a captured `var Bool` is not, satisfying strict concurrency's
 /// mutable-capture check (prep for the Swift 6 migration).
-nonisolated final class OnceLatch: @unchecked Sendable {
+///
+/// A deferring delegate may `arm` a disconnect handler; `watchForClientDrop`
+/// then polls the parked socket and, on hang-up, `claimDrop()`s the request so
+/// the handler runs (withdrawing the orphaned approval-desk entry) instead of
+/// the completion writing to a dead socket.
+nonisolated final class DeferredResponse: @unchecked Sendable {
     private let lock = NSLock()
-    private var fired = false
+    private var settled = false
+    private var disconnectHandler: (@Sendable () -> Void)?
 
+    /// The completion path claims the request. True only for the first caller.
     func claim() -> Bool {
         lock.lock(); defer { lock.unlock() }
-        if fired { return false }
-        fired = true
+        if settled { return false }
+        settled = true
         return true
+    }
+
+    /// Registers a handler to run if the client drops before the completion
+    /// fires. Only a deferring command (a parked show_diff) arms one.
+    func arm(_ handler: @escaping @Sendable () -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        disconnectHandler = handler
+    }
+
+    /// Whether a disconnect handler is armed — the server only watches the socket
+    /// for a drop when one is.
+    var isArmed: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return disconnectHandler != nil
+    }
+
+    /// True once either path has ended the request; the drop watcher stops
+    /// polling as soon as it is.
+    var isSettled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return settled
+    }
+
+    /// The drop watcher claims the request on hang-up. Returns the armed handler
+    /// to run when this caller wins the race, or nil when the completion already
+    /// settled it (a human answered as the client vanished).
+    func claimDrop() -> (@Sendable () -> Void)? {
+        lock.lock(); defer { lock.unlock() }
+        if settled { return nil }
+        settled = true
+        return disconnectHandler
     }
 }
 
@@ -812,9 +862,13 @@ nonisolated final class IPCServer: @unchecked Sendable {
                     )
                 }
 
-                let responded = OnceLatch()
-                delegate.ipcServer(self, didReceiveCommand: commandType) { [weak self] response in
-                    guard responded.claim() else { return }
+                let pending = DeferredResponse()
+                delegate.ipcServer(
+                    self,
+                    didReceiveCommand: commandType,
+                    onClientDisconnect: { handler in pending.arm(handler) }
+                ) { [weak self] response in
+                    guard pending.claim() else { return }
                     // This completion runs on the main thread (immediately or
                     // deferred by a wait/approval). A response larger than the
                     // socket send buffer to a client that stops draining would
@@ -824,8 +878,65 @@ nonisolated final class IPCServer: @unchecked Sendable {
                         close(clientFD)
                     }
                 }
+
+                // A parked request (a deferred completion that armed a disconnect
+                // handler) holds the client's socket open while it waits at the
+                // approval desk. If the hook process dies there — its 600s
+                // timeout, a killed agent, a closed pane — watch for the hang-up
+                // and withdraw the orphaned entry rather than leave a ghost card
+                // no one can answer. Armed synchronously above, so this is
+                // decided by the time the delegate call returns.
+                if pending.isArmed {
+                    self.watchForClientDrop(clientFD: clientFD, pending: pending)
+                }
             }
         }
+    }
+
+    /// Watches a parked request's socket for the client hanging up. The hook
+    /// holds the connection open (blocked reading its response) while its edit
+    /// waits at the desk, so an EOF / POLLHUP there means the hook process is
+    /// gone. Runs on a dedicated thread — like the events subscriber reader, off
+    /// the shared GCD pool — polling at 1s granularity; parked requests are rare
+    /// and short-lived, so these never accumulate. On a drop it claims the
+    /// request and runs the armed handler (which withdraws the desk entry), then
+    /// owns the close; when the completion path wins instead, it exits without
+    /// touching the fd.
+    private func watchForClientDrop(clientFD: Int32, pending: DeferredResponse) {
+        let watcher = Thread {
+            while !pending.isSettled {
+                var pfd = pollfd(fd: clientFD, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&pfd, 1, 1000)
+                if ready < 0 {
+                    if errno == EINTR { continue }
+                    return
+                }
+                if ready == 0 { continue }          // timeout — re-check settled
+                // The completion path may have settled (and be closing the fd)
+                // during our poll; don't touch the fd if so — it races with reuse.
+                if pending.isSettled { return }
+                let revents = pfd.revents
+                if (revents & Int16(POLLNVAL)) != 0 { return }
+                var hungUp = (revents & Int16(POLLHUP | POLLERR)) != 0
+                if !hungUp && (revents & Int16(POLLIN)) != 0 {
+                    // Readable while parked means EOF: the hook only ever reads
+                    // its response, never sends more. Peek so a stray byte from a
+                    // still-healthy client isn't consumed out from under the read.
+                    var byte: UInt8 = 0
+                    hungUp = recv(clientFD, &byte, 1, Int32(MSG_PEEK)) <= 0
+                }
+                if hungUp {
+                    if let handler = pending.claimDrop() {
+                        handler()
+                        close(clientFD)
+                    }
+                    return
+                }
+            }
+        }
+        watcher.name = "com.sidekick.ipc.diffdrop"
+        watcher.stackSize = 128 * 1024
+        watcher.start()
     }
 
     /// Claims one of the bounded `events` subscriber slots. Returns false when

@@ -34,10 +34,16 @@ final class DiffApprovalCoordinator {
     private weak var host: DiffApprovalHost?
     private let queue: ApprovalQueue
 
-    /// Reports the approval lifecycle (pending/accepted/rejected) for `path` so
-    /// the owner can emit a `diff` event — keeping event emission centralized
-    /// there rather than spread across coordinators.
+    /// Reports the approval lifecycle (pending/accepted/rejected/withdrawn) for
+    /// `path` so the owner can emit a `diff` event — keeping event emission
+    /// centralized there rather than spread across coordinators.
     private let onEvent: (_ path: String, _ decision: String) -> Void
+
+    /// Flips the originating pane's agent status while its edit sits at the desk:
+    /// `parked` true when an entry enqueues (→ needs input), false when it
+    /// resolves or withdraws (→ working). Only entries that actually park call
+    /// this; a silent policy allow never does.
+    private let onParkedStatusChange: (_ paneID: UUID, _ parked: Bool) -> Void
 
     /// "Approve & remember" grants from the review list, scoped per pane (the
     /// pane the edit hook ran in; nil for a hook that didn't report one). Per-pane
@@ -48,21 +54,29 @@ final class DiffApprovalCoordinator {
     init(
         host: DiffApprovalHost?,
         queue: ApprovalQueue = .shared,
+        onParkedStatusChange: @escaping (_ paneID: UUID, _ parked: Bool) -> Void = { _, _ in },
         onEvent: @escaping (_ path: String, _ decision: String) -> Void
     ) {
         self.host = host
         self.queue = queue
+        self.onParkedStatusChange = onParkedStatusChange
         self.onEvent = onEvent
     }
 
     /// Decides `path` against policy and either allows it silently or parks it
     /// in the review queue, resolving `completion` with the accept/reject
     /// outcome once the user (or a drain) decides.
+    ///
+    /// A parked entry holds the hook's socket open while it waits. `registerDisconnect`
+    /// arms a handler the server runs if that socket hangs up first (the hook
+    /// process died at its timeout, was killed, or its pane closed): the entry
+    /// withdraws so the desk can't strand a ghost card no one can answer.
     func requestApproval(
         paneID: UUID?,
         path: String,
         old: String,
         new: String,
+        registerDisconnect: (@escaping @Sendable () -> Void) -> Void = { _ in },
         completion: @escaping (Bool) -> Void
     ) {
         if approvalDecision(for: path, pane: paneID) == .allow {
@@ -84,7 +98,13 @@ final class DiffApprovalCoordinator {
         }
 
         onEvent(path, "pending")
-        queue.enqueue(paneID: paneID, path: path, old: old, new: new) { [weak self] outcome in
+        let entryID = queue.enqueue(
+            paneID: paneID,
+            path: path,
+            old: old,
+            new: new,
+            isAlwaysAsk: isAlwaysAsk(path, pane: paneID)
+        ) { [weak self] outcome in
             // Record an "approve & remember" grant into the originating pane's
             // bucket before resolving, so later edits from that pane already
             // see it. always_ask still wins.
@@ -93,11 +113,38 @@ final class DiffApprovalCoordinator {
                     .record(outcome.remember, path: path)
             }
             self?.onEvent(path, outcome.accepted ? "accepted" : "rejected")
+            self?.setParked(paneID, false)
             completion(outcome.accepted)
             if outcome.accepted && outcome.remember != .none {
                 self?.resolveNewlyAllowed()
             }
         }
+        // The edit is now genuinely waiting on a human, so the pane reads "needs
+        // input" until it resolves — not the "busy" the PreToolUse status hook
+        // set the moment the tool started.
+        setParked(paneID, true)
+        registerDisconnect { [weak self] in
+            DispatchQueue.main.async {
+                self?.withdraw(entryID: entryID, paneID: paneID, path: path)
+            }
+        }
+    }
+
+    /// Withdraws a parked entry whose hook client vanished: drops it from the
+    /// queue (unfired), records the withdrawal, and returns the pane to working.
+    /// A no-op if the entry already resolved (a human answered in the same
+    /// instant the client dropped).
+    private func withdraw(entryID: UUID, paneID: UUID?, path: String) {
+        guard queue.withdraw(id: entryID) != nil else { return }
+        onEvent(path, "withdrawn")
+        setParked(paneID, false)
+    }
+
+    /// Notifies the owner to flip the pane's agent status for a parked edit.
+    /// Guards on a real pane — an unscoped (nil) hook has no pane to flip.
+    private func setParked(_ paneID: UUID?, _ parked: Bool) {
+        guard let paneID else { return }
+        onParkedStatusChange(paneID, parked)
     }
 
     /// Called from the host's windowWillClose. Don't strand hook processes

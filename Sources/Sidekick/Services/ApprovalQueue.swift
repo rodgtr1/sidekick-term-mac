@@ -9,6 +9,10 @@ struct PendingApproval {
     let old: String
     let new: String
     let requestedAt: Date
+    /// Whether `path` matched an `always_ask` rule. Those cards can only be
+    /// answered once — `always_ask` outranks every "remember" grant in policy —
+    /// so the card hides the remember popup rather than offer a silent no-op.
+    let isAlwaysAsk: Bool
 }
 
 /// The live queue of hook edits awaiting review — the model behind the agents
@@ -30,26 +34,31 @@ final class ApprovalQueue {
     /// must fire exactly once.
     private var completions: [UUID: (ApprovalOutcome) -> Void] = [:]
 
-    /// Adds an entry to the back of the queue. `completion` runs exactly once,
-    /// when the entry is resolved by the user or by a drain.
+    /// Adds an entry to the back of the queue and returns its id. `completion`
+    /// runs exactly once, when the entry is resolved by the user or by a drain —
+    /// but not when it is `withdraw`n, which drops the held completion unfired.
+    @discardableResult
     func enqueue(
         paneID: UUID?,
         path: String,
         old: String,
         new: String,
+        isAlwaysAsk: Bool = false,
         completion: @escaping (ApprovalOutcome) -> Void
-    ) {
+    ) -> UUID {
         let entry = PendingApproval(
             id: UUID(),
             paneID: paneID,
             path: path,
             old: old,
             new: new,
-            requestedAt: Date()
+            requestedAt: Date(),
+            isAlwaysAsk: isAlwaysAsk
         )
         pending.append(entry)
         completions[entry.id] = completion
         notifyChanged()
+        return entry.id
     }
 
     /// Resolves one entry and releases its held hook response. An unknown id
@@ -60,6 +69,21 @@ final class ApprovalQueue {
         pending.remove(at: index)
         completion(outcome)
         notifyChanged()
+    }
+
+    /// Removes an entry whose hook client has vanished (the process died while
+    /// its edit waited at the desk), dropping the held completion UNFIRED —
+    /// there's no live socket left to answer, so replying would only write to a
+    /// dead fd. Returns the removed entry so the caller can emit the withdrawn
+    /// event, or nil if it was already resolved (a human answered in the same
+    /// instant the client dropped).
+    @discardableResult
+    func withdraw(id: UUID) -> PendingApproval? {
+        guard let index = pending.firstIndex(where: { $0.id == id }) else { return nil }
+        let entry = pending.remove(at: index)
+        completions.removeValue(forKey: id)
+        notifyChanged()
+        return entry
     }
 
     /// Resolves every queued entry through `decide` — the window-close drain.

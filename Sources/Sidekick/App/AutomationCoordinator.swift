@@ -32,10 +32,23 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
 
     /// Owns the hook diff-approval queue, review presentation, and per-pane
     /// "approve & remember" grants. Reports the diff lifecycle back through
-    /// `emitDiffEvent` so this coordinator stays the lone event-emit site.
-    private lazy var diffApproval = DiffApprovalCoordinator(host: host) { [weak self] path, decision in
+    /// `emitDiffEvent` so this coordinator stays the lone event-emit site, and
+    /// flips a pane's agent status while its edit waits at the desk through
+    /// `setPaneParked`.
+    private lazy var diffApproval = DiffApprovalCoordinator(
+        host: host,
+        onParkedStatusChange: { [weak self] paneID, parked in
+            self?.setPaneParked(paneID, parked: parked)
+        }
+    ) { [weak self] path, decision in
         self?.emitDiffEvent(path: path, decision: decision)
     }
+
+    /// How many edit-gate entries are currently parked at the desk per pane, so
+    /// the pane only returns to "working" once its LAST parked edit resolves —
+    /// a pane can't normally have two (its hook blocks), but the count keeps the
+    /// flip balanced if it ever does.
+    private var parkedApprovalCounts: [UUID: Int] = [:]
 
     /// Latest telemetry (model, tokens, est. cost) per pane, reported by the
     /// `sidekick-telemetry` hook helper. Written on the main thread (the IPC
@@ -328,19 +341,22 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     func ipcServer(
         _ server: IPCServer,
         didReceiveCommand command: IPCCommandType,
+        onClientDisconnect registerDisconnect: @escaping (@escaping @Sendable () -> Void) -> Void,
         completion: @escaping @Sendable (IPCResponse) -> Void
     ) {
         // Each verb has a focused handler below. They all run on the main thread
         // (the server hops here before invoking the delegate) and may either
         // reply synchronously or hold `completion` for a deferred answer (diff
-        // approval, waits, worktree git shell-outs).
+        // approval, waits, worktree git shell-outs). `registerDisconnect` is only
+        // wired for the one verb that can park indefinitely on a human: show_diff.
         switch command {
         case .ping:
             handlePing(completion: completion)
         case .newTab(let cwd):
             handleNewTab(cwd: cwd, completion: completion)
         case .showDiff(let paneID, let path, let old, let new):
-            handleShowDiff(paneID: paneID, path: path, old: old, new: new, completion: completion)
+            handleShowDiff(paneID: paneID, path: path, old: old, new: new,
+                           registerDisconnect: registerDisconnect, completion: completion)
         case .agentReady:
             handleSetAgentState(.ready, completion: completion)
         case .agentBusy:
@@ -407,6 +423,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         path: String,
         old: String,
         new: String,
+        registerDisconnect: @escaping (@escaping @Sendable () -> Void) -> Void,
         completion: @escaping @Sendable (IPCResponse) -> Void
     ) {
         if old.isEmpty && new.isEmpty {
@@ -414,8 +431,33 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             host?.automationOpenFile(URL(fileURLWithPath: path))
             completion(IPCResponse(ok: true))
         } else {
-            diffApproval.requestApproval(paneID: paneID, path: path, old: old, new: new) { accepted in
+            diffApproval.requestApproval(
+                paneID: paneID, path: path, old: old, new: new,
+                registerDisconnect: registerDisconnect
+            ) { accepted in
                 completion(IPCResponse(ok: true, accepted: accepted))
+            }
+        }
+    }
+
+    /// Flips a pane's agent status while an edit-gate entry waits at the desk.
+    /// The pane reads "needs input" (`.ready`) from its first parked edit and
+    /// returns to "working" once its last one resolves. Delivered through the
+    /// pane's detector like any other authoritative status report — the agent is
+    /// blocked in its edit hook the whole time, so no real hook report races it.
+    private func setPaneParked(_ paneID: UUID, parked: Bool) {
+        guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else { return }
+        let count = parkedApprovalCounts[paneID] ?? 0
+        if parked {
+            parkedApprovalCounts[paneID] = count + 1
+            if count == 0 { terminal.applyAgentStatusReport(.ready) }
+        } else {
+            let remaining = max(0, count - 1)
+            if remaining == 0 {
+                parkedApprovalCounts[paneID] = nil
+                terminal.applyAgentStatusReport(.working)
+            } else {
+                parkedApprovalCounts[paneID] = remaining
             }
         }
     }
