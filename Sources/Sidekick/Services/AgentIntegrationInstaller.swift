@@ -95,6 +95,9 @@ nonisolated enum AgentIntegrationInstaller {
             // "Needs input" until the next PreToolUse or Stop. (Checking the
             // Failure variant covers both — install adds the pair together.)
             guard settings.contains("PostToolUseFailure") else { return .available }
+            // A pre-edit-gate install lacks the diff-review feeder, so the
+            // approval desk never gets any mail; prompt a reinstall to add it.
+            guard settings.contains("edit-gate") else { return .available }
             // A pre-SessionStart telemetry install keeps a stale context meter
             // after /clear; prompt a reinstall so the reset hook gets added.
             if isTelemetryHelperBundled(helperDirectory), !settings.contains("SessionStart") { return .available }
@@ -675,6 +678,19 @@ nonisolated enum AgentIntegrationInstaller {
         // harness still asked), so it's no longer installed. Strip any copy a
         // previous version left behind.
         removeClaudeHook(from: &hooks, event: "PreToolUse", signature: "sidekick-hook")
+        // Edit-gate: the successor that CAN answer. It routes Edit/Write through
+        // Sidekick's diff-review queue and returns the reviewer's verdict as a
+        // permissionDecision (allow/deny), so the desk's prompt replaces
+        // Claude's rather than duplicating it; on any failure the hook stays
+        // silent and Claude's own prompt takes over. The explicit timeout is
+        // the human-review budget (600s, matching Claude Code's default,
+        // written out so the contract is visible in the settings file).
+        addClaudeHook(
+            to: &hooks, event: "PreToolUse",
+            command: "\(shellQuotedIfNeeded(statusBinary.path)) edit-gate",
+            matcher: "Edit|Write",
+            timeoutSeconds: 600
+        )
         settings["hooks"] = hooks
 
         let data = try JSONSerialization.data(
@@ -695,7 +711,8 @@ nonisolated enum AgentIntegrationInstaller {
         to hooks: inout [String: Any],
         event: String,
         command: String,
-        matcher: String? = nil
+        matcher: String? = nil,
+        timeoutSeconds: Int? = nil
     ) {
         var groups = hooks[event] as? [[String: Any]] ?? []
         // Compare with shell quotes stripped so a quoted command (bundle path
@@ -713,7 +730,11 @@ nonisolated enum AgentIntegrationInstaller {
             }
         }
 
-        var group: [String: Any] = ["hooks": [["type": "command", "command": command]]]
+        var hook: [String: Any] = ["type": "command", "command": command]
+        if let timeoutSeconds = timeoutSeconds {
+            hook["timeout"] = timeoutSeconds
+        }
+        var group: [String: Any] = ["hooks": [hook]]
         if let matcher = matcher {
             group["matcher"] = matcher
         }

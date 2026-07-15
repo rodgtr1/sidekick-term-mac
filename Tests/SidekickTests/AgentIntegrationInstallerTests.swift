@@ -74,6 +74,43 @@ final class AgentIntegrationInstallerTests: XCTestCase {
         XCTAssertEqual(hookCommands(hooks, event: "PreToolUse").first, "/usr/local/bin/some-other-hook")
     }
 
+    func testAddClaudeHookWritesTimeoutWhenGiven() {
+        var hooks: [String: Any] = [:]
+        AgentIntegrationInstaller.addClaudeHook(
+            to: &hooks, event: "PreToolUse",
+            command: "/a/sidekick-agent-status edit-gate",
+            matcher: "Edit|Write",
+            timeoutSeconds: 600
+        )
+
+        let groups = hooks["PreToolUse"] as? [[String: Any]] ?? []
+        XCTAssertEqual(groups.first?["matcher"] as? String, "Edit|Write")
+        let hook = (groups.first?["hooks"] as? [[String: Any]])?.first
+        XCTAssertEqual(hook?["timeout"] as? Int, 600)
+    }
+
+    func testEditGateHookCoexistsWithBusyStatusHook() {
+        // Same binary, different argument: the edit-gate entry must sit
+        // alongside the PreToolUse busy status hook, not dedup against it —
+        // and re-adding either must not duplicate it.
+        var hooks: [String: Any] = [:]
+        AgentIntegrationInstaller.addClaudeHook(
+            to: &hooks, event: "PreToolUse", command: "/a/sidekick-agent-status busy")
+        AgentIntegrationInstaller.addClaudeHook(
+            to: &hooks, event: "PreToolUse",
+            command: "/a/sidekick-agent-status edit-gate",
+            matcher: "Edit|Write", timeoutSeconds: 600)
+        AgentIntegrationInstaller.addClaudeHook(
+            to: &hooks, event: "PreToolUse",
+            command: "/a/sidekick-agent-status edit-gate",
+            matcher: "Edit|Write", timeoutSeconds: 600)
+
+        let commands = hookCommands(hooks, event: "PreToolUse")
+        XCTAssertEqual(commands.count, 2)
+        XCTAssertTrue(commands.contains("/a/sidekick-agent-status busy"))
+        XCTAssertTrue(commands.contains("/a/sidekick-agent-status edit-gate"))
+    }
+
     func testShellQuotedIfNeededLeavesPlainPathsAlone() {
         XCTAssertEqual(
             AgentIntegrationInstaller.shellQuotedIfNeeded("/Applications/Sidekick.app/Contents/MacOS/sidekick-agent-status"),

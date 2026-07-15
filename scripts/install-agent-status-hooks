@@ -143,13 +143,16 @@ def signature(command):
         return ""
     return " ".join([parts[0].rsplit("/", 1)[-1]] + parts[1:])
 
-def add_hook(event, command, matcher=None):
+def add_hook(event, command, matcher=None, timeout=None):
     groups = hooks.setdefault(event, [])
     for group in groups:
         for hook in group.get("hooks", []):
             if hook.get("type") == "command" and signature(hook.get("command")) == signature(command):
                 return
-    group = {"hooks": [{"type": "command", "command": command}]}
+    hook = {"type": "command", "command": command}
+    if timeout:
+        hook["timeout"] = timeout
+    group = {"hooks": [hook]}
     if matcher:
         group["matcher"] = matcher
     groups.append(group)
@@ -195,6 +198,12 @@ add_hook("PostToolUseFailure", f"{status_bin} busy")
 add_hook("Stop", f"{status_bin} done")
 # Clears the tab from the agents panel when the session ends.
 add_hook("SessionEnd", f"{status_bin} idle")
+# Edit-gate: routes Edit/Write through Sidekick's diff-review queue and answers
+# Claude's permission question with the reviewer's decision (allow/deny) —
+# unlike the retired sidekick-hook, which could only duplicate the prompt. On
+# any failure it stays silent and Claude's own prompt takes over. The timeout
+# is the human-review budget (600s, Claude Code's default, spelled out).
+add_hook("PreToolUse", f"{status_bin} edit-gate", matcher="Edit|Write", timeout=600)
 
 path.write_text(json.dumps(data, indent=2) + "\n")
 PY

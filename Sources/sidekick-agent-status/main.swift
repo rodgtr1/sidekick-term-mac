@@ -13,11 +13,19 @@ import SidekickIPCCore
 //
 // A hook must never disrupt the agent: every failure path exits 0 silently.
 
+// The edit-gate subcommand is a different animal from a status report: it
+// blocks on a human decision and answers Claude Code's permission question.
+// Dispatched before status parsing so the two share the binary (and therefore
+// the install/refresh machinery) without sharing a code path.
+if CommandLine.arguments.dropFirst().first == "edit-gate" {
+    exit(EditGateCommand.run())
+}
+
 let status: AgentStatusReport.Status
 if let parsed = AgentStatusReport.status(fromArgument: CommandLine.arguments.dropFirst().first) {
     status = parsed
 } else {
-    FileHandle.standardError.write(Data("usage: sidekick-agent-status busy|ready|done|idle\n".utf8))
+    FileHandle.standardError.write(Data("usage: sidekick-agent-status busy|ready|done|idle|edit-gate\n".utf8))
     exit(2)
 }
 
