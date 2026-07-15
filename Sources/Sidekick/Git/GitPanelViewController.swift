@@ -173,6 +173,10 @@ class GitPanelViewController: NSViewController {
         }
         tableView.selectionHighlightStyle = .regular
         tableView.allowsMultipleSelection = true
+        // Status and Actions are pinned (min == max), so all width from a
+        // sidebar resize flows to the File column instead of the default
+        // last-column-only style, which would hand it to the pinned Actions.
+        tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
 
         // Create columns
         let statusColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Status"))
@@ -185,6 +189,8 @@ class GitPanelViewController: NSViewController {
         let fileColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("File"))
         fileColumn.title = "File"
         fileColumn.isEditable = false
+        fileColumn.minWidth = 60
+        fileColumn.maxWidth = 10_000
         tableView.addTableColumn(fileColumn)
 
         let actionsColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Actions"))
@@ -291,6 +297,7 @@ class GitPanelViewController: NSViewController {
         branchDiffTableView.usesAlternatingRowBackgroundColors = false
         if #available(macOS 12.0, *) { branchDiffTableView.style = .plain }
         branchDiffTableView.selectionHighlightStyle = .regular
+        branchDiffTableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
 
         let statusColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Status"))
         statusColumn.width = 30
@@ -299,6 +306,8 @@ class GitPanelViewController: NSViewController {
         branchDiffTableView.addTableColumn(statusColumn)
         let fileColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("File"))
         fileColumn.isEditable = false
+        fileColumn.minWidth = 60
+        fileColumn.maxWidth = 10_000
         branchDiffTableView.addTableColumn(fileColumn)
 
         branchDiffTableView.target = self
@@ -708,7 +717,7 @@ extension GitPanelViewController: NSTableViewDelegate {
                 textField.isBordered = false
                 textField.backgroundColor = .clear
                 textField.font = NSFont.systemFont(ofSize: 13)
-                textField.lineBreakMode = .byTruncatingTail
+                textField.lineBreakMode = .byTruncatingMiddle
                 textField.translatesAutoresizingMaskIntoConstraints = false
 
                 cellView?.addSubview(textField)
@@ -723,6 +732,7 @@ extension GitPanelViewController: NSTableViewDelegate {
 
             cellView?.textField?.stringValue = file.filename
             cellView?.textField?.textColor = AppTheme.primaryText
+            cellView?.textField?.toolTip = file.path
 
         } else if identifier?.rawValue == "Actions" {
             cellView = tableView.makeView(withIdentifier: identifier!, owner: self) as? NSTableCellView
@@ -782,7 +792,7 @@ extension GitPanelViewController: NSTableViewDelegate {
                 field.isEditable = false
                 field.isBordered = false
                 field.backgroundColor = .clear
-                field.lineBreakMode = .byTruncatingTail
+                field.lineBreakMode = .byTruncatingMiddle
                 field.translatesAutoresizingMaskIntoConstraints = false
                 created.addSubview(field)
                 created.textField = field
@@ -810,6 +820,7 @@ extension GitPanelViewController: NSTableViewDelegate {
         } else {
             cellView.textField?.stringValue = file.filename
             cellView.textField?.textColor = AppTheme.primaryText
+            cellView.textField?.toolTip = file.path
         }
         return cellView
     }
