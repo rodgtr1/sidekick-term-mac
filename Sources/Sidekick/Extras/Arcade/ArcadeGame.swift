@@ -10,6 +10,9 @@ protocol ArcadeGame: AnyObject {
     /// shipped or saved games are orphaned.
     static var gameID: String { get }
     static var title: String { get }
+    /// Short, complete directions shown by the arcade panel's How to Play
+    /// button and ⌘? shortcut.
+    static var howToPlay: String { get }
 
     /// Restores from a previously encoded blob; a nil or undecodable blob
     /// means "start fresh".
@@ -24,8 +27,18 @@ protocol ArcadeGame: AnyObject {
     func pause()
     func resume()
 
+    /// Optional lifecycle hooks for games with live timers. The panel invokes
+    /// these around the How to Play sheet; untimed games need no special work.
+    func willShowHelp()
+    func didDismissHelp()
+
     /// Snapshot for arcade.json. nil when there is nothing worth keeping.
     func encodeState() -> Data?
+}
+
+extension ArcadeGame {
+    func willShowHelp() {}
+    func didDismissHelp() {}
 }
 
 /// The games the panel can host, in display order. Adding a game to the
@@ -37,16 +50,23 @@ enum ArcadeGameCatalog {
     struct Entry {
         let id: String
         let title: String
+        let howToPlay: String
         let make: (Data?) -> any ArcadeGame
     }
 
     static let games: [Entry] = [
-        Entry(id: BlocksGameView.gameID, title: BlocksGameView.title) { BlocksGameView(savedState: $0) },
-        Entry(id: DepthLadderView.gameID, title: DepthLadderView.title) { DepthLadderView(savedState: $0) },
-        Entry(id: TwoLinesView.gameID, title: TwoLinesView.title) { TwoLinesView(savedState: $0) },
-        Entry(id: KeysmithView.gameID, title: KeysmithView.title) { KeysmithView(savedState: $0) },
-        Entry(id: GroveView.gameID, title: GroveView.title) { GroveView(savedState: $0) },
-        Entry(id: WalkView.gameID, title: WalkView.title) { WalkView(savedState: $0) },
-        Entry(id: CartographyView.gameID, title: CartographyView.title) { CartographyView(savedState: $0) }
+        entry(for: BlocksGameView.self),
+        entry(for: DepthLadderView.self),
+        entry(for: TwoLinesView.self),
+        entry(for: KeysmithView.self),
+        entry(for: GroveView.self),
+        entry(for: WalkView.self),
+        entry(for: CartographyView.self)
     ]
+
+    private static func entry<Game: ArcadeGame>(for type: Game.Type) -> Entry {
+        Entry(id: type.gameID, title: type.title, howToPlay: type.howToPlay) {
+            Game(savedState: $0)
+        }
+    }
 }

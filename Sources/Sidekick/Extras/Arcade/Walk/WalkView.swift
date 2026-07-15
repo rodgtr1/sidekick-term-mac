@@ -8,6 +8,14 @@ import Cocoa
 final class WalkView: NSView, ArcadeGame {
     static let gameID = "walk"
     static let title = "The Walk"
+    static let howToPlay = """
+    Take an endless walk through a changing landscape. There is no destination or score. New places and occasional findings are recorded in your the-walk.md journal.
+
+    Space or Return  Take a step
+    ⌘J  Show or hide the journal
+    Space or Return in the journal  Return to the walk
+    Esc  Close the arcade
+    """
 
     private static let contentSize = BlocksGameView.contentSize
     private static let margin: CGFloat = 22

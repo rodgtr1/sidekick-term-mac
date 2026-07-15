@@ -8,6 +8,15 @@ import Cocoa
 final class CartographyView: NSView, ArcadeGame, NSTextFieldDelegate {
     static let gameID = "cartography"
     static let title = "Slow Cartography"
+    static let howToPlay = """
+    Survey a hidden coastline a few pen strokes at a time. Drag across the sheet to reveal the world. Your limited ink refills whenever you reopen the arcade, and the chart stays with you.
+
+    Drag  Survey the map
+    N or the Name button  Start naming, then click a revealed place or the title
+    Return  Save a name
+    ⌘E or the Export button  Add the sheet to atlas.md
+    Esc  Cancel naming, or close the arcade
+    """
 
     private static let contentSize = BlocksGameView.contentSize
     private static let margin: CGFloat = 14

@@ -8,6 +8,15 @@ import Cocoa
 final class GroveView: NSView, ArcadeGame {
     static let gameID = "grove"
     static let title = "The Grove"
+    static let howToPlay = """
+    Shape a bonsai that grows slowly while you are away. There is no score and the tree cannot die. If the grove is bare, press 1 for pine, 2 for maple, or 3 for willow.
+
+    ← →  Select a branch
+    [ ]  Bend the selected branch
+    X twice  Prune the selected branch
+    ⌘N twice  Clear it and start a new grove
+    Esc  Close the arcade
+    """
 
     private static let contentSize = BlocksGameView.contentSize
     private static let margin: CGFloat = 16

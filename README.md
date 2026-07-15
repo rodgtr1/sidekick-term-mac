@@ -181,7 +181,9 @@ the dead time while agents churn, in the spirit of Ghostty's and iTerm2's
 quick-terminal windows. `` ⌃` `` toggles it; hiding pauses the game and
 everything is remembered across toggles and app relaunches in
 `~/.config/sidekick/arcade.json`. Games are self-contained modules behind
-an `ArcadeGame` protocol, with a picker in the panel. A handful so far:
+an `ArcadeGame` protocol, with a picker in the panel. Use the always-visible
+**How to Play** button or press **⌘?** for directions in any game. A handful
+so far:
 
 - **Blocks**: a falling-blocks classic. Ghost piece, hold, 7-bag, levels.
 - **Depth Ladder**: an endless tower of picross-style deduction puzzles,

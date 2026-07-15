@@ -10,6 +10,15 @@ import Cocoa
 final class KeysmithView: NSView, ArcadeGame {
     static let gameID = "keysmith"
     static let title = "Keysmith"
+    static let howToPlay = """
+    Type the displayed line exactly. A wrong key flashes red and does not advance, so correct it by typing the expected character. A five-line run reports your speed and accuracy.
+
+    Type  Enter the highlighted character
+    Tab  Cycle difficulty tiers
+    1 / 2 / 3  Choose Letters, Words, or Code
+    Any key after results  Start another run
+    Esc  Close the arcade
+    """
 
     private let game: KeysmithGame
     private var results: KeysmithRunSummary?

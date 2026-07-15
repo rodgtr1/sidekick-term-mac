@@ -6,6 +6,18 @@ import Cocoa
 final class DepthLadderView: NSView, ArcadeGame {
     static let gameID = "depth-ladder"
     static let title = "Depth Ladder"
+    static let howToPlay = """
+    Solve each picture-logic grid by filling the cells described by the row and column clues. Each clue is the length of one consecutive run of filled cells; separate runs have at least one empty cell between them.
+
+    A wrong fill counts as a mistake and is crossed automatically. Three mistakes fail the floor and burn one lantern. Your three lanterns refill at midnight.
+
+    Arrow keys  Move
+    Space or Return  Fill a cell
+    X  Mark or unmark an empty cell
+    Click  Fill a cell
+    Right-click  Mark an empty cell
+    Esc  Close the arcade
+    """
 
     /// What the board is showing between floors.
     private enum Overlay {

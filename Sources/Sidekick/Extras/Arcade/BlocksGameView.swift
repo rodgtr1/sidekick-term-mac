@@ -13,6 +13,19 @@ nonisolated private struct BlocksSave: Codable {
 final class BlocksGameView: NSView, ArcadeGame {
     static let gameID = "blocks"
     static let title = "Blocks"
+    static let howToPlay = """
+    Complete horizontal rows with the falling pieces. Completed rows disappear; the game ends when the stack reaches the top.
+
+    ← →  Move
+    ↓  Soft drop
+    Space  Hard drop
+    ↑ or X  Rotate clockwise
+    Z  Rotate counterclockwise
+    C  Hold or swap a piece
+    P  Pause
+    N  Start a new game
+    Esc  Close the arcade
+    """
 
     private static let cellSize: CGFloat = 24
     private static let margin: CGFloat = 16
@@ -46,6 +59,7 @@ final class BlocksGameView: NSView, ArcadeGame {
     private var clearFlashTimer: Timer?
     private var clearFlashStep = 0
     private var isAnimatingClear: Bool { clearFlashTimer != nil }
+    private var wasPausedBeforeHelp: Bool?
 
     var onCloseRequested: (() -> Void)?
 
@@ -87,6 +101,18 @@ final class BlocksGameView: NSView, ArcadeGame {
             scheduleTick()
         }
         needsDisplay = true
+    }
+
+    func willShowHelp() {
+        wasPausedBeforeHelp = isPaused
+        pause()
+    }
+
+    func didDismissHelp() {
+        defer { wasPausedBeforeHelp = nil }
+        if wasPausedBeforeHelp == false {
+            resume()
+        }
     }
 
     func encodeState() -> Data? {

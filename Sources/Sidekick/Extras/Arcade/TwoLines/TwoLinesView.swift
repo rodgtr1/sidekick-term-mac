@@ -17,6 +17,15 @@ nonisolated private struct TwoLinesState: Codable, Equatable, Sendable {
 final class TwoLinesView: NSView, ArcadeGame, NSTextViewDelegate {
     static let gameID = "two-lines"
     static let title = "Two Lines"
+    static let howToPlay = """
+    Read the prompt and write a line or two. There is no score, streak, or penalty. Saved entries go to your two-lines.md journal, and unfinished drafts survive closing the arcade.
+
+    Return  Save the entry and get a new prompt
+    Option-Return  Insert a line break
+    ⌘R  Skip to another prompt
+    ⌘J  Show or hide the journal
+    Esc  Close the arcade
+    """
 
     private static let contentSize = BlocksGameView.contentSize
 

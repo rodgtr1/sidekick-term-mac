@@ -11,8 +11,10 @@ final class ArcadePanel: NSPanel, NSWindowDelegate {
     private var currentGameID: String?
     private let containerView = NSView()
     private let gamePicker = NSPopUpButton(frame: .zero, pullsDown: false)
-    /// Header strip holding the game picker; zero when there's only one game.
-    private var headerHeight: CGFloat { ArcadeGameCatalog.games.count > 1 ? 34 : 0 }
+    private let helpButton = NSButton(title: "How to Play  ⌘?", target: nil, action: nil)
+    /// Header strip holding the game picker and always-visible help control.
+    private let headerHeight: CGFloat = 34
+    private var isShowingHelp = false
 
     init() {
         super.init(
@@ -38,6 +40,15 @@ final class ArcadePanel: NSPanel, NSWindowDelegate {
         gamePicker.action = #selector(gamePickerChanged(_:))
         gamePicker.isHidden = ArcadeGameCatalog.games.count < 2
         containerView.addSubview(gamePicker)
+
+        helpButton.bezelStyle = .rounded
+        helpButton.controlSize = .small
+        helpButton.font = .systemFont(ofSize: 11)
+        helpButton.target = self
+        helpButton.action = #selector(showHowToPlay)
+        helpButton.toolTip = "Show directions for this game (⌘?)"
+        helpButton.setAccessibilityLabel("How to Play")
+        containerView.addSubview(helpButton)
 
         let saved = ArcadeStateStore.load()
         let entry = ArcadeGameCatalog.games.first { $0.id == saved?.selectedGameID }
@@ -101,9 +112,45 @@ final class ArcadePanel: NSPanel, NSWindowDelegate {
         game.view.autoresizingMask = []
         containerView.addSubview(game.view)
         gamePicker.frame = NSRect(x: 10, y: gameSize.height + 6, width: 160, height: 24)
+        helpButton.frame = NSRect(x: gameSize.width - 130, y: gameSize.height + 6, width: 120, height: 24)
 
         if let index = ArcadeGameCatalog.games.firstIndex(where: { $0.id == entry.id }) {
             gamePicker.selectItem(at: index)
+        }
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
+        // ⌘? is physically ⌘⇧/ on standard keyboards. Also check the
+        // produced character so the shortcut follows non-US keyboard layouts.
+        if modifiers == [.command, .shift],
+           (event.keyCode == 44 || event.characters == "?") {
+            showHowToPlay()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    @objc private func showHowToPlay() {
+        guard !isShowingHelp,
+              let currentGameID,
+              let entry = ArcadeGameCatalog.games.first(where: { $0.id == currentGameID }) else { return }
+
+        isShowingHelp = true
+        currentGame?.willShowHelp()
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "How to Play — \(entry.title)"
+        alert.informativeText = entry.howToPlay
+        alert.addButton(withTitle: "Back to Game")
+        alert.beginSheetModal(for: self) { [weak self] _ in
+            guard let self else { return }
+            self.isShowingHelp = false
+            if let game = self.currentGame {
+                game.didDismissHelp()
+                self.makeFirstResponder(game.view)
+            }
         }
     }
 
@@ -144,6 +191,10 @@ final class ArcadePanel: NSPanel, NSWindowDelegate {
     // MARK: - NSWindowDelegate
 
     func windowDidResignKey(_ notification: Notification) {
+        // An attached How to Play sheet temporarily becomes key. Its dedicated
+        // lifecycle hooks handle timed play without applying hide semantics to
+        // games such as Keysmith, where hiding abandons the current line.
+        guard !isShowingHelp else { return }
         currentGame?.pause()
         persist()
     }
