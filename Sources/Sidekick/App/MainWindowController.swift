@@ -211,6 +211,12 @@ class MainWindowController: NSWindowController {
         self.worktreeFlowController = WorktreeFlowController(host: self)
         Log.debug("✅ WindowController initialized", category: "app")
 
+        // Must run before setupUI(): pane environments snapshot AgentApprovalState
+        // at spawn, and setupUI creates the initial tab. Synced any later, the
+        // first pane launches agents without the approval flags (manual mode)
+        // while every subsequent pane gets them.
+        syncAgentAutoApprove()
+
         setupUI()
         Log.debug("✅ UI setup completed", category: "app")
 
@@ -224,7 +230,6 @@ class MainWindowController: NSWindowController {
 
         setupConfigWatcher()
         setupSessionPersistence()
-        syncAgentAutoApprove()
     }
 
     /// Reflects the effective auto-approve preference into each installed agent's
