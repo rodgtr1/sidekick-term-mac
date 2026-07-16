@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Claude/Codex permission parity**: the shared approval selector now maps the same four intents onto both agents. Codex Ask now deliberately starts stricter than before—read-only, so writes and other boundary crossings require approval instead of inheriting a potentially permissive global Codex default. Auto uses workspace-write, safety-reviewed Auto uses Codex's `auto_review` reviewer, and Full Access uses danger-full-access with no prompts. Preference changes apply to the next agent launched in an already-open pane, while the UI now identifies path-specific diff-desk rules as Claude/Pi-only.
+
 ## 0.3.0 (2026-07-13)
 
 ### New features

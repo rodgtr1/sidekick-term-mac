@@ -226,6 +226,8 @@ final class AgentIntegrationInstallerTests: XCTestCase {
         XCTAssertNil(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "ask"))
         XCTAssertNil(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "unknown"))
         XCTAssertEqual(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "auto"), "acceptEdits")
+        XCTAssertEqual(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "review"), "auto")
+        // Backwards compatibility for configs written before the shared name.
         XCTAssertEqual(AgentIntegrationInstaller.claudePermissionMode(forApprovalMode: "claude-auto"), "auto")
         // Without a managed disable policy, bypass maps straight through. (The
         // managed-disable fallback to acceptEdits depends on a system file and
@@ -236,17 +238,30 @@ final class AgentIntegrationInstallerTests: XCTestCase {
     // MARK: - Codex scoped approval flags
 
     func testCodexApprovalFlagsMapApprovalLevels() {
-        XCTAssertEqual(AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "ask"), [])
-        XCTAssertEqual(AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "unknown"), [])
+        let ask = [
+            "--sandbox", "read-only", "--ask-for-approval", "on-request",
+            "-c", "approvals_reviewer=user"
+        ]
+        XCTAssertEqual(AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "ask"), ask)
+        XCTAssertEqual(AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "unknown"), ask)
         XCTAssertEqual(
             AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "auto"),
-            ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]
+            [
+                "--sandbox", "workspace-write", "--ask-for-approval", "on-request",
+                "-c", "approvals_reviewer=user"
+            ]
         )
-        // Codex has no analog to Claude's Auto mode, so claude-auto degrades to
-        // the same sandboxed flags as auto.
+        let reviewed = [
+            "--sandbox", "workspace-write", "--ask-for-approval", "on-request",
+            "-c", "approvals_reviewer=auto_review"
+        ]
+        XCTAssertEqual(
+            AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "review"),
+            reviewed
+        )
         XCTAssertEqual(
             AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "claude-auto"),
-            AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "auto")
+            reviewed
         )
         XCTAssertEqual(
             AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: "bypass"),
@@ -266,13 +281,17 @@ final class AgentIntegrationInstallerTests: XCTestCase {
     func testCodexApprovalFlagNamesCoverCallerOverrides() {
         // Every flag the shell wrapper / argv injector treats as a caller's own
         // choice must be recognized so Sidekick's flags don't double up.
-        for flag in ["--sandbox", "-s", "--ask-for-approval", "-a", "--full-auto",
+        for flag in ["--sandbox", "-s", "--ask-for-approval", "-a", "--full-auto", "--yolo",
                      "--dangerously-bypass-approvals-and-sandbox"] {
             XCTAssertTrue(
                 AgentIntegrationInstaller.codexApprovalFlagNames.contains(flag),
                 "expected \(flag) to be recognized as a caller override"
             )
         }
+        for flag in ["--sandbox=read-only", "--ask-for-approval=never", "-s=workspace-write", "-a=never"] {
+            XCTAssertTrue(AgentIntegrationInstaller.isCodexApprovalOverride(flag))
+        }
+        XCTAssertFalse(AgentIntegrationInstaller.isCodexApprovalOverride("-c"))
     }
 
     func testDisableRemovesManagedAcceptEditsMode() {

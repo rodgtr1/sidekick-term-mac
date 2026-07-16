@@ -75,7 +75,7 @@ enum ShellIntegration {
 
     // MARK: - Script contents
 
-    private static let zshScript = #"""
+    static let zshScript = #"""
 # Sidekick shell integration (zsh)
 # Emits OSC 7 (working directory) and OSC 133 (prompt/command marks).
 # Safe to source from any terminal; it only activates inside Sidekick.
@@ -111,38 +111,54 @@ add-zsh-hook precmd __sidekick_precmd
 add-zsh-hook preexec __sidekick_preexec
 add-zsh-hook chpwd __sidekick_report_cwd
 
-# Apply Sidekick's auto-approve preference only to claude sessions started in a
-# Sidekick pane (scoped via this env var; never touches claude run elsewhere).
-# A caller's own --permission-mode wins.
-if [[ -n "$SIDEKICK_CLAUDE_PERMISSION_MODE" ]]; then
-    claude() {
-        local arg
-        for arg in "$@"; do
-            case "$arg" in
-                --permission-mode|--permission-mode=*) command claude "$@"; return ;;
-            esac
-        done
-        command claude --permission-mode "$SIDEKICK_CLAUDE_PERMISSION_MODE" "$@"
-    }
-fi
+# Resolve the approval mode at agent launch, not pane launch. Preferences writes
+# one data-only word atomically; the env value is a fallback if it is unreadable.
+__sidekick_approval_mode() {
+    local mode="$SIDEKICK_APPROVAL_MODE"
+    if [[ -n "$SIDEKICK_APPROVAL_MODE_FILE" && -r "$SIDEKICK_APPROVAL_MODE_FILE" ]]; then
+        IFS= read -r mode < "$SIDEKICK_APPROVAL_MODE_FILE"
+    fi
+    [[ "$mode" == "claude-auto" ]] && mode="review"
+    printf '%s' "${mode:-ask}"
+}
 
-# Same, scoped to codex sessions started in a Sidekick pane. A caller's own
-# approval/sandbox flag wins. (${=VAR} splits the flags into words in zsh.)
-if [[ -n "$SIDEKICK_CODEX_APPROVAL_ARGS" ]]; then
-    codex() {
-        local arg
-        for arg in "$@"; do
-            case "$arg" in
-                --sandbox|--sandbox=*|-s|--ask-for-approval|--ask-for-approval=*|-a|--full-auto|--dangerously-bypass-approvals-and-sandbox)
-                    command codex "$@"; return ;;
-            esac
-        done
-        command codex ${=SIDEKICK_CODEX_APPROVAL_ARGS} "$@"
-    }
-fi
+# Apply Sidekick's provider-neutral mode only inside Sidekick. Explicit caller
+# flags always win, so one-off agent launches remain possible.
+claude() {
+    local arg mode
+    for arg in "$@"; do
+        case "$arg" in
+            --permission-mode|--permission-mode=*) command claude "$@"; return ;;
+        esac
+    done
+    mode="$(__sidekick_approval_mode)"
+    case "$mode" in
+        auto) command claude --permission-mode acceptEdits "$@" ;;
+        review) command claude --permission-mode auto "$@" ;;
+        bypass) command claude --permission-mode bypassPermissions "$@" ;;
+        *) command claude "$@" ;;
+    esac
+}
+
+codex() {
+    local arg mode
+    for arg in "$@"; do
+        case "$arg" in
+            --sandbox|--sandbox=*|-s|-s=*|--ask-for-approval|--ask-for-approval=*|-a|-a=*|--full-auto|--yolo|--dangerously-bypass-approvals-and-sandbox)
+                command codex "$@"; return ;;
+        esac
+    done
+    mode="$(__sidekick_approval_mode)"
+    case "$mode" in
+        auto) command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+        review) command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=auto_review "$@" ;;
+        bypass) command codex --sandbox danger-full-access --ask-for-approval never "$@" ;;
+        *) command codex --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+    esac
+}
 """#
 
-    private static let bashScript = #"""
+    static let bashScript = #"""
 # Sidekick shell integration (bash)
 # Emits OSC 7 (working directory) and OSC 133 (prompt/command marks).
 # Safe to source from any terminal; it only activates inside Sidekick.
@@ -179,34 +195,50 @@ __sidekick_precmd() {
 trap '__sidekick_preexec' DEBUG
 PROMPT_COMMAND="__sidekick_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 
-# Apply Sidekick's auto-approve preference only to claude sessions started in a
-# Sidekick pane (scoped via this env var; never touches claude run elsewhere).
-# A caller's own --permission-mode wins.
-if [[ -n "$SIDEKICK_CLAUDE_PERMISSION_MODE" ]]; then
-    claude() {
-        local arg
-        for arg in "$@"; do
-            case "$arg" in
-                --permission-mode|--permission-mode=*) command claude "$@"; return ;;
-            esac
-        done
-        command claude --permission-mode "$SIDEKICK_CLAUDE_PERMISSION_MODE" "$@"
-    }
-fi
+# Resolve the approval mode at agent launch, not pane launch. Preferences writes
+# one data-only word atomically; the env value is a fallback if it is unreadable.
+__sidekick_approval_mode() {
+    local mode="$SIDEKICK_APPROVAL_MODE"
+    if [[ -n "$SIDEKICK_APPROVAL_MODE_FILE" && -r "$SIDEKICK_APPROVAL_MODE_FILE" ]]; then
+        IFS= read -r mode < "$SIDEKICK_APPROVAL_MODE_FILE"
+    fi
+    [[ "$mode" == "claude-auto" ]] && mode="review"
+    printf '%s' "${mode:-ask}"
+}
 
-# Same, scoped to codex sessions started in a Sidekick pane. A caller's own
-# approval/sandbox flag wins. (Unquoted $VAR word-splits the flags in bash.)
-if [[ -n "$SIDEKICK_CODEX_APPROVAL_ARGS" ]]; then
-    codex() {
-        local arg
-        for arg in "$@"; do
-            case "$arg" in
-                --sandbox|--sandbox=*|-s|--ask-for-approval|--ask-for-approval=*|-a|--full-auto|--dangerously-bypass-approvals-and-sandbox)
-                    command codex "$@"; return ;;
-            esac
-        done
-        command codex $SIDEKICK_CODEX_APPROVAL_ARGS "$@"
-    }
-fi
+# Apply Sidekick's provider-neutral mode only inside Sidekick. Explicit caller
+# flags always win, so one-off agent launches remain possible.
+claude() {
+    local arg mode
+    for arg in "$@"; do
+        case "$arg" in
+            --permission-mode|--permission-mode=*) command claude "$@"; return ;;
+        esac
+    done
+    mode="$(__sidekick_approval_mode)"
+    case "$mode" in
+        auto) command claude --permission-mode acceptEdits "$@" ;;
+        review) command claude --permission-mode auto "$@" ;;
+        bypass) command claude --permission-mode bypassPermissions "$@" ;;
+        *) command claude "$@" ;;
+    esac
+}
+
+codex() {
+    local arg mode
+    for arg in "$@"; do
+        case "$arg" in
+            --sandbox|--sandbox=*|-s|-s=*|--ask-for-approval|--ask-for-approval=*|-a|-a=*|--full-auto|--yolo|--dangerously-bypass-approvals-and-sandbox)
+                command codex "$@"; return ;;
+        esac
+    done
+    mode="$(__sidekick_approval_mode)"
+    case "$mode" in
+        auto) command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+        review) command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=auto_review "$@" ;;
+        bypass) command codex --sandbox danger-full-access --ask-for-approval never "$@" ;;
+        *) command codex --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+    esac
+}
 """#
 }

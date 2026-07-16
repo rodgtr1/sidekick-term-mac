@@ -180,23 +180,22 @@ font_family = ""
 show_hidden_files = false
 
 [approval]
-# mode: whether agents launched in panes prompt before applying file edits.
+# mode: permission intent for Claude/Codex sessions launched in Sidekick panes.
 # Sidekick passes the matching flags only to claude/codex sessions started inside
 # Sidekick (interactive panes via the shell-integration wrapper, launched workers
 # via the argv) — it no longer touches global ~/.claude/settings.json or
 # ~/.codex/config.toml, so agents run outside Sidekick are unaffected. Applies to
 # the next agent started in a pane, not running ones.
-#   "ask"    — leave the agent's normal per-edit prompting in place (default)
+#   "ask"    — Claude prompts before edits; Codex runs read-only and asks before
+#              crossing that boundary.
 #   "auto"   — Claude: --permission-mode acceptEdits; Codex: --sandbox
 #              workspace-write --ask-for-approval on-request. File edits apply
 #              without a prompt (risky Bash like `git push` still prompts). Works
 #              even on corporate machines that disable bypass mode.
-#   "claude-auto" — Claude: --permission-mode auto (Claude Code's "Auto" mode).
-#              Everything auto-approves, but a safety classifier checks each
-#              action against your request and blocks destructive commands and
-#              hostile-content-driven actions; explicit "ask" permission rules
-#              still prompt. Needs Claude Code 2.1.207+ and an Opus 4.6+/Sonnet
-#              4.6+ model. Codex has no analog and gets the same flags as "auto".
+#   "review" — safety-reviewed autonomy. Claude uses --permission-mode auto;
+#              Codex keeps workspace-write/on-request and routes eligible boundary
+#              requests to approvals_reviewer=auto_review. Legacy "claude-auto"
+#              is accepted as an alias.
 #   "bypass" — Claude: --permission-mode bypassPermissions; Codex: --sandbox
 #              danger-full-access --ask-for-approval never. No prompts at all.
 #              Claude falls back to "acceptEdits" when a managed policy disables
@@ -206,7 +205,8 @@ show_hidden_files = false
 #   to "ask". Also toggle per session from the menu — View ▸ Auto-approve Agent
 #   Edits (⇧⌘A); that turns on "auto" for the session and resets on relaunch.
 mode = "ask"
-# Glob rules layered on top of `mode`, matched against each edited file path.
+# Claude/Pi approval-desk glob rules layered on top of `mode`, matched against
+# each edited file path. Codex auto-applied edits do not enter Sidekick's desk.
 # Patterns match anywhere in the path on a "/" boundary unless they start with
 # "/" (absolute) or "~". Wildcards: "*" stays within one path segment, "**"
 # spans directories, "?" matches one character. Both default to [] (no rules).
@@ -443,17 +443,35 @@ public struct BehaviorConfig: Codable {
 }
 
 // MARK: - Approval Configuration
+
+/// Provider-neutral permission intent. The persisted string remains tolerant so
+/// configs written before Codex auto-review existed keep working: the old
+/// `claude-auto` spelling now means the shared safety-reviewed mode.
+nonisolated enum ApprovalMode: String, CaseIterable, Sendable {
+    case ask
+    case auto
+    case review
+    case bypass
+
+    init(configValue: String) {
+        switch configValue.lowercased() {
+        case "auto": self = .auto
+        case "review", "claude-auto": self = .review
+        case "bypass": self = .bypass
+        default: self = .ask
+        }
+    }
+
+    var autoApprovesEdits: Bool { self != .ask }
+}
+
 nonisolated public struct ApprovalConfig: Codable, Sendable {
     /// How agents launched in panes prompt before acting:
-    /// "ask"         — leave Claude Code's normal per-edit prompting (default).
-    /// "auto"        — auto-approve file edits (maps to Claude's `acceptEdits`);
-    ///                 risky Bash still prompts.
-    /// "claude-auto" — Claude's Auto mode (`--permission-mode auto`): everything
-    ///                 auto-approves, but a safety classifier checks each action
-    ///                 against the request and blocks destructive or hostile ones.
-    ///                 Claude-specific; Codex gets the same flags as "auto".
-    /// "bypass"      — auto-approve everything (maps to Claude's `bypassPermissions`),
-    ///                 falling back to `acceptEdits` where a managed policy blocks it.
+    /// "ask"    — Claude prompts before edits; Codex uses read-only/on-request.
+    /// "auto"   — workspace edits apply automatically; boundary crossings ask.
+    /// "review" — each agent's safety reviewer handles broader actions.
+    /// "bypass" — full access with no prompts (subject to managed policy).
+    /// Legacy "claude-auto" is accepted as an alias for "review".
     public var mode: String
 
     /// Globs whose edits are approved silently even while `mode = "ask"`.
@@ -494,11 +512,9 @@ nonisolated public struct ApprovalConfig: Codable, Sendable {
         worktreeAutoApprove = try container.decodeIfPresent(Bool.self, forKey: .worktreeAutoApprove) ?? worktreeAutoApprove
     }
 
-    /// True when edits should be approved without a popup — "auto",
-    /// "claude-auto", and the broader "bypass" all auto-approve edits.
+    /// True when edits should be approved without a popup.
     public var autoApprove: Bool {
-        let m = mode.lowercased()
-        return m == "auto" || m == "claude-auto" || m == "bypass"
+        ApprovalMode(configValue: mode).autoApprovesEdits
     }
 }
 
@@ -699,4 +715,3 @@ nonisolated public struct ArcadeConfig: Codable, Sendable {
         self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
     }
 }
-

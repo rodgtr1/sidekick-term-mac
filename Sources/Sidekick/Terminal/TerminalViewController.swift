@@ -637,10 +637,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         guard !flags.isEmpty,
               let program = command.first,
               URL(fileURLWithPath: program).lastPathComponent == "codex",
-              !command.contains(where: {
-                  AgentIntegrationInstaller.codexApprovalFlagNames.contains($0)
-                      || $0.hasPrefix("--sandbox=") || $0.hasPrefix("--ask-for-approval=")
-              })
+              !command.contains(where: AgentIntegrationInstaller.isCodexApprovalOverride)
         else { return command }
         return [program] + flags + command.dropFirst()
     }
@@ -674,20 +671,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
             environment.append("TERM_PROGRAM_VERSION=\(version)")
         }
-        // Scope Claude's permission mode to this Sidekick pane: the shell-integration
-        // wrapper reads this when the user types `claude` interactively. (Workers
-        // launched via `exec` below bypass the shell function, so the flag is also
-        // injected into their argv.)
-        if let claudeMode = AgentApprovalState.claudePermissionMode {
-            environment.append("SIDEKICK_CLAUDE_PERMISSION_MODE=\(claudeMode)")
-        }
-        // Same scoping for Codex: the shell-integration wrapper reads this when the
-        // user types `codex` interactively; workers get the flags on argv below.
-        if !AgentApprovalState.codexApprovalArgs.isEmpty {
-            environment.append(
-                "SIDEKICK_CODEX_APPROVAL_ARGS=\(AgentApprovalState.codexApprovalArgs.joined(separator: " "))"
-            )
-        }
+        // Interactive shells resolve the live mode again whenever an agent starts,
+        // so a Preferences change reaches the next launch in an existing pane.
+        // The env value is a safe fallback if the snapshot file cannot be read.
+        // Always fail closed if the live file is missing or unreadable. It is the
+        // authority; the fallback must not preserve a stale permissive pane mode.
+        environment.append("SIDEKICK_APPROVAL_MODE=ask")
+        environment.append("SIDEKICK_APPROVAL_MODE_FILE=\(AgentApprovalState.modeFileURL.path)")
         if let command = initialCommand
             .map(Self.applyingClaudePermissionMode)
             .map(Self.applyingCodexApprovalFlags) {

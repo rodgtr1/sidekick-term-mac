@@ -37,15 +37,16 @@ they land. Claude Code edits are intercepted by a PreToolUse hook and Pi
 edits by the Sidekick extension; both carry the edit to an inline diff card
 in the Agents panel (accept, reject, or remember for the file, folder, or
 session), and the desk's verdict answers the agent's own permission question,
-so there is exactly one prompt, not two. The approval policy is configurable
-(ask every edit, auto-approve edits, Claude's safety-checked Auto mode, or
-fully autonomous) with `auto_allow`/`always_ask` glob overrides: an
+so there is exactly one prompt, not two. The provider-neutral approval policy
+maps ask, workspace auto, safety-reviewed auto, and full access onto each
+agent's native controls. Claude and Pi also support `auto_allow`/`always_ask`
+glob overrides through the diff desk: an
 `always_ask` path like `.env` parks at the desk even in fully autonomous
 mode, and a rejection there holds. If Sidekick isn't running, the gate stays
 silent and the agent's normal prompting takes over; nothing breaks. Codex
-edits keep Codex's own in-terminal approvals: its hooks can veto a tool call
-but not approve one, so routing them through the desk would just prompt
-twice. One action spins up an isolated
+edits keep Codex's own sandbox, reviewer, and in-terminal approvals; Codex
+does not expose auto-applied edits to Sidekick's path-specific diff desk.
+One action spins up an isolated
 git worktree, optionally launching an agent straight into it, so parallel
 agents never fight over the same working tree.
 
@@ -138,19 +139,20 @@ bar:
   routes each file edit through the approval desk and answers Claude's
   permission question with the reviewer's decision.
 - **Codex**: enables `hooks = true` and adds equivalent `[[hooks.<event>]]`
-  status blocks to `~/.codex/config.toml`. Codex file edits are not routed
-  through the approval desk: Codex's hooks can deny a tool call but cannot
-  approve one (verified against the Codex source and its CLI's hook schemas),
-  so a desk round-trip would duplicate Codex's own prompt. Codex keeps its
-  flag-based approvals, and its permission prompts still surface as "Needs
-  input" in the Agents panel.
+  status blocks to `~/.codex/config.toml`. Sidekick maps its four permission
+  levels to Codex's sandbox, approval policy, and reviewer (`read-only`,
+  `workspace-write`, `auto_review`, or `danger-full-access` as appropriate).
+  Codex file edits are not routed through the approval desk because edits that
+  are already allowed by its sandbox do not produce a permission event for the
+  desk to answer. Codex permission prompts still surface as "Needs input" in
+  the Agents panel.
 - **Pi**: drops a TypeScript extension into `~/.pi/agent/extensions/` that
   reports status over OSC 666, forwards session transcripts for telemetry,
   and routes Pi's `edit`/`write` tools through the approval desk with the
   same fail-open contract as the Claude gate.
 
-Approval behavior (ask-every-edit, auto-approve edits, Claude's Auto mode,
-or fully autonomous) lives in the separate **Approvals** tab, not here.
+Approval behavior (ask, workspace auto, safety-reviewed auto, or full access)
+lives in the separate **Approvals** tab, not here.
 
 ## Keyboard Shortcuts
 
@@ -358,10 +360,10 @@ opacity = 0.9
 enable_blur = true
 
 [approval]
-mode = "ask"                 # ask | auto | claude-auto | bypass; flags applied to agents launched in panes
-auto_allow = []              # globs approved silently even under "ask", e.g. ["docs/**"]
-always_ask = []              # globs that always park at the approval desk, even under auto/bypass, e.g. [".env"]
-worktree_auto_approve = false # silently approve edits that stay inside a pane's own registered worktree
+mode = "ask"                 # ask | auto | review | bypass; legacy claude-auto aliases review
+auto_allow = []              # Claude/Pi desk: silently approve matches under ask
+always_ask = []              # Claude/Pi desk: always review matches, e.g. [".env"]
+worktree_auto_approve = false # Claude/Pi desk: approve edits inside the pane's worktree
 
 [behavior]
 scrollback_lines = 10000     # -1 for unlimited

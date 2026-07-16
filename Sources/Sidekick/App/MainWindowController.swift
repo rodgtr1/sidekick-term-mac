@@ -238,7 +238,19 @@ class MainWindowController: NSWindowController {
     /// surfaced. Called at launch (which also reverts a stale value left by last
     /// session's menu toggle) and whenever the state changes.
     private func syncAgentAutoApprove() {
-        let mode = effectiveApprovalMode
+        var resolvedMode = ApprovalMode(configValue: effectiveApprovalMode)
+        AgentApprovalState.mode = resolvedMode
+        do {
+            try AgentApprovalState.persistMode()
+        } catch {
+            // A stale permissive snapshot must never widen the direct-worker
+            // path after a failed downgrade. persistMode fail-closes the file
+            // before replacement; mirror that choice in process memory.
+            resolvedMode = .ask
+            AgentApprovalState.mode = .ask
+            Log.error("Failed to persist agent approval mode; falling back to ask: \(error)", category: "app")
+        }
+        let mode = resolvedMode.rawValue
         // Scope Claude's permission mode to Sidekick-launched sessions instead of
         // writing it into global settings: record the live value for new panes and
         // migrate away any managed defaultMode an older build left machine-wide.
@@ -261,15 +273,15 @@ class MainWindowController: NSWindowController {
         }
     }
 
-    /// Effective Sidekick approval level ("ask"/"auto"/"claude-auto"/"bypass"):
+    /// Effective Sidekick approval level (ask/auto/review/bypass):
     /// the persistent `[approval]` mode, but the per-session ⇧⌘A toggle forces
-    /// at least "auto" and never downgrades a configured "claude-auto" or
+    /// at least "auto" and never downgrades a configured "review" or
     /// "bypass" (both already auto-approve more than the toggle grants).
     private var effectiveApprovalMode: String {
-        let configMode = (config.approval?.mode ?? "ask").lowercased()
-        if configMode == "bypass" || configMode == "claude-auto" { return configMode }
+        let configMode = ApprovalMode(configValue: config.approval?.mode ?? "ask")
+        if configMode == .bypass || configMode == .review { return configMode.rawValue }
         if sessionAutoApproveEdits { return "auto" }
-        return configMode == "auto" ? "auto" : "ask"
+        return configMode.rawValue
     }
 
     private func setupConfigWatcher() {

@@ -381,7 +381,7 @@ nonisolated enum AgentIntegrationInstaller {
     /// (edits only, no oversight of Bash) and `bypassPermissions` (everything,
     /// no oversight at all). Requires Claude Code 2.1.207+ and an Opus 4.6+ /
     /// Sonnet 4.6+ model; an older CLI rejects the flag at launch, which is why
-    /// this maps only from the explicit "claude-auto" level, never silently.
+    /// this maps only from the explicit safety-reviewed level, never silently.
     static let claudeAutoPermissionMode = "auto"
 
     /// The defaultMode values Sidekick manages. On returning to "ask" we clear
@@ -479,16 +479,16 @@ nonisolated enum AgentIntegrationInstaller {
         return (permissions["disableBypassPermissionsMode"] as? String) == "disable"
     }
 
-    /// Maps a Sidekick approval level ("ask"/"auto"/"claude-auto"/"bypass") to
+    /// Maps a Sidekick approval level (ask/auto/review/bypass) to
     /// the Claude Code permission mode, or `nil` for normal prompting.
     /// Centralizes the agent-specific mapping so callers only deal in the
     /// abstract level.
     static func claudeMode(forApprovalMode mode: String) -> String? {
-        switch mode.lowercased() {
-        case "auto": return autoApproveMode
-        case "claude-auto": return claudeAutoPermissionMode
-        case "bypass": return bypassMode
-        default: return nil
+        switch ApprovalMode(configValue: mode) {
+        case .ask: return nil
+        case .auto: return autoApproveMode
+        case .review: return claudeAutoPermissionMode
+        case .bypass: return bypassMode
         }
     }
 
@@ -502,27 +502,44 @@ nonisolated enum AgentIntegrationInstaller {
     /// Sidekick-launched workers) so they never affect `codex` run outside
     /// Sidekick — the exact model as `claudePermissionMode`.
     ///
-    /// Codex has no per-command `acceptEdits` analog: its "auto" safety comes from
-    /// the sandbox (edits confined to the workspace), not per-command gating.
-    ///   - "auto":   `--sandbox workspace-write --ask-for-approval on-request`
-    ///   - "bypass": `--sandbox danger-full-access --ask-for-approval never`
-    ///   - "ask":    no flags, leaving Codex's own config/behavior in place.
+    /// Codex has no per-command `acceptEdits` analog, so the same four intents are
+    /// expressed through its sandbox, approval policy, and approval reviewer:
+    ///   - ask:    read-only + on-request + human reviewer
+    ///   - auto:   workspace-write + on-request + human reviewer
+    ///   - review: workspace-write + on-request + automatic safety reviewer
+    ///   - bypass: danger-full-access + never
     ///
     /// Fallback spirit of `claudePermissionMode`: a managed `requirements.toml`
     /// policy that disallows a requested value makes Codex silently downgrade to a
     /// permitted one and notify the user, so a locked-down machine degrades
     /// gracefully on its own without Sidekick pre-checking the policy.
     static func codexApprovalFlags(forApprovalMode mode: String) -> [String] {
-        switch mode.lowercased() {
-        // Codex has no classifier-supervised analog to Claude's Auto mode, so
-        // "claude-auto" degrades to the same sandboxed flags as "auto".
-        case "auto", "claude-auto":
-            return ["--sandbox", codexAutoSettings.sandbox, "--ask-for-approval", codexAutoSettings.approval]
-        case "bypass":
+        switch ApprovalMode(configValue: mode) {
+        case .ask:
+            return codexArgs(sandbox: "read-only", approval: "on-request", reviewer: "user")
+        case .auto:
+            return codexArgs(
+                sandbox: codexAutoSettings.sandbox,
+                approval: codexAutoSettings.approval,
+                reviewer: "user"
+            )
+        case .review:
+            return codexArgs(
+                sandbox: codexAutoSettings.sandbox,
+                approval: codexAutoSettings.approval,
+                reviewer: "auto_review"
+            )
+        case .bypass:
             return ["--sandbox", codexBypassSettings.sandbox, "--ask-for-approval", codexBypassSettings.approval]
-        default:
-            return []
         }
+    }
+
+    private static func codexArgs(sandbox: String, approval: String, reviewer: String) -> [String] {
+        [
+            "--sandbox", sandbox,
+            "--ask-for-approval", approval,
+            "-c", "approvals_reviewer=\(reviewer)"
+        ]
     }
 
     /// Codex approval/sandbox flags recognized as a caller's own choice; when one
@@ -531,8 +548,16 @@ nonisolated enum AgentIntegrationInstaller {
     /// guard on the Claude path.
     static let codexApprovalFlagNames: Set<String> = [
         "--sandbox", "-s", "--ask-for-approval", "-a",
-        "--full-auto", "--dangerously-bypass-approvals-and-sandbox"
+        "--full-auto", "--yolo", "--dangerously-bypass-approvals-and-sandbox"
     ]
+
+    static func isCodexApprovalOverride(_ argument: String) -> Bool {
+        codexApprovalFlagNames.contains(argument)
+            || argument.hasPrefix("--sandbox=")
+            || argument.hasPrefix("--ask-for-approval=")
+            || argument.hasPrefix("-s=")
+            || argument.hasPrefix("-a=")
+    }
 
     /// Removes any Sidekick-managed `approval_policy` + `sandbox_mode` combo an
     /// older version wrote into the global `~/.codex/config.toml`, which changed

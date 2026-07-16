@@ -384,18 +384,18 @@ class PreferencesWindowController: NSWindowController {
 
         approvalModePopup = NSPopUpButton()
         approvalModePopup.addItems(withTitles: [
-            "Ask before every edit",
-            "Auto-approve edits",
-            "Auto (Claude decides, safety-checked)",
-            "Auto-approve everything (no prompts)"
+            "Ask before changes",
+            "Auto-approve workspace edits",
+            "Auto (safety-reviewed)",
+            "Full access (no prompts)"
         ])
         approvalModePopup.target = self
         approvalModePopup.action = #selector(approvalModeChanged(_:))
 
         let modeHelp = Self.wrappingLabel(
-            "\"Auto-approve edits\" applies edits without prompting; risky commands still ask. \"Auto\" is Claude's Auto mode: no prompts, but a safety model blocks destructive or off-task actions (Claude Code 2.1.207+). \"Everything\" skips all prompts with no checks. Applies to new agents — toggle per session with ⇧⌘A.",
+            "Controls Claude and Codex with matching intent. Ask gates edits; Workspace edits automatically inside the project; Auto sends broader actions to each agent's safety reviewer; Full access removes prompts and sandbox limits. Applies to the next agent launched, including in an open pane; running sessions keep their current permissions. Toggle workspace-edit auto with ⇧⌘A.",
             fontSize: 11,
-            maxLines: 6,
+            maxLines: 7,
             preferredWidth: 420
         )
 
@@ -406,9 +406,9 @@ class PreferencesWindowController: NSWindowController {
         autoAllowField.action = #selector(autoAllowChanged(_:))
 
         let autoAllowHelp = Self.wrappingLabel(
-            "Approved silently in ask mode. Ignored when auto-approving everything.",
+            "Approval-desk rule for Claude and Pi edits. Codex does not expose auto-applied edits to Sidekick's diff desk.",
             fontSize: 11,
-            maxLines: 2,
+            maxLines: 3,
             preferredWidth: 420
         )
 
@@ -419,9 +419,9 @@ class PreferencesWindowController: NSWindowController {
         alwaysAskField.action = #selector(alwaysAskChanged(_:))
 
         let alwaysAskHelp = Self.wrappingLabel(
-            "Always prompts, even when auto-approving. Highest precedence — use for secrets.",
+            "Approval-desk rule for Claude and Pi. Highest precedence there, but it cannot override Codex's own sandbox/reviewer.",
             fontSize: 11,
-            maxLines: 2,
+            maxLines: 3,
             preferredWidth: 420
         )
 
@@ -433,14 +433,14 @@ class PreferencesWindowController: NSWindowController {
         worktreeAutoApproveCheckbox.font = NSFont.systemFont(ofSize: 13)
 
         let worktreeAutoApproveHelp = Self.wrappingLabel(
-            "When a pane sits in a git worktree, edits inside that worktree apply without prompting. Paths outside it — the main checkout, other worktrees — still ask, and Always Ask rules still win.",
+            "For Claude and Pi's approval desk: edits inside the pane's registered worktree apply automatically. Codex workspace scope already follows the directory it launches in.",
             fontSize: 11,
             maxLines: 4,
             preferredWidth: 420
         )
 
-        form.fieldLabel("Agent Edits:", gapAbove: 30)
-        form.leadingControl(approvalModePopup, gapAbove: 10, width: 220)
+        form.fieldLabel("Agent Permissions:", gapAbove: 30)
+        form.leadingControl(approvalModePopup, gapAbove: 10, width: 240)
         form.fullWidth(modeHelp, gapAbove: 6)
         form.fieldLabel("Always Allow (comma-separated globs):", gapAbove: 22)
         form.fullWidth(autoAllowField, gapAbove: 8)
@@ -886,10 +886,10 @@ class PreferencesWindowController: NSWindowController {
     }
 
     /// Approval mode strings indexed to match the popup item order.
-    private static let approvalModes = ["ask", "auto", "claude-auto", "bypass"]
+    private static let approvalModes = ApprovalMode.allCases.map(\.rawValue)
 
     private static func approvalModeIndex(_ mode: String) -> Int {
-        approvalModes.firstIndex(of: mode.lowercased()) ?? 0
+        approvalModes.firstIndex(of: ApprovalMode(configValue: mode).rawValue) ?? 0
     }
 
     @objc private func approvalModeChanged(_ sender: NSPopUpButton) {
