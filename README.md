@@ -226,6 +226,13 @@ so far:
   that gets away; the bobber just rides a little lower. Catch and release,
   with the keepsake in `~/.config/sidekick/pond-almanac.md`, a plain markdown
   file you own.
+- **Loom**: a small grid of thread fragments, each turnable in place. Turn
+  them until every thread meets its neighbor and nothing frays into the void,
+  and the panel resolves into closed, quiet loops. No clock, no par, no wrong
+  move; any closed arrangement counts, and a half-turned panel keeps exactly
+  as you left it. Each settled panel weaves one row of cloth into
+  `~/.config/sidekick/loom-tapestry.md`, a bolt per month, a plain markdown
+  textile you own.
 
 ## MCP Server
 
