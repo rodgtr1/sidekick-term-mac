@@ -218,6 +218,14 @@ so far:
   like, sketch in a hill, watch the shoreline emerge where land meets sea.
   The pen holds a little ink per visit and refills on open; nothing counts
   down. Export sheets to `~/.config/sidekick/atlas.md`, an atlas you own.
+- **The Pond**: cast a line, go back to your agents, reel in whenever you
+  wander back. The waiting you were already doing is the only resource: the
+  longer a line has been out, the stranger the pool of things that may be on
+  it. Nothing is decided while you are away, so nothing can be missed; every
+  reel-in lands something, even after ten seconds. No timer, no bar, no fish
+  that gets away; the bobber just rides a little lower. Catch and release,
+  with the keepsake in `~/.config/sidekick/pond-almanac.md`, a plain markdown
+  file you own.
 
 ## MCP Server
 

@@ -61,7 +61,8 @@ enum ArcadeGameCatalog {
         entry(for: KeysmithView.self),
         entry(for: GroveView.self),
         entry(for: WalkView.self),
-        entry(for: CartographyView.self)
+        entry(for: CartographyView.self),
+        entry(for: PondView.self)
     ]
 
     private static func entry<Game: ArcadeGame>(for type: Game.Type) -> Entry {
