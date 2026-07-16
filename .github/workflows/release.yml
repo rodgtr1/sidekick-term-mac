@@ -23,6 +23,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Releases are usually created by hand first (curated notes from
+          # CHANGELOG.md) before this build finishes, so an existing release
+          # keeps its notes and just gets the CI-built assets attached.
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release upload "${{ github.ref_name }}" \
+              build/Sidekick.dmg \
+              build/Sidekick.zip \
+              --clobber
+            exit 0
+          fi
           # First tag ever gets a short static note instead of a
           # --generate-notes dump of the entire commit history (there's no
           # prior release to diff against). Later tags diff normally.
