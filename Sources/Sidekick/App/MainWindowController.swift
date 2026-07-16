@@ -1617,6 +1617,42 @@ extension MainWindowController: PaletteCommandHost {
     var isArcadeEnabled: Bool {
         config.arcade?.enabled ?? false
     }
+
+    var paletteSkillRoots: [URL] {
+        let fileManager = FileManager.default
+        var roots = [
+            fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent(".claude/skills", isDirectory: true)
+        ]
+        // The workspace's own .claude/skills, found by walking up from the
+        // terminal cwd, which may be a subdirectory of the repo. Stops at
+        // $HOME so the user root can't be picked up twice.
+        if let cwd = tabController.currentWorkingDirectoryForNewTerminal() {
+            var directory = URL(fileURLWithPath: cwd).standardizedFileURL
+            let home = fileManager.homeDirectoryForCurrentUser.standardizedFileURL.path
+            while directory.path != "/" && directory.path != home {
+                let candidate = directory.appendingPathComponent(".claude/skills", isDirectory: true)
+                if fileManager.fileExists(atPath: candidate.path) {
+                    roots.append(candidate)
+                    break
+                }
+                directory = directory.deletingLastPathComponent()
+            }
+        }
+        return roots
+    }
+
+    func sendToActiveTerminal(text: String, submit: Bool) {
+        guard let terminal = tabs[safe: activeTabIndex]?.activePane?.terminalViewController else { return }
+        terminal.send(text: text)
+        guard submit else { return }
+        // Same two-step delivery as `sidekick-ctl run` (handlePaneRun): agent
+        // TUIs treat a burst of stdin as a paste and swallow an Enter carried
+        // in the same chunk, so it goes as its own keypress once that settles.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
+            _ = terminal.send(key: "enter")
+        }
+    }
 }
 
 // MARK: - WorktreeFlowHost

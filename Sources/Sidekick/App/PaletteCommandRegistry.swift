@@ -43,6 +43,14 @@ protocol PaletteCommandHost: AnyObject {
     /// enabled = true). Off by default; gates both the ⌃` chord and the
     /// palette entry.
     var isArcadeEnabled: Bool { get }
+
+    // Skills
+    /// Skill roots to scan for palette-tagged skills, in precedence order
+    /// (user dir first, workspace dir last — later wins on a name collision).
+    var paletteSkillRoots: [URL] { get }
+    /// Types `text` into the focused terminal pane; when `submit`, follows
+    /// with Enter so argument-less skills fire in one palette action.
+    func sendToActiveTerminal(text: String, submit: Bool)
 }
 
 /// Owns the ⇧⌘P command palette and the `KeyboardCommand` dispatch table —
@@ -129,6 +137,21 @@ final class PaletteCommandRegistry {
                 }
             )
         }
+
+        // Agent skills tagged `sidekick-palette: true` in their SKILL.md.
+        // The palette only types the slash command into the focused pane;
+        // the skill itself runs in the agent CLI. Skills that take arguments
+        // get a trailing space and the cursor stays in the pane; ones tagged
+        // submit fire immediately.
+        let skills = PaletteSkillScanner.scan(roots: host?.paletteSkillRoots ?? [])
+        actions.append(contentsOf: skills.map { skill in
+            PaletteAction(title: "Skill: \(skill.title)", subtitle: "/\(skill.name)", symbolName: "sparkles") { [weak self] in
+                self?.host?.sendToActiveTerminal(
+                    text: skill.submit ? "/\(skill.name)" : "/\(skill.name) ",
+                    submit: skill.submit
+                )
+            }
+        })
         return actions
     }
 
