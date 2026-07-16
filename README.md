@@ -233,6 +233,14 @@ so far:
   as you left it. Each settled panel weaves one row of cloth into
   `~/.config/sidekick/loom-tapestry.md`, a bolt per month, a plain markdown
   textile you own.
+- **Night Sky**: one invented sky per evening, seeded so tonight is the same
+  sky every time you look and tomorrow is a new one. Connect a few stars
+  however you like, name the shape, and it settles onto the sky. Nothing is
+  solved and nothing is scored: there is no right constellation, only the one
+  you noticed. Watching the slow twinkle and linking nothing is a whole way to
+  play, and a night you never opened is not a night you missed. Named shapes
+  are sketched into `~/.config/sidekick/star-almanac.md`, a plain markdown
+  almanac you own.
 
 ## MCP Server
 
