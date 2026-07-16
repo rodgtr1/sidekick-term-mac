@@ -91,12 +91,28 @@ final class CartographyView: NSView, ArcadeGame, NSTextFieldDelegate {
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
 
-    override func becomeFirstResponder() -> Bool {
-        // The sheet's pen refills every time the panel hands us focus, i.e.
-        // every time it is opened.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // The pen refills whenever the hosting panel becomes key: summoning
+        // the arcade or clicking back into it is a fresh visit. This cannot
+        // ride on first-responder handoff — the game view stays first
+        // responder while the panel is hidden, so makeFirstResponder on
+        // reopen is a no-op and a dry pen would stay dry forever.
+        NotificationCenter.default.removeObserver(
+            self, name: NSWindow.didBecomeKeyNotification, object: nil
+        )
+        guard let window else { return }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hostWindowDidBecomeKey),
+            name: NSWindow.didBecomeKeyNotification,
+            object: window
+        )
+    }
+
+    @objc private func hostWindowDidBecomeKey() {
         model.refillInk()
         needsDisplay = true
-        return super.becomeFirstResponder()
     }
 
     // MARK: - Buttons
@@ -438,7 +454,7 @@ final class CartographyView: NSView, ArcadeGame, NSTextFieldDelegate {
         if namingArmed {
             caption = "click a cell to name it, or the title to rename the sheet"
         } else if model.isDry {
-            caption = "the pen is dry for now"
+            caption = "the pen is dry; it refills when you come back"
         } else {
             caption = nil
         }

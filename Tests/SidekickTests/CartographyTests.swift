@@ -1,3 +1,4 @@
+import Cocoa
 import XCTest
 @testable import Sidekick
 
@@ -182,6 +183,75 @@ final class CartographyModelTests: XCTestCase {
             model.reveal(along: CartographyModel.line(from: (2, y), to: (CartographyWorld.width - 3, y)))
         }
         XCTAssertTrue(["roughly sketched", "well charted"].contains(model.progressDescription))
+    }
+}
+
+@MainActor
+final class CartographyViewTests: XCTestCase {
+    private func makeViewInWindow() -> (CartographyView, NSWindow) {
+        let view = CartographyView(savedState: nil)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: view.frame.size),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView?.addSubview(view)
+        return (view, window)
+    }
+
+    private func ink(of view: CartographyView) throws -> Int {
+        let data = try XCTUnwrap(view.encodeState())
+        return try JSONDecoder().decode(CartographyState.self, from: data).ink
+    }
+
+    /// Hiding the panel leaves the game view as first responder, so reopening
+    /// never re-triggers becomeFirstResponder. The refill must instead follow
+    /// the window becoming key, or a dry pen stays dry across visits and
+    /// dragging silently does nothing.
+    func testHostWindowBecomingKeyRefillsThePen() throws {
+        let (view, window) = makeViewInWindow()
+
+        // A click in the middle of the sheet is a pen stroke that spends ink.
+        let click = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: view.frame.midX, y: view.frame.midY),
+            modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 1
+        ))
+        view.mouseDown(with: click)
+        XCTAssertLessThan(try ink(of: view), CartographyModel.inkCapacity,
+                          "a stroke on hidden ground spends ink")
+
+        // The panel coming back (toggle, or clicking back into it) is a visit.
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertEqual(try ink(of: view), CartographyModel.inkCapacity,
+                       "reopening the arcade refills the pen")
+    }
+
+    /// Another window becoming key is not a visit to this sheet.
+    func testOtherWindowsBecomingKeyDoNotRefill() throws {
+        let (view, window) = makeViewInWindow()
+        _ = window
+
+        let click = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: view.frame.midX, y: view.frame.midY),
+            modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 1
+        ))
+        view.mouseDown(with: click)
+        let spent = try ink(of: view)
+        XCTAssertLessThan(spent, CartographyModel.inkCapacity)
+
+        let other = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        other.isReleasedWhenClosed = false
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: other)
+        XCTAssertEqual(try ink(of: view), spent, "an unrelated window is not a visit")
     }
 }
 

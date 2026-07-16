@@ -1436,6 +1436,11 @@ extension MainWindowController {
 private final class SidebarResizeHandle: NSView {
     var onDrag: ((CGFloat) -> Void)?
 
+    // The main window is movable by background, and a transparent view opts
+    // into that by default — a drag here must only resize the sidebar, never
+    // also drag the window along.
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .resizeLeftRight)
     }
