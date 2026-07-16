@@ -67,6 +67,19 @@ final class TwoLinesJournalTests: XCTestCase {
     func testRecentEntriesOnMissingFileIsEmpty() {
         XCTAssertEqual(TwoLinesJournal.recentEntries(limit: 5, from: temporaryFileURL()), [])
     }
+
+    func testTraceSeedsAreStableAndFollowJournalEntries() {
+        let content = """
+        # Two Lines
+
+        - 2026-07-15 · **something round** — a cup
+        - 2026-07-15 · **the sky, right now** — high cloud
+        """
+        let seeds = TwoLinesJournal.traceSeeds(in: content)
+        XCTAssertEqual(seeds.count, 2)
+        XCTAssertEqual(seeds, TwoLinesJournal.traceSeeds(in: content))
+        XCTAssertNotEqual(seeds[0], seeds[1])
+    }
 }
 
 @MainActor

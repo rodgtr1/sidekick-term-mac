@@ -52,6 +52,31 @@ nonisolated enum TwoLinesJournal {
         return Array(entries.suffix(limit))
     }
 
+    /// A stable seed for every journal entry, used to grow the small trace in
+    /// the game. The markdown remains the only source of truth: old entries
+    /// appear automatically, and editing the file reshapes the trace.
+    static func traceSeeds(from fileURL: URL = defaultFileURL) -> [UInt64] {
+        guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { return [] }
+        return traceSeeds(in: content)
+    }
+
+    static func traceSeeds(in content: String) -> [UInt64] {
+        content.components(separatedBy: .newlines)
+            .filter { $0.hasPrefix("- ") }
+            .map(stableHash)
+    }
+
+    private static func stableHash(_ value: String) -> UInt64 {
+        // FNV-1a is deliberately simple and stable across launches, unlike
+        // Swift's randomized Hasher.
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash
+    }
+
     static func dayStamp(for date: Date) -> String {
         let parts = Calendar.current.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)

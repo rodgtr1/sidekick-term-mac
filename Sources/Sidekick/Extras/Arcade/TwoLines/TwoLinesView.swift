@@ -10,15 +10,14 @@ nonisolated private struct TwoLinesState: Codable, Equatable, Sendable {
     var draft: String
 }
 
-/// The palate-cleanser: a gentle prompt, a small text box, and nothing else.
-/// No scores, no streaks, no fail state — deliberately none of the arcade's
-/// mechanics. Writing something appends to the journal; writing nothing
-/// costs nothing.
+/// The palate-cleanser: a gentle prompt, a small text box, and a quiet trace
+/// that grows one bend at a time. No scores, streaks, goals, or fail state.
+/// Writing something appends to the journal; writing nothing costs nothing.
 final class TwoLinesView: NSView, ArcadeGame, NSTextViewDelegate {
     static let gameID = "two-lines"
     static let title = "Two Lines"
     static let howToPlay = """
-    Read the prompt and write a line or two. There is no score, streak, or penalty. Saved entries go to your two-lines.md journal, and unfinished drafts survive closing the arcade.
+    Read the prompt and write a line or two. Each saved entry adds a small bend to the trace above the prompt. It has no finish, score, streak, or penalty. Saved entries go to your two-lines.md journal, and unfinished drafts survive closing the arcade.
 
     Return  Save the entry and get a new prompt
     Option-Return  Insert a line break
@@ -33,6 +32,7 @@ final class TwoLinesView: NSView, ArcadeGame, NSTextViewDelegate {
     private var recentPromptIndices: [Int]
 
     private let captionLabel = NSTextField(labelWithString: "TWO LINES")
+    private let traceView = TwoLinesTraceView()
     private let promptLabel = NSTextField(wrappingLabelWithString: "")
     private let entryScroll = NSScrollView()
     private let entryText = TwoLinesTextView()
@@ -111,6 +111,9 @@ final class TwoLinesView: NSView, ArcadeGame, NSTextViewDelegate {
         captionLabel.alignment = .center
         captionLabel.frame = NSRect(x: 0, y: 24, width: bounds.width, height: 14)
 
+        traceView.frame = NSRect(x: 74, y: 52, width: bounds.width - 148, height: 52)
+        traceView.seeds = TwoLinesJournal.traceSeeds()
+
         promptLabel.font = Self.serifFont(size: 19, weight: .medium)
         promptLabel.textColor = .labelColor
         promptLabel.alignment = .center
@@ -188,7 +191,7 @@ final class TwoLinesView: NSView, ArcadeGame, NSTextViewDelegate {
         openFileButton.frame = NSRect(x: bounds.midX - 75, y: 484, width: 150, height: 26)
         openFileButton.isHidden = true
 
-        [captionLabel, promptLabel, entryScroll, hintLabel, keptLabel,
+        [captionLabel, traceView, promptLabel, entryScroll, hintLabel, keptLabel,
          anotherButton, journalButton, journalScroll, openFileButton].forEach(addSubview)
     }
 
@@ -234,16 +237,20 @@ final class TwoLinesView: NSView, ArcadeGame, NSTextViewDelegate {
         guard !entry.isEmpty else { return }
         TwoLinesJournal.append(prompt: currentPrompt, entry: entry, date: Date())
         entryText.string = ""
+        traceView.seeds = TwoLinesJournal.traceSeeds()
+        traceView.highlightsNewestBend = true
         advancePrompt()
         flashKept()
     }
 
     private func flashKept() {
+        keptLabel.stringValue = "kept ✓"
         keptLabel.isHidden = false
         keptFadeTimer?.invalidate()
         keptFadeTimer = Timer.scheduledTimer(withTimeInterval: 1.4, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.keptLabel.isHidden = true
+                self?.traceView.highlightsNewestBend = false
                 self?.keptFadeTimer = nil
             }
         }
@@ -251,7 +258,8 @@ final class TwoLinesView: NSView, ArcadeGame, NSTextViewDelegate {
 
     private func setJournalVisible(_ visible: Bool) {
         showingJournal = visible
-        [promptLabel, entryScroll, hintLabel, anotherButton, journalButton].forEach { $0.isHidden = visible }
+        [traceView, promptLabel, entryScroll, hintLabel, anotherButton, journalButton]
+            .forEach { $0.isHidden = visible }
         keptLabel.isHidden = true
         journalScroll.isHidden = !visible
         openFileButton.isHidden = !visible
@@ -265,6 +273,7 @@ final class TwoLinesView: NSView, ArcadeGame, NSTextViewDelegate {
             journalText.scrollToEndOfDocument(nil)
             window?.makeFirstResponder(self)
         } else {
+            traceView.seeds = TwoLinesJournal.traceSeeds()
             window?.makeFirstResponder(entryText)
         }
     }
@@ -322,6 +331,105 @@ final class TwoLinesView: NSView, ArcadeGame, NSTextViewDelegate {
         default:
             return false
         }
+    }
+}
+
+/// An open-ended drawing made from the journal itself. Every entry contributes
+/// one turn to two neighboring strokes. There is deliberately no axis, total,
+/// or destination: it is a trace of having written, not a meter to fill.
+private final class TwoLinesTraceView: NSView {
+    var seeds: [UInt64] = [] {
+        didSet { needsDisplay = true }
+    }
+
+    var highlightsNewestBend = false {
+        didSet { needsDisplay = true }
+    }
+
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard !seeds.isEmpty, bounds.width > 16, bounds.height > 16 else { return }
+
+        let points = tracePoints()
+        let firstVisible = max(0, points.count - 65)
+        let visible = Array(points[firstVisible...])
+        guard visible.count >= 2 else { return }
+
+        for side: CGFloat in [-1, 1] {
+            let path = path(for: visible, side: side)
+            path.lineWidth = 1.15
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            NSColor.tertiaryLabelColor.withAlphaComponent(0.62).setStroke()
+            path.stroke()
+
+            if highlightsNewestBend, let previous = visible.dropLast().last, let newest = visible.last {
+                let glow = NSBezierPath()
+                glow.move(to: offset(previous, side: side))
+                glow.line(to: offset(newest, side: side))
+                glow.lineWidth = 1.7
+                glow.lineCapStyle = .round
+                NSColor.controlAccentColor.withAlphaComponent(0.75).setStroke()
+                glow.stroke()
+            }
+        }
+    }
+
+    private struct TracePoint {
+        let point: NSPoint
+        let heading: CGFloat
+    }
+
+    private func tracePoints() -> [TracePoint] {
+        let inset: CGFloat = 5
+        var point = NSPoint(x: bounds.midX, y: bounds.midY)
+        var heading: CGFloat = -.pi / 2
+        var result = [TracePoint(point: point, heading: heading)]
+
+        for seed in seeds {
+            let turn = CGFloat(seed & 0xffff) / CGFloat(UInt16.max)
+            heading += (turn - 0.5) * 1.35
+            let distance = 6.5 + CGFloat((seed >> 16) & 0x7) * 0.55
+
+            var next = NSPoint(
+                x: point.x + cos(heading) * distance,
+                y: point.y + sin(heading) * distance
+            )
+            if next.x < inset || next.x > bounds.width - inset {
+                heading = .pi - heading
+                next.x = point.x + cos(heading) * distance
+                next.y = point.y + sin(heading) * distance
+            }
+            if next.y < inset || next.y > bounds.height - inset {
+                heading = -heading
+                next.x = point.x + cos(heading) * distance
+                next.y = point.y + sin(heading) * distance
+            }
+            next.x = min(max(next.x, inset), bounds.width - inset)
+            next.y = min(max(next.y, inset), bounds.height - inset)
+            point = next
+            result.append(TracePoint(point: point, heading: heading))
+        }
+        return result
+    }
+
+    private func path(for points: [TracePoint], side: CGFloat) -> NSBezierPath {
+        let path = NSBezierPath()
+        path.move(to: offset(points[0], side: side))
+        for point in points.dropFirst() {
+            path.line(to: offset(point, side: side))
+        }
+        return path
+    }
+
+    private func offset(_ point: TracePoint, side: CGFloat) -> NSPoint {
+        let separation: CGFloat = 2.2
+        return NSPoint(
+            x: point.point.x - sin(point.heading) * separation * side,
+            y: point.point.y + cos(point.heading) * separation * side
+        )
     }
 }
 

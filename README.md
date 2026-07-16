@@ -194,7 +194,8 @@ so far:
   is generated solvable by pure line logic, never guessing.
 - **Two Lines**: the opposite of a game — a palate cleanser. Each open
   shows one gentle prompt ("a sound you can hear right now") and a small
-  text box; write a line or two, or don't. Entries append to
+  text box; write a line or two, or don't. Each entry adds one quiet bend to
+  a pair of lines that keeps evolving without a count or finish. Entries append to
   `~/.config/sidekick/two-lines.md`, a plain markdown journal you own.
   No scores, no streaks, no fail state; drafts survive closing the panel.
 - **The Grove**: a bonsai in text that grows very slowly in real time, one
