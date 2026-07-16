@@ -35,6 +35,38 @@ enum ShellIntegration {
         } catch {
             Log.error("ShellIntegration: failed to write scripts: \(error)", category: "terminal")
         }
+        do {
+            try installShims()
+        } catch {
+            // Workers still get the argv injection for direct `--exec claude`
+            // launches; only wrapper-hidden launches lose the mode.
+            Log.error("ShellIntegration: failed to write worker shims: \(error)", category: "terminal")
+        }
+    }
+
+    /// Directory of PATH shims for Sidekick-launched workers.
+    ///
+    /// A worker's argv gets the approval flags injected only when its program is
+    /// literally `claude`/`codex`; a wrapper like `--exec sh -c 'exec claude …'`
+    /// hides the program from that injection, and the interactive `claude()`
+    /// wrapper can't help either (the inner sh is non-interactive and `exec`
+    /// bypasses functions). Worker panes therefore prepend this directory to
+    /// PATH, so whichever process in the worker's tree finally resolves
+    /// `claude`/`codex` finds a shim that reads the live approval mode and
+    /// execs the real binary with the pane-scoped flags.
+    static var shimDirectoryURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/sidekick/shims")
+    }
+
+    /// Writes (or refreshes) the worker shims, marked executable.
+    static func installShims(at directory: URL = shimDirectoryURL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for (name, contents) in [("claude", claudeShim), ("codex", codexShim)] {
+            let url = directory.appendingPathComponent(name)
+            try contents.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
     }
 
     static var zshrcURL: URL {
@@ -240,5 +272,85 @@ codex() {
         *) command codex --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
     esac
 }
+"""#
+
+    // MARK: - Worker shim contents
+
+    /// Shared preamble: drops the shim's own directory from PATH (comparing
+    /// physical paths, so a symlinked PATH entry can't leave the shim first and
+    /// make it exec itself forever), then resolves the live approval mode the
+    /// same way the interactive wrappers do.
+    private static let shimPreamble = #"""
+shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+new_path=
+old_ifs=$IFS
+IFS=:
+for dir in $PATH; do
+    phys=$(CDPATH= cd -- "$dir" 2>/dev/null && pwd)
+    [ "$phys" = "$shim_dir" ] && continue
+    new_path="${new_path:+$new_path:}$dir"
+done
+IFS=$old_ifs
+PATH=$new_path
+export PATH
+
+mode="$SIDEKICK_APPROVAL_MODE"
+if [ -n "$SIDEKICK_APPROVAL_MODE_FILE" ] && [ -r "$SIDEKICK_APPROVAL_MODE_FILE" ]; then
+    IFS= read -r mode < "$SIDEKICK_APPROVAL_MODE_FILE"
+fi
+[ "$mode" = "claude-auto" ] && mode=review
+"""#
+
+    /// PATH shim for `claude` in Sidekick worker panes. Explicit caller flags
+    /// always win; the mode cases mirror the interactive wrapper exactly.
+    static let claudeShim = #"""
+#!/bin/sh
+# Sidekick worker shim (claude) — written and refreshed by Sidekick at launch.
+# Worker panes prepend this directory to PATH so `claude` picks up the pane's
+# approval mode even when a wrapper (e.g. `sh -c 'exec claude …'`) hides it
+# from Sidekick's argv injection.
+
+"""# + shimPreamble + #"""
+
+
+for arg in "$@"; do
+    case "$arg" in
+        --permission-mode|--permission-mode=*) exec claude "$@" ;;
+    esac
+done
+
+case "$mode" in
+    auto) exec claude --permission-mode acceptEdits "$@" ;;
+    review) exec claude --permission-mode auto "$@" ;;
+    bypass) exec claude --permission-mode bypassPermissions "$@" ;;
+    *) exec claude "$@" ;;
+esac
+"""#
+
+    /// PATH shim for `codex` in Sidekick worker panes. Same contract as the
+    /// claude shim.
+    static let codexShim = #"""
+#!/bin/sh
+# Sidekick worker shim (codex) — written and refreshed by Sidekick at launch.
+# Worker panes prepend this directory to PATH so `codex` picks up the pane's
+# approval mode even when a wrapper (e.g. `sh -c 'exec codex …'`) hides it
+# from Sidekick's argv injection.
+
+"""# + shimPreamble + #"""
+
+
+for arg in "$@"; do
+    case "$arg" in
+        --sandbox|--sandbox=*|-s|-s=*|--ask-for-approval|--ask-for-approval=*|-a|-a=*|--full-auto|--yolo|--dangerously-bypass-approvals-and-sandbox)
+            exec codex "$@" ;;
+    esac
+done
+
+case "$mode" in
+    auto) exec codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+    review) exec codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=auto_review "$@" ;;
+    bypass) exec codex --sandbox danger-full-access --ask-for-approval never "$@" ;;
+    *) exec codex --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+esac
 """#
 }

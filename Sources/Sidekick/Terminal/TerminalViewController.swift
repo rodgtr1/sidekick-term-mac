@@ -612,6 +612,16 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         }
     }
 
+    /// Fixed launch script for direct workers, run as the user's shell's `-c`
+    /// command. `exec "$@"` runs the requested argv without re-parsing it. The
+    /// PATH prepend runs after the shell's rc files (which may rewrite PATH),
+    /// putting Sidekick's worker shims first, so an agent CLI resolved anywhere
+    /// in the worker's process tree — even inside a `sh -c 'exec claude …'`
+    /// wrapper, which the argv injection below cannot see through — still
+    /// receives the pane-scoped approval flags. Internal for tests.
+    static let workerLaunchScript =
+        #"[ -n "$SIDEKICK_SHIM_DIR" ] && PATH="$SIDEKICK_SHIM_DIR:$PATH"; exec "$@""#
+
     /// Injects `--permission-mode <mode>` into a Sidekick-launched `claude` worker
     /// when an auto/bypass approval level is active. Workers run via `exec`, which
     /// bypasses the shell-integration `claude` wrapper, so the flag must go on the
@@ -678,19 +688,22 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // authority; the fallback must not preserve a stale permissive pane mode.
         environment.append("SIDEKICK_APPROVAL_MODE=ask")
         environment.append("SIDEKICK_APPROVAL_MODE_FILE=\(AgentApprovalState.modeFileURL.path)")
+        // Consumed by the worker launch script below; interactive panes never
+        // touch it (their wrapper functions already scope the mode).
+        environment.append("SIDEKICK_SHIM_DIR=\(ShellIntegration.shimDirectoryURL.path)")
         if let command = initialCommand
             .map(Self.applyingClaudePermissionMode)
             .map(Self.applyingCodexApprovalFlags) {
             // Launch the worker through the user's login+interactive shell so
             // it inherits the same PATH and version-manager setup a normal pane
-            // gets (e.g. ~/.local/bin, nvm). The command string is the fixed
-            // literal `exec "$@"`; the requested argv arrives as positional
+            // gets (e.g. ~/.local/bin, nvm). The command string is a fixed
+            // literal; the requested argv arrives as positional
             // parameters, so the shell never re-parses it — no interpolation or
             // command-injection. `exec` replaces the shell so the worker is the
             // pane's root process and its exit transitions the pane to .done.
             terminalView.startProcess(
                 executable: shell,
-                args: ["-i", "-c", "exec \"$@\"", shellIdiom] + command,
+                args: ["-i", "-c", Self.workerLaunchScript, shellIdiom] + command,
                 environment: environment,
                 execName: shellIdiom,
                 currentDirectory: startDirectory

@@ -183,9 +183,10 @@ show_hidden_files = false
 # mode: permission intent for Claude/Codex sessions launched in Sidekick panes.
 # Sidekick passes the matching flags only to claude/codex sessions started inside
 # Sidekick (interactive panes via the shell-integration wrapper, launched workers
-# via the argv) — it no longer touches global ~/.claude/settings.json or
-# ~/.codex/config.toml, so agents run outside Sidekick are unaffected. Applies to
-# the next agent started in a pane, not running ones.
+# via the argv plus PATH shims that catch wrapper-hidden launches like
+# `sh -c 'exec claude …'`) — it no longer touches global ~/.claude/settings.json
+# or ~/.codex/config.toml, so agents run outside Sidekick are unaffected. Applies
+# to the next agent started in a pane, not running ones.
 #   "ask"    — Claude prompts before edits; Codex runs read-only and asks before
 #              crossing that boundary.
 #   "auto"   — Claude: --permission-mode acceptEdits; Codex: --sandbox

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **Wrapped workers keep the approval mode**: a pane launched as `--exec sh -c 'exec claude …'` hid the agent program from the approval-flag argv injection, and the inner non-interactive shell never defines the `claude()` wrapper, so the worker silently started in manual mode while every interactive launch honored the configured level. Sidekick now writes `claude`/`codex` PATH shims to `~/.config/sidekick/shims` (refreshed at launch, like the shell integration) and the worker launch script prepends them to PATH after rc files run, so whichever process in a worker's tree finally resolves the agent CLI still applies the live approval mode. Explicit caller flags always win, a missing mode file fails closed to ask, and the shim strips itself from PATH by physical path so a symlinked entry can't make it exec itself.
+
 ## 0.4.0 (2026-07-16)
 
 ### New features
