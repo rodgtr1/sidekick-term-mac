@@ -83,7 +83,8 @@ enum ArcadeGameCatalog {
         entry(for: CartographyView.self),
         entry(for: PondView.self),
         entry(for: LoomView.self),
-        entry(for: NightSkyView.self)
+        entry(for: NightSkyView.self),
+        entry(for: JournalView.self)
     ]
 
     private static func entry<Game: ArcadeGame>(for type: Game.Type) -> Entry {

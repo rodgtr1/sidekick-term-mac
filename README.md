@@ -241,6 +241,14 @@ so far:
   play, and a night you never opened is not a night you missed. Named shapes
   are sketched into `~/.config/sidekick/star-almanac.md`, a plain markdown
   almanac you own.
+- **Journal**: bounded writing prompts, the inverse of supervising an agent:
+  notice, write, finish. Pick a door (clear my head, make something, reflect)
+  and get one prompt with a size, which is a promise of closure rather than a
+  target. The meter measures space used, never time; there is no clock, no
+  minimum, and past the limit it just stops filling while your words keep
+  landing. Writing nothing is a whole way to play, and a draft survives
+  closing the panel. Entries append to `~/.config/sidekick/journal/`, one
+  plain markdown file per month that you own.
 
 ## MCP Server
 
