@@ -21,9 +21,9 @@ if CommandLine.arguments.dropFirst().first == "edit-gate" {
     exit(EditGateCommand.run())
 }
 
-let status: AgentStatusReport.Status
+let requestedStatus: AgentStatusReport.Status
 if let parsed = AgentStatusReport.status(fromArgument: CommandLine.arguments.dropFirst().first) {
-    status = parsed
+    requestedStatus = parsed
 } else {
     FileHandle.standardError.write(Data("usage: sidekick-agent-status busy|ready|done|idle|edit-gate\n".utf8))
     exit(2)
@@ -41,9 +41,17 @@ func hookMessage() -> String? {
     return message
 }
 
-if AgentStatusReport.isIdleReminder(status: status, hookMessage: hookMessage()) {
+if AgentStatusReport.isIdleReminder(status: requestedStatus, hookMessage: hookMessage()) {
     exit(0)
 }
+
+// A `ready` fired under a machine reviewer is not the human's cue. The reviewer
+// is named by the environment the agent was launched with, which this hook
+// inherits — the hook payload itself does not carry it.
+let status = AgentStatusReport.effectiveStatus(
+    requested: requestedStatus,
+    environment: ProcessInfo.processInfo.environment
+)
 
 /// Writes the OSC 666 sequence to the controlling terminal. False when there
 /// isn't one — a hook spawned detached from the pane's tty (Claude Code) opens

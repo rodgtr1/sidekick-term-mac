@@ -180,7 +180,7 @@ nonisolated enum IPCCommandType {
     case agentBusy
     case agentDone
     case agentIdle
-    case agentStatus(paneID: UUID, state: AgentState)
+    case agentStatus(paneID: UUID, status: String)
     case paneList
     case agentList
     case paneCurrent(paneID: UUID?)
@@ -259,11 +259,14 @@ nonisolated enum IPCCommandType {
             // legacy `agent_*` verbs above (which set the *active tab's* state),
             // this names its pane and feeds that pane's detector, so a hook firing
             // in a background pane lands where it belongs. The status vocabulary
-            // is the hooks' own ("busy"), not AgentState's raw values.
+            // is the hooks' own ("busy"), not AgentState's raw values, and the
+            // token travels on unmapped: some tokens ("gated") carry more than
+            // the state they map to, and the detector is the one parser for both
+            // transports.
             guard let paneID = uuid(command.paneID),
                   let rawStatus = command.status,
-                  let state = AgentStateDetector.state(fromStatus: rawStatus) else { return .invalidArguments }
-            return .command(.agentStatus(paneID: paneID, state: state))
+                  AgentStateDetector.state(fromStatus: rawStatus) != nil else { return .invalidArguments }
+            return .command(.agentStatus(paneID: paneID, status: rawStatus))
         case "pane_list":
             return .command(.paneList)
         case "agent_list":

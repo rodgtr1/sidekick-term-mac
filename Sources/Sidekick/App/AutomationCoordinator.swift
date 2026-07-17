@@ -365,8 +365,8 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             handleSetAgentState(.done, completion: completion)
         case .agentIdle:
             handleSetAgentState(.idle, completion: completion)
-        case .agentStatus(let paneID, let state):
-            handleAgentStatus(paneID: paneID, state: state, completion: completion)
+        case .agentStatus(let paneID, let status):
+            handleAgentStatus(paneID: paneID, status: status, completion: completion)
         case .paneList:
             handlePaneList(completion: completion)
         case .agentList:
@@ -473,14 +473,14 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     /// heuristics down for the rest of the agent's life in this pane.
     private func handleAgentStatus(
         paneID: UUID,
-        state: AgentState,
+        status: String,
         completion: @escaping @Sendable (IPCResponse) -> Void
     ) {
         guard let terminal = automationPane(id: paneID)?.pane.terminalViewController else {
             completion(IPCResponse(ok: false, error: "Terminal pane not found"))
             return
         }
-        terminal.applyAgentStatusReport(state)
+        terminal.applyAgentStatusReport(token: status)
         completion(IPCResponse())
     }
 

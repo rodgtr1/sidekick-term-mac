@@ -292,6 +292,39 @@ final class AgentIntegrationInstallerTests: XCTestCase {
             XCTAssertTrue(AgentIntegrationInstaller.isCodexApprovalOverride(flag))
         }
         XCTAssertFalse(AgentIntegrationInstaller.isCodexApprovalOverride("-c"))
+        // Every other `-c` value is a config Sidekick has no opinion about.
+        XCTAssertFalse(AgentIntegrationInstaller.isCodexApprovalOverride("model=gpt-5"))
+        // `approvals_reviewer` is a config VALUE, not a flag: it only overrides
+        // as part of a pair — see the command-level check.
+        XCTAssertFalse(AgentIntegrationInstaller.isCodexApprovalOverride("approvals_reviewer=user"))
+    }
+
+    /// A caller's own `approvals_reviewer` takes approval control the way a
+    /// sandbox flag does, but only where Codex reads it as config.
+    func testCommandContainsCodexReviewerOverrideNeedsAConfigFlag() {
+        for command in [
+            ["codex", "-c", "approvals_reviewer=user"],
+            ["codex", "--config", "approvals_reviewer=auto_review"],
+            ["codex", "-c=approvals_reviewer=user"],
+            ["codex", "--config=approvals_reviewer=auto_review"],
+            ["codex", "exec", "-c", "approvals_reviewer=user", "do the thing"]
+        ] {
+            XCTAssertTrue(AgentIntegrationInstaller.commandContainsCodexReviewerOverride(command),
+                          "expected \(command) to be recognized as a caller override")
+        }
+        for command in [
+            // Prompt text that merely talks about the setting.
+            ["codex", "exec", "approvals_reviewer=auto_review behaves incorrectly"],
+            ["codex", "approvals_reviewer=user"],
+            // The pair has to be adjacent; another config value sits between here.
+            ["codex", "-c", "model=gpt-5", "approvals_reviewer=user"],
+            ["codex", "-c", "approvals_reviewer_note=hi"],
+            ["codex", "-c", "model=gpt-5"],
+            ["codex"]
+        ] {
+            XCTAssertFalse(AgentIntegrationInstaller.commandContainsCodexReviewerOverride(command),
+                           "expected \(command) NOT to be recognized as a caller override")
+        }
     }
 
     func testDisableRemovesManagedAcceptEditsMode() {

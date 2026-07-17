@@ -1,9 +1,57 @@
 import XCTest
 import TOMLKit
 @testable import Sidekick
+import SidekickIPCCore
 
 @MainActor
 final class ApprovalConfigTests: XCTestCase {
+    /// Who a directly launched worker's status hooks are told is answering its
+    /// approval requests. Only `-c approvals_reviewer=auto_review` puts a machine
+    /// in charge; nil means Sidekick did not choose and must not name anyone.
+    func testDirectWorkerReviewerStampFollowsTheInjectedFlags() {
+        func reviewer(_ command: [String], mode: String) -> String? {
+            TerminalViewController.codexApprovalReviewer(
+                command: command,
+                flags: AgentIntegrationInstaller.codexApprovalFlags(forApprovalMode: mode)
+            )
+        }
+
+        XCTAssertEqual(reviewer(["codex", "exec", "prompt"], mode: "review"), "auto_review")
+        XCTAssertEqual(reviewer(["codex"], mode: "ask"), "user")
+        XCTAssertEqual(reviewer(["codex"], mode: "auto"), "user")
+        // Bypass asks no one at all, so the human is the truthful answer: nothing
+        // may be treated as machine-reviewed that isn't.
+        XCTAssertEqual(reviewer(["codex"], mode: "bypass"), "user")
+        // An absolute path is still codex.
+        XCTAssertEqual(reviewer(["/opt/homebrew/bin/codex"], mode: "review"), "auto_review")
+
+        // The caller's own approval flags win the injection, so the reviewer is
+        // theirs to know, not Sidekick's to claim.
+        XCTAssertNil(reviewer(["codex", "-a=never"], mode: "review"))
+        XCTAssertNil(reviewer(["codex", "--ask-for-approval", "never"], mode: "review"))
+        // A caller naming their own reviewer is the same class of override: were
+        // Sidekick to inject a conflicting one anyway, the stamp would name
+        // whichever value lost inside codex, and a pane stamped `auto_review`
+        // whose reviewer is really the human hides the prompts it must show.
+        XCTAssertNil(reviewer(["codex", "-c", "approvals_reviewer=user"], mode: "review"))
+        XCTAssertNil(reviewer(["codex", "--config", "approvals_reviewer=user"], mode: "review"))
+        XCTAssertNil(reviewer(["codex", "-c=approvals_reviewer=auto_review"], mode: "ask"))
+        XCTAssertNil(reviewer(["codex", "--config=approvals_reviewer=user"], mode: "review"))
+        // Another `-c` is not an approval choice, so the injection still happens.
+        XCTAssertEqual(reviewer(["codex", "-c", "model=gpt-5"], mode: "review"), "auto_review")
+        // Prompt text that merely mentions the setting is a prompt, not config:
+        // Codex reads it as the value of no flag, so Sidekick still chooses.
+        XCTAssertEqual(
+            reviewer(["codex", "exec", "approvals_reviewer=auto_review behaves incorrectly"], mode: "review"),
+            "auto_review"
+        )
+        // Not a codex launch, and not a launch at all.
+        XCTAssertNil(reviewer(["claude", "--model", "opus"], mode: "review"))
+        XCTAssertNil(reviewer([], mode: "review"))
+        // Nothing injected: nothing to report.
+        XCTAssertNil(TerminalViewController.codexApprovalReviewer(command: ["codex"], flags: []))
+    }
+
     private func approval(from toml: String) throws -> ApprovalConfig {
         try TOMLDecoder().decode(ApprovalConfig.self, from: try TOMLTable(string: toml))
     }

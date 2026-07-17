@@ -644,12 +644,30 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// whose program is `codex`.
     private static func applyingCodexApprovalFlags(_ command: [String]) -> [String] {
         let flags = AgentApprovalState.codexApprovalArgs
+        guard codexApprovalReviewer(command: command, flags: flags) != nil,
+              let program = command.first else { return command }
+        return [program] + flags + command.dropFirst()
+    }
+
+    /// Who answers approval requests for a worker Sidekick is about to launch
+    /// with `flags`, or nil when Sidekick is not the one choosing: another
+    /// program, no flags to inject, or a caller's own approval flags (which win,
+    /// so the reviewer is theirs to know).
+    ///
+    /// Stamped into the worker's environment, where its hooks inherit it. Only
+    /// `-c approvals_reviewer=auto_review` puts a machine in charge; every other
+    /// flag set Sidekick injects leaves the human answering.
+    static func codexApprovalReviewer(command: [String], flags: [String]) -> String? {
         guard !flags.isEmpty,
               let program = command.first,
               URL(fileURLWithPath: program).lastPathComponent == "codex",
-              !command.contains(where: AgentIntegrationInstaller.isCodexApprovalOverride)
-        else { return command }
-        return [program] + flags + command.dropFirst()
+              !command.contains(where: AgentIntegrationInstaller.isCodexApprovalOverride),
+              !AgentIntegrationInstaller.commandContainsCodexReviewerOverride(command)
+        else { return nil }
+        let autoReview = "approvals_reviewer=\(AgentStatusReport.autoReviewReviewer)"
+        return flags.contains(autoReview)
+            ? AgentStatusReport.autoReviewReviewer
+            : AgentStatusReport.userReviewer
     }
 
     private func startConfiguredProcess() {
@@ -691,6 +709,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // Consumed by the worker launch script below; interactive panes never
         // touch it (their wrapper functions already scope the mode).
         environment.append("SIDEKICK_SHIM_DIR=\(ShellIntegration.shimDirectoryURL.path)")
+        // Names the reviewer the argv injection below is about to put in charge,
+        // for the worker's status hooks to read. Interactive panes and
+        // wrapper-hidden workers get theirs from the wrapper/shim that injects
+        // the flags there; leaving it unset says the human answers.
+        if let reviewer = Self.codexApprovalReviewer(
+            command: initialCommand ?? [], flags: AgentApprovalState.codexApprovalArgs) {
+            environment.append("\(AgentStatusReport.activeApprovalReviewerEnvVar)=\(reviewer)")
+        }
         if let command = initialCommand
             .map(Self.applyingClaudePermissionMode)
             .map(Self.applyingCodexApprovalFlags) {
@@ -1342,6 +1368,17 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// of as an OSC 666 escape in the output stream — the route taken when the
     /// hook process has no controlling terminal to write the escape to (Claude
     /// Code spawns its hooks detached). Same authority as the in-band report.
+    ///
+    /// Takes the hook's raw status token, not a mapped state: some tokens
+    /// ("gated") carry more than the state they map to, and the detector is the
+    /// one parser for both transports.
+    func applyAgentStatusReport(token: String) {
+        agentStateDetector.handleStatusToken(token)
+    }
+
+    /// Reports a state Sidekick itself knows the agent to be in — the edit-gate
+    /// desk parking a pane on its hook. Carries the same authority as a hook's
+    /// own report, because the agent really is blocked in that hook.
     func applyAgentStatusReport(_ state: AgentState) {
         agentStateDetector.handleStatusReport(state)
     }

@@ -26,6 +26,11 @@ final class AgentStateDetector {
 
     private var recentOutput = ""
     private var suppressedPromptMarkers: Set<String> = []
+    // Set by a `gated` report: an approval request that a machine reviewer is
+    // answering. The pane is working, but the reviewer may escalate to the human
+    // and no hook reports that, so the screen scrape runs even though the pane is
+    // hook-authoritative. See `applyExplicitState`.
+    private var escalationWatch = false
     // nonisolated(unsafe) only so deinit's off-main branch can hand the timers
     // to the main queue for invalidation; every other access is MainActor.
     nonisolated(unsafe) private var agentDoneTimer: Timer?
@@ -52,16 +57,28 @@ final class AgentStateDetector {
             return .done
         case "idle", "clear", "reset":
             return .idle
+        case "gated":
+            // An approval request a machine reviewer is answering: the agent is
+            // still working, and the pane must not say "Needs input" for a
+            // question the human was never asked.
+            return .working
         default:
             return nil
         }
+    }
+
+    /// Whether a raw status token is an approval request under a machine
+    /// reviewer, which is `.working` like any other but wants the escalation
+    /// watch armed.
+    nonisolated static func isGated(_ raw: String) -> Bool {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "gated"
     }
 
     /// Applies an explicit OSC 666 status report. Unknown tokens are ignored
     /// (they don't flip the pane hook-authoritative).
     func handleStatusToken(_ raw: String) {
         guard let state = Self.state(fromStatus: raw) else { return }
-        handleStatusReport(state)
+        applyExplicitState(state, escalating: Self.isGated(raw))
     }
 
     /// Applies an explicit status report that arrived out of band — over the
@@ -72,12 +89,27 @@ final class AgentStateDetector {
         applyExplicitState(state)
     }
 
-    private func applyExplicitState(_ state: AgentState) {
+    /// - Parameter escalating: the report was `gated` — see `escalationWatch`.
+    private func applyExplicitState(_ state: AgentState, escalating: Bool = false) {
         hasExplicitStatus = true
         recentOutput = ""
         agentDoneTimer?.invalidate()
         agentDoneTimer = nil
+
+        // A report that MOVES the state resolves the gated request one way or
+        // another (Stop, done, an escalation answered), so it disarms the watch.
+        // A same-state repeat — the busy the next tool call fires — leaves it
+        // running: the session is still under the machine reviewer.
+        let isSameState = state == self.state
+        escalationWatch = escalating || (escalationWatch && isSameState)
         notifyStateChange(state)
+        // A gated report almost always arrives while the pane is already
+        // .working, where notifyStateChange dedups and never reaches its polling
+        // branch. Arm the watch here for that case; a state-changing report was
+        // armed by notifyStateChange itself.
+        if escalating && isSameState && state == .working && blockedPollingTimer == nil {
+            startBlockedPolling(suppressingVisiblePrompt: false)
+        }
     }
 
     /// Runs the text heuristics over an output chunk for sessions WITHOUT the
@@ -176,6 +208,7 @@ final class AgentStateDetector {
     /// case this guard once handled is covered without the latch.
     func reset() {
         hasExplicitStatus = false
+        escalationWatch = false
         recentOutput = ""
         agentDoneTimer?.invalidate()
         agentDoneTimer = nil
@@ -207,8 +240,11 @@ final class AgentStateDetector {
 
         // Blocked-polling scrapes the visible screen for permission dialogs —
         // a heuristic only needed when no hook reports .ready. Hook-authoritative
-        // panes get .ready from the Notification hook, so skip the scraping.
-        if state == .working && !hasExplicitStatus {
+        // panes get .ready from the Notification hook, so skip the scraping. The
+        // exception is a machine-reviewed pane (`escalationWatch`): its approval
+        // requests are answered without a hook ever reporting .ready, so an
+        // escalation to the human is visible on screen and nowhere else.
+        if state == .working && (!hasExplicitStatus || escalationWatch) {
             startBlockedPolling(suppressingVisiblePrompt: previousState == .ready)
         } else {
             stopBlockedPolling()
@@ -221,34 +257,70 @@ final class AgentStateDetector {
 
     // MARK: - Prompt/working heuristics
 
+    // Claude Code — specific dialog/prompt phrases only.
+    // "esc to cancel" alone is intentionally excluded: it appears in the
+    // normal running-spinner footer ("Running... (esc to cancel)") and
+    // causes constant Working↔NeedsInput flicker when the poller reads it.
+    // "tab to add additional instructions" is also excluded: it is the
+    // normal input footer Claude renders after Stop, not a request that is
+    // blocking an active run.
+    nonisolated private static let promptMarkers = [
+        "do you want to proceed?",
+        "do you want to continue?",
+        "don't ask again",
+        // Codex
+        "allow command?",
+        "press enter to confirm or esc to cancel",
+        "enter to submit answer",
+        "enter to submit all"
+    ]
+
+    nonisolated private static let interactivePermissionPromptMarker = "interactive permission prompt"
+
     nonisolated static func agentPromptMarkers(in output: String) -> Set<String> {
-        // Claude Code — specific dialog/prompt phrases only.
-        // "esc to cancel" alone is intentionally excluded: it appears in the
-        // normal running-spinner footer ("Running... (esc to cancel)") and
-        // causes constant Working↔NeedsInput flicker when the poller reads it.
-        // "tab to add additional instructions" is also excluded: it is the
-        // normal input footer Claude renders after Stop, not a request that is
-        // blocking an active run.
-        let markers = [
-            "do you want to proceed?",
-            "do you want to continue?",
-            "don't ask again",
-            // Codex
-            "allow command?",
-            "press enter to confirm or esc to cancel",
-            "enter to submit answer",
-            "enter to submit all"
-        ]
-        var matched = Set(markers.filter { output.contains($0) })
+        var matched = Set(promptMarkers.filter { output.contains($0) })
         // Modern Claude Code inline permission prompt: "Do you want to <verb>…?"
         // above a numbered menu ("1. Yes  2. …  3. No"). Require BOTH halves so
         // the broad "do you want to" stem can't trip on ordinary prose. (Hooked
         // sessions get this authoritatively via PermissionRequest; this is the
         // fallback for un-integrated ones.)
         if output.contains("do you want to") && output.contains("1. yes") {
-            matched.insert("interactive permission prompt")
+            matched.insert(interactivePermissionPromptMarker)
         }
         return matched
+    }
+
+    /// The same markers, but each must START a line of `output` once the chrome
+    /// a TUI frames its dialogs in is trimmed.
+    ///
+    /// An agent renders a prompt at the start of its own line; text that merely
+    /// CONTAINS a marker is text ABOUT the marker — a quoted literal
+    /// (`"allow command?",`), a diff line (`+    "allow command?"`), a grep hit.
+    /// This very file holds the markers as literals, so a pane reading it is the
+    /// worst case: the loose match would call that a question to the human.
+    nonisolated static func lineAnchoredAgentPromptMarkers(in output: String) -> Set<String> {
+        let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(trimmingPromptChrome)
+        func anyLineStarts(with prefix: String) -> Bool {
+            lines.contains { $0.hasPrefix(prefix) }
+        }
+        var matched = Set(promptMarkers.filter(anyLineStarts))
+        if anyLineStarts(with: "do you want to") && anyLineStarts(with: "1. yes") {
+            matched.insert(interactivePermissionPromptMarker)
+        }
+        return matched
+    }
+
+    /// Drops what a TUI puts to the LEFT of a prompt on its own line:
+    /// indentation and the box-drawing verticals its dialogs are framed in.
+    /// Nothing else — every other leading character is content that tells a
+    /// marker being ASKED from a marker being mentioned. Quoting and diff
+    /// punctuation (`"`, `+`, `-`, `>`) is the obvious case; so are the bullet
+    /// Codex renders transcript items with (`• Allow command?`), the ASCII pipe
+    /// a Markdown table row starts with (`| Allow command? |`), and `❯`.
+    nonisolated private static func trimmingPromptChrome(_ line: Substring) -> Substring {
+        let chrome: Set<Character> = [" ", "\t", "│", "┃", "║", "▌", "▏", "▎", "▍"]
+        return line.drop { chrome.contains($0) }
     }
 
     /// Heuristic "agent is working" signal for sessions WITHOUT the status hook
@@ -271,11 +343,23 @@ final class AgentStateDetector {
     // Polls the visible screen content while the agent is working so we can
     // detect permission dialogs even when no new PTY data arrives after the UI
     // renders (the OSC hook fires before the dialog, then data stops flowing).
+    /// The prompt markers on screen, matched the way this pane's polling
+    /// requires. An escalation watch runs over a pane that IS working and
+    /// printing as it goes, where a loose substring match reads the agent's own
+    /// output back as a question to the human. An un-hooked pane keeps the loose
+    /// match: the screen is all it has, and it is only ever polled when the
+    /// agent is between outputs.
+    private func visiblePromptMarkers(in normalized: String) -> Set<String> {
+        escalationWatch
+            ? Self.lineAnchoredAgentPromptMarkers(in: normalized)
+            : Self.agentPromptMarkers(in: normalized)
+    }
+
     private func startBlockedPolling(suppressingVisiblePrompt: Bool) {
         stopBlockedPolling()
         if suppressingVisiblePrompt {
             let screen = TerminalText.normalize(readVisibleScreen?() ?? "")
-            suppressedPromptMarkers = Self.agentPromptMarkers(in: screen)
+            suppressedPromptMarkers = visiblePromptMarkers(in: screen)
         }
         blockedPollingTimer = Timer.scheduledTimer(withTimeInterval: blockedPollInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.pollForBlockedState() }
@@ -295,7 +379,7 @@ final class AgentStateDetector {
         }
         let screen = readVisibleScreen?() ?? ""
         let normalized = TerminalText.normalize(screen)
-        let visibleMarkers = Self.agentPromptMarkers(in: normalized)
+        let visibleMarkers = visiblePromptMarkers(in: normalized)
 
         // When a user answers a permission dialog, its text can remain in the
         // terminal for another redraw. Ignore those same markers until they

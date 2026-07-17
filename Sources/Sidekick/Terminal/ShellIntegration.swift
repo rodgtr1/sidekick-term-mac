@@ -173,19 +173,31 @@ claude() {
 }
 
 codex() {
-    local arg mode
+    local arg prev mode
+    prev=""
     for arg in "$@"; do
         case "$arg" in
-            --sandbox|--sandbox=*|-s|-s=*|--ask-for-approval|--ask-for-approval=*|-a|-a=*|--full-auto|--yolo|--dangerously-bypass-approvals-and-sandbox)
+            --sandbox|--sandbox=*|-s|-s=*|--ask-for-approval|--ask-for-approval=*|-a|-a=*|--full-auto|--yolo|--dangerously-bypass-approvals-and-sandbox|-c=approvals_reviewer=*|--config=approvals_reviewer=*)
                 command codex "$@"; return ;;
+            # Bare `approvals_reviewer=…` is a caller's own reviewer only as the
+            # value of a preceding -c/--config; anywhere else it is prose.
+            approvals_reviewer=*)
+                case "$prev" in
+                    -c|--config) command codex "$@"; return ;;
+                esac ;;
         esac
+        prev="$arg"
     done
     mode="$(__sidekick_approval_mode)"
+    # SIDEKICK_ACTIVE_APPROVAL_REVIEWER names whoever answers this session's
+    # approval requests, for the status hooks Codex spawns: the auto-reviewer
+    # answers without the human typing, so its PermissionRequest is not a cue to
+    # report "needs input".
     case "$mode" in
-        auto) command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
-        review) command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=auto_review "$@" ;;
-        bypass) command codex --sandbox danger-full-access --ask-for-approval never "$@" ;;
-        *) command codex --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+        auto) SIDEKICK_ACTIVE_APPROVAL_REVIEWER=user command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+        review) SIDEKICK_ACTIVE_APPROVAL_REVIEWER=auto_review command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=auto_review "$@" ;;
+        bypass) SIDEKICK_ACTIVE_APPROVAL_REVIEWER=user command codex --sandbox danger-full-access --ask-for-approval never "$@" ;;
+        *) SIDEKICK_ACTIVE_APPROVAL_REVIEWER=user command codex --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
     esac
 }
 """#
@@ -257,19 +269,31 @@ claude() {
 }
 
 codex() {
-    local arg mode
+    local arg prev mode
+    prev=""
     for arg in "$@"; do
         case "$arg" in
-            --sandbox|--sandbox=*|-s|-s=*|--ask-for-approval|--ask-for-approval=*|-a|-a=*|--full-auto|--yolo|--dangerously-bypass-approvals-and-sandbox)
+            --sandbox|--sandbox=*|-s|-s=*|--ask-for-approval|--ask-for-approval=*|-a|-a=*|--full-auto|--yolo|--dangerously-bypass-approvals-and-sandbox|-c=approvals_reviewer=*|--config=approvals_reviewer=*)
                 command codex "$@"; return ;;
+            # Bare `approvals_reviewer=…` is a caller's own reviewer only as the
+            # value of a preceding -c/--config; anywhere else it is prose.
+            approvals_reviewer=*)
+                case "$prev" in
+                    -c|--config) command codex "$@"; return ;;
+                esac ;;
         esac
+        prev="$arg"
     done
     mode="$(__sidekick_approval_mode)"
+    # SIDEKICK_ACTIVE_APPROVAL_REVIEWER names whoever answers this session's
+    # approval requests, for the status hooks Codex spawns: the auto-reviewer
+    # answers without the human typing, so its PermissionRequest is not a cue to
+    # report "needs input".
     case "$mode" in
-        auto) command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
-        review) command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=auto_review "$@" ;;
-        bypass) command codex --sandbox danger-full-access --ask-for-approval never "$@" ;;
-        *) command codex --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+        auto) SIDEKICK_ACTIVE_APPROVAL_REVIEWER=user command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+        review) SIDEKICK_ACTIVE_APPROVAL_REVIEWER=auto_review command codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=auto_review "$@" ;;
+        bypass) SIDEKICK_ACTIVE_APPROVAL_REVIEWER=user command codex --sandbox danger-full-access --ask-for-approval never "$@" ;;
+        *) SIDEKICK_ACTIVE_APPROVAL_REVIEWER=user command codex --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
     esac
 }
 """#
@@ -339,18 +363,33 @@ esac
 """# + shimPreamble + #"""
 
 
+prev=""
 for arg in "$@"; do
     case "$arg" in
-        --sandbox|--sandbox=*|-s|-s=*|--ask-for-approval|--ask-for-approval=*|-a|-a=*|--full-auto|--yolo|--dangerously-bypass-approvals-and-sandbox)
+        --sandbox|--sandbox=*|-s|-s=*|--ask-for-approval|--ask-for-approval=*|-a|-a=*|--full-auto|--yolo|--dangerously-bypass-approvals-and-sandbox|-c=approvals_reviewer=*|--config=approvals_reviewer=*)
             exec codex "$@" ;;
+        # Bare `approvals_reviewer=…` is a caller's own reviewer only as the
+        # value of a preceding -c/--config; anywhere else it is prose.
+        approvals_reviewer=*)
+            case "$prev" in
+                -c|--config) exec codex "$@" ;;
+            esac ;;
     esac
+    prev="$arg"
 done
 
+# See the interactive wrapper: the status hooks Codex spawns inherit this, and
+# it is the only way they can tell a machine-answered approval request from one
+# the human has to answer.
 case "$mode" in
-    auto) exec codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
-    review) exec codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=auto_review "$@" ;;
-    bypass) exec codex --sandbox danger-full-access --ask-for-approval never "$@" ;;
-    *) exec codex --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+    auto) export SIDEKICK_ACTIVE_APPROVAL_REVIEWER=user
+        exec codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
+    review) export SIDEKICK_ACTIVE_APPROVAL_REVIEWER=auto_review
+        exec codex --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=auto_review "$@" ;;
+    bypass) export SIDEKICK_ACTIVE_APPROVAL_REVIEWER=user
+        exec codex --sandbox danger-full-access --ask-for-approval never "$@" ;;
+    *) export SIDEKICK_ACTIVE_APPROVAL_REVIEWER=user
+        exec codex --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user "$@" ;;
 esac
 """#
 }

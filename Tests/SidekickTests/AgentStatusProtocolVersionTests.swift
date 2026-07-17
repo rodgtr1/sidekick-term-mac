@@ -28,6 +28,16 @@ final class AgentStatusProtocolVersionTests: XCTestCase {
         XCTAssertFalse(AgentStatusReport.isStale(protocolVersion: AgentStatusReport.protocolVersion))
     }
 
+    /// v2 added `gated` to the status vocabulary, which is exactly the kind of
+    /// change the version exists to make visible: a v1 helper reports a
+    /// machine-answered approval request as `ready`, and the pane it parks on
+    /// "Needs input" is the bug the user would otherwise be left to explain.
+    func testV1PredatesTheGatedVocabularyAndIsStale() {
+        XCTAssertEqual(AgentStatusReport.protocolVersion, 2)
+        XCTAssertTrue(AgentStatusReport.isStale(protocolVersion: 1))
+        XCTAssertFalse(AgentStatusReport.isStale(protocolVersion: 2))
+    }
+
     func testFutureVersionIsNotStale() {
         // A helper installed by a *newer* Sidekick isn't behind — this app is.
         // Warning about it would be backwards, and rejecting it would be worse.
@@ -83,11 +93,11 @@ final class AgentStatusProtocolVersionTests: XCTestCase {
             if let version { payload[AgentStatusReport.protocolVersionKey] = version }
 
             let command = try decodeCommand(payload)
-            guard case let .agentStatus(parsedPaneID, parsedState) = IPCCommandType.from(command) else {
+            guard case let .agentStatus(parsedPaneID, parsedStatus) = IPCCommandType.from(command) else {
                 return XCTFail("v\(version.map(String.init) ?? "none") must still parse as agent_status")
             }
             XCTAssertEqual(parsedPaneID, paneID)
-            XCTAssertEqual(parsedState, .working)
+            XCTAssertEqual(AgentStateDetector.state(fromStatus: parsedStatus), .working)
         }
     }
 

@@ -1,5 +1,6 @@
 import XCTest
 @testable import Sidekick
+import SidekickIPCCore
 
 /// R2/2: installing shell integration appends one line to ~/.zshrc. An existing
 /// zshrc that can't be read as UTF-8 must make the install throw — never be
@@ -118,6 +119,98 @@ final class ShellIntegrationInstallTests: XCTestCase {
                              "An existing but unreadable zshrc must fail the install")
         XCTAssertEqual(try Data(contentsOf: zshrc), garbage,
                        "The user's zshrc must be byte-for-byte untouched")
+    }
+
+    /// Runs the real `codex` wrapper in each mode against a stub that reports the
+    /// reviewer stamp it was launched with, the way Codex's status hooks read it.
+    private func runReviewerScenario(shell: String, suffix: String, script: String) throws -> [String] {
+        let directory = try makeTempDir()
+        defer { try? fm.removeItem(at: directory) }
+        let integration = directory.appendingPathComponent("sidekick.\(suffix)")
+        let mode = directory.appendingPathComponent("approval-mode")
+        let bin = directory.appendingPathComponent("bin")
+        let codex = bin.appendingPathComponent("codex")
+        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+        try script.write(to: integration, atomically: true, encoding: .utf8)
+        try "ask\n".write(to: mode, atomically: true, encoding: .utf8)
+        // Reads the variable through the constant the hook helper reads, so a
+        // rename that misses the scripts fails here instead of in a live pane.
+        try """
+        #!/bin/sh
+        printf 'REVIEWER <%s>\n' "${\(AgentStatusReport.activeApprovalReviewerEnvVar):-unset}"
+        """.write(to: codex, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codex.path)
+
+        let command = """
+        source '\(integration.path)'
+        codex ask
+        printf 'review\\n' > '\(mode.path)'
+        codex review
+        printf 'auto\\n' > '\(mode.path)'
+        codex auto
+        printf 'bypass\\n' > '\(mode.path)'
+        codex bypass
+        printf 'review\\n' > '\(mode.path)'
+        codex -a=never override
+        codex -c approvals_reviewer=user override
+        codex --config approvals_reviewer=user override
+        codex --config=approvals_reviewer=user override
+        codex -c model=gpt-5 not-an-override
+        codex exec 'approvals_reviewer=auto_review behaves incorrectly'
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-c", command]
+        var environment = ProcessInfo.processInfo.environment
+        environment["TERM_PROGRAM"] = ShellIntegration.termProgram
+        environment["SIDEKICK_APPROVAL_MODE"] = "ask"
+        environment["SIDEKICK_APPROVAL_MODE_FILE"] = mode.path
+        environment["PATH"] = "\(bin.path):/usr/bin:/bin"
+        environment.removeValue(forKey: "SIDEKICK_SHELL_INTEGRATION_ACTIVE")
+        environment.removeValue(forKey: AgentStatusReport.activeApprovalReviewerEnvVar)
+        process.environment = environment
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let error = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(process.terminationStatus, 0, "\(suffix) reviewer scenario failed: \(error)")
+        return output.split(separator: "\n").map(String.init).filter { $0.contains("REVIEWER") }
+    }
+
+    /// Codex fires its PermissionRequest hook even under the auto-reviewer, which
+    /// answers without the human ever typing. The hook can only tell the two
+    /// apart by the reviewer the wrapper stamped on the process it inherits from.
+    func testAgentWrappersStampTheActiveApprovalReviewer() throws {
+        for (shell, suffix, script) in [
+            ("/bin/zsh", "zsh", ShellIntegration.zshScript),
+            ("/bin/bash", "bash", ShellIntegration.bashScript)
+        ] {
+            let lines = try runReviewerScenario(shell: shell, suffix: suffix, script: script)
+            XCTAssertEqual(lines.count, 10, "\(suffix) should invoke the stub ten times")
+            XCTAssertEqual(lines[0], "REVIEWER <user>", "\(suffix) ask is answered by the human")
+            XCTAssertEqual(lines[1], "REVIEWER <auto_review>", "\(suffix) review is answered by a machine")
+            XCTAssertEqual(lines[2], "REVIEWER <user>", "\(suffix) auto is answered by the human")
+            XCTAssertEqual(lines[3], "REVIEWER <user>", "\(suffix) bypass never asks anyone")
+            // The caller chose their own approval flags, so Sidekick did not pick
+            // the reviewer and must not claim to know it.
+            XCTAssertEqual(lines[4], "REVIEWER <unset>", "\(suffix) caller override must not be stamped")
+            // Naming a reviewer is choosing one: a stamp beside a conflicting
+            // injected value would name whichever of the two lost inside codex.
+            XCTAssertEqual(lines[5], "REVIEWER <unset>", "\(suffix) -c approvals_reviewer must not be stamped")
+            XCTAssertEqual(lines[6], "REVIEWER <unset>", "\(suffix) --config approvals_reviewer must not be stamped")
+            XCTAssertEqual(lines[7], "REVIEWER <unset>",
+                           "\(suffix) --config=approvals_reviewer must not be stamped")
+            // Any other -c is a config Sidekick has no opinion about.
+            XCTAssertEqual(lines[8], "REVIEWER <auto_review>", "\(suffix) an unrelated -c must still be stamped")
+            // Prompt text that mentions the setting is a prompt: no flag makes
+            // codex read it as config, so the wrapper still picks the reviewer.
+            XCTAssertEqual(lines[9], "REVIEWER <auto_review>",
+                           "\(suffix) approvals_reviewer in prompt text is not an override")
+        }
     }
 
     func testAgentWrappersResolveLiveProviderNeutralMode() {

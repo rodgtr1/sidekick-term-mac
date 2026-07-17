@@ -559,6 +559,32 @@ nonisolated enum AgentIntegrationInstaller {
             || argument.hasPrefix("-a=")
     }
 
+    /// Whether `command` hands a caller's own `approvals_reviewer` to Codex,
+    /// which takes approval control the same way a sandbox flag does: injecting a
+    /// second, conflicting `approvals_reviewer` alongside it would leave
+    /// Sidekick's reviewer stamp naming whoever lost — and a pane stamped
+    /// `auto_review` whose reviewer is really the human hides genuine prompts.
+    ///
+    /// Needs the whole argv because the bare `approvals_reviewer=…` form only
+    /// means anything as the VALUE of a preceding `-c`/`--config`. On its own it
+    /// is prose the caller is passing through, as in
+    /// `codex exec "approvals_reviewer=auto_review behaves incorrectly"`.
+    static func commandContainsCodexReviewerOverride(_ command: [String]) -> Bool {
+        var previous: String?
+        for argument in command {
+            if argument.hasPrefix("-c=approvals_reviewer=")
+                || argument.hasPrefix("--config=approvals_reviewer=") {
+                return true
+            }
+            if (previous == "-c" || previous == "--config")
+                && argument.hasPrefix("approvals_reviewer=") {
+                return true
+            }
+            previous = argument
+        }
+        return false
+    }
+
     /// Removes any Sidekick-managed `approval_policy` + `sandbox_mode` combo an
     /// older version wrote into the global `~/.codex/config.toml`, which changed
     /// prompting for *every* `codex` session machine-wide. Approval is now scoped

@@ -1,5 +1,6 @@
 import XCTest
 @testable import Sidekick
+import SidekickIPCCore
 
 /// The worker shims exist for one failure mode: a pane launched as
 /// `--exec sh -c 'exec claude …'` hides the agent program from the argv
@@ -133,6 +134,87 @@ final class WorkerShimTests: XCTestCase {
             "CODEX <--sandbox> <workspace-write> <--ask-for-approval> <on-request> "
                 + "<-c> <approvals_reviewer=auto_review> <exec> <prompt>"
         )
+    }
+
+    /// Replaces a stub with one reporting the reviewer stamped on its
+    /// environment — what Codex's status hooks inherit and read — instead of its
+    /// argv. Reads it through the constant the helper reads, so a rename that
+    /// misses the shim fails here rather than in a live pane.
+    private func stubReportingReviewer(at url: URL) throws {
+        try """
+        #!/bin/sh
+        printf '%s\n' "${\(AgentStatusReport.activeApprovalReviewerEnvVar):-unset}"
+        """.write(to: url, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    /// The wrapper-hidden launch is exactly the case the shim exists for, so the
+    /// reviewer stamp has to survive it too: under `auto_review` the hook fires
+    /// for requests the human never sees, and the environment is the only thing
+    /// that says so.
+    func testWrappedCodexLaunchStampsTheLiveReviewer() throws {
+        for (mode, expected) in [
+            ("review", "auto_review"),
+            ("auto", "user"),
+            ("bypass", "user"),
+            ("ask", "user")
+        ] {
+            let fixture = try makeFixture(mode: mode)
+            defer { try? fm.removeItem(at: fixture.root) }
+            try stubReportingReviewer(at: fixture.bin.appendingPathComponent("codex"))
+            let output = try runWorker(["sh", "-c", "exec codex exec prompt"], fixture: fixture)
+            XCTAssertEqual(output, expected, "mode \(mode)")
+        }
+    }
+
+    /// A caller's own approval flags win, so Sidekick did not pick the reviewer
+    /// and must not name one: unset leaves the helper reporting `ready` as it
+    /// always has.
+    func testCodexCallerOverrideIsNotStamped() throws {
+        let fixture = try makeFixture(mode: "review")
+        defer { try? fm.removeItem(at: fixture.root) }
+        try stubReportingReviewer(at: fixture.bin.appendingPathComponent("codex"))
+        let output = try runWorker(["sh", "-c", "exec codex -a=never exec prompt"], fixture: fixture)
+        XCTAssertEqual(output, "unset")
+    }
+
+    /// A caller who names their own reviewer has taken approval control, so the
+    /// shim must pass the launch through whole: injecting a second, conflicting
+    /// `approvals_reviewer` would leave the stamp naming whichever value lost.
+    func testCodexCallerReviewerOverrideIsNotStamped() throws {
+        for launch in [
+            "exec codex -c approvals_reviewer=user exec prompt",
+            "exec codex --config approvals_reviewer=user exec prompt",
+            "exec codex -c=approvals_reviewer=user exec prompt",
+            "exec codex --config=approvals_reviewer=user exec prompt"
+        ] {
+            let fixture = try makeFixture(mode: "review")
+            defer { try? fm.removeItem(at: fixture.root) }
+            try stubReportingReviewer(at: fixture.bin.appendingPathComponent("codex"))
+            let output = try runWorker(["sh", "-c", launch], fixture: fixture)
+            XCTAssertEqual(output, "unset", launch)
+        }
+    }
+
+    /// Only a `-c`/`--config` makes codex read `approvals_reviewer=…` as config.
+    /// A prompt that merely talks about the setting is a prompt, so the shim owes
+    /// it the pane's mode like any other launch.
+    func testCodexReviewerInPromptTextIsNotAnOverride() throws {
+        let launch = "exec codex exec 'approvals_reviewer=auto_review behaves incorrectly'"
+        let fixture = try makeFixture(mode: "review")
+        defer { try? fm.removeItem(at: fixture.root) }
+        let argv = try runWorker(["sh", "-c", launch], fixture: fixture)
+        XCTAssertEqual(
+            argv,
+            "CODEX <--sandbox> <workspace-write> <--ask-for-approval> <on-request> "
+                + "<-c> <approvals_reviewer=auto_review> <exec> "
+                + "<approvals_reviewer=auto_review behaves incorrectly>"
+        )
+
+        let stamped = try makeFixture(mode: "review")
+        defer { try? fm.removeItem(at: stamped.root) }
+        try stubReportingReviewer(at: stamped.bin.appendingPathComponent("codex"))
+        XCTAssertEqual(try runWorker(["sh", "-c", launch], fixture: stamped), "auto_review")
     }
 
     func testCodexExplicitOverrideWins() throws {

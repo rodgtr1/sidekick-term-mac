@@ -24,6 +24,7 @@ final class AgentStatusReportTests: XCTestCase {
             ("ready", .ready), ("waiting", .ready), ("needs-user", .ready),
             ("done", .done), ("finished", .done), ("complete", .done),
             ("idle", .idle), ("clear", .idle), ("reset", .idle),
+            ("gated", .gated),
             (" BUSY \n", .busy)
         ] {
             XCTAssertEqual(AgentStatusReport.status(fromArgument: argument), expected,
@@ -58,17 +59,23 @@ final class AgentStatusReportTests: XCTestCase {
             (AgentStatusReport.Status.busy, AgentState.working),
             (.ready, .ready),
             (.done, .done),
-            (.idle, .idle)
+            (.idle, .idle),
+            // Reported instead of `ready` when a machine reviewer is answering
+            // the approval request: the pane keeps working.
+            (.gated, .working)
         ] {
             let payload = AgentStatusReport.ipcCommand(status: status, paneID: paneID.uuidString)
             XCTAssertEqual(payload["action"] as? String, "agent_status")
 
             let command = try decodeCommand(payload)
-            guard case let .agentStatus(parsedPaneID, parsedState) = IPCCommandType.from(command) else {
+            guard case let .agentStatus(parsedPaneID, parsedStatus) = IPCCommandType.from(command) else {
                 return XCTFail("\(status) must parse as a pane-scoped agent_status command")
             }
             XCTAssertEqual(parsedPaneID, paneID)
-            XCTAssertEqual(parsedState, expected)
+            // The token travels unmapped so the detector can see what the state
+            // alone cannot say; it has to reach the pane as the right state.
+            XCTAssertEqual(parsedStatus, status.rawValue)
+            XCTAssertEqual(AgentStateDetector.state(fromStatus: parsedStatus), expected)
         }
     }
 
@@ -81,6 +88,49 @@ final class AgentStatusReportTests: XCTestCase {
         let unknownStatus = try decodeCommand(
             ["action": "agent_status", "pane_id": paneID.uuidString, "status": "compacting"])
         XCTAssertNil(IPCCommandType.from(unknownStatus))
+    }
+
+    // MARK: - Machine-reviewed approval requests
+
+    /// Codex fires PermissionRequest for every command needing approval, and
+    /// under `approvals_reviewer=auto_review` the reviewer answers it — the human
+    /// never types. Reporting `ready` there parked the pane on "Needs input" with
+    /// nothing to flip it back, because the keystroke that normally does never
+    /// happens.
+    func testReadyUnderAMachineReviewerIsReportedAsGated() {
+        XCTAssertEqual(
+            AgentStatusReport.effectiveStatus(
+                requested: .ready,
+                environment: [AgentStatusReport.activeApprovalReviewerEnvVar: "auto_review"]),
+            .gated)
+    }
+
+    func testReadyStaysReadyWheneverTheHumanMayBeAnswering() {
+        // Unset is the case that must not change: an agent Sidekick did not
+        // launch, or a caller who chose their own approval flags.
+        for environment in [
+            [:],
+            [AgentStatusReport.activeApprovalReviewerEnvVar: "user"],
+            [AgentStatusReport.activeApprovalReviewerEnvVar: ""],
+            [AgentStatusReport.activeApprovalReviewerEnvVar: "AUTO_REVIEW"],
+            [AgentStatusReport.activeApprovalReviewerEnvVar: "auto_review_but_not_really"],
+            ["SIDEKICK_PANE_ID": "auto_review"]
+        ] as [[String: String]] {
+            XCTAssertEqual(
+                AgentStatusReport.effectiveStatus(requested: .ready, environment: environment),
+                .ready, "\(environment) must leave a ready alone")
+        }
+    }
+
+    func testOnlyReadyIsEverDowngraded() {
+        // Who reviews approvals says nothing about whether the agent is working,
+        // finished, or gone.
+        let autoReview = [AgentStatusReport.activeApprovalReviewerEnvVar: "auto_review"]
+        for status in [AgentStatusReport.Status.busy, .done, .idle, .gated] {
+            XCTAssertEqual(
+                AgentStatusReport.effectiveStatus(requested: status, environment: autoReview),
+                status, "\(status) must pass through a machine-reviewed session")
+        }
     }
 
     // MARK: - Notification idle reminder

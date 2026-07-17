@@ -31,7 +31,9 @@ public enum AgentStatusReport {
     ///
     /// v1: the socket transport itself — pane-addressed `agent_status` with a
     /// declared version. Helpers older than that send no version field at all.
-    public static let protocolVersion = 1
+    /// v2: the `gated` status — what a v1 helper reports as `ready` when a
+    /// machine reviewer, not the human, is answering the approval request.
+    public static let protocolVersion = 2
 
     /// What a report with no `protocol_version` field means: a pre-handshake
     /// helper (everything shipped up to and including commit 316e143). Absence
@@ -53,10 +55,14 @@ public enum AgentStatusReport {
     /// writes it and the app that reads it can't drift.
     public static let protocolVersionKey = "protocol_version"
 
-    /// The four statuses a hook may report. The raw values are what both
-    /// transports put on the wire, and what `AgentStateDetector` parses.
+    /// The statuses a hook may report. The raw values are what both transports
+    /// put on the wire, and what `AgentStateDetector` parses.
+    ///
+    /// `gated` is the one status no hook config names: it is what `ready`
+    /// becomes when a machine reviewer, not the human, is answering the
+    /// approval request (see `effectiveStatus(requested:environment:)`).
     public enum Status: String, Sendable, CaseIterable {
-        case busy, ready, done, idle
+        case busy, ready, done, idle, gated
     }
 
     /// Normalizes a hook's status argument. The aliases match the ones
@@ -68,8 +74,45 @@ public enum AgentStatusReport {
         case "ready", "prompt", "waiting", "needs-user", "needs_user": return .ready
         case "done", "finished", "complete": return .done
         case "idle", "clear", "reset": return .idle
+        case "gated": return .gated
         default: return nil
         }
+    }
+
+    /// The environment variable naming whoever is answering this agent's
+    /// approval requests, stamped onto the agent process at launch by whichever
+    /// Sidekick path injected the approval flags (shell wrapper, worker shim, or
+    /// worker argv). Hooks inherit it, which is the only way the helper can know:
+    /// Codex's PermissionRequest payload does not carry the effective reviewer
+    /// (openai/codex#23465).
+    ///
+    /// Unset means Sidekick did not choose the reviewer for this agent — a
+    /// caller's own approval flags, or an agent started outside Sidekick — and
+    /// the helper must assume the human is answering.
+    public static let activeApprovalReviewerEnvVar = "SIDEKICK_ACTIVE_APPROVAL_REVIEWER"
+
+    /// The `approvals_reviewer` value naming Codex's automatic safety reviewer.
+    public static let autoReviewReviewer = "auto_review"
+
+    /// The `approvals_reviewer` value naming the human.
+    public static let userReviewer = "user"
+
+    /// What a requested status actually means in `environment`.
+    ///
+    /// Codex fires its PermissionRequest hook for every command needing approval
+    /// even under `approvals_reviewer=auto_review`, where the auto-reviewer
+    /// answers and the human never types. Reporting `ready` there parks the pane
+    /// on "Needs input" for the rest of the tool call: nothing flips it back,
+    /// because the keystroke that normally would never happens. Such a request is
+    /// reported as `gated` instead — still working, but watch the screen, because
+    /// the reviewer can escalate to the human and no hook says when.
+    ///
+    /// Only `ready` is ever downgraded; every other status means what it says
+    /// regardless of who reviews approvals.
+    public static func effectiveStatus(requested: Status, environment: [String: String]) -> Status {
+        guard requested == .ready,
+              environment[activeApprovalReviewerEnvVar] == autoReviewReviewer else { return requested }
+        return .gated
     }
 
     /// Claude Code's Notification hook fires both for genuine permission requests
