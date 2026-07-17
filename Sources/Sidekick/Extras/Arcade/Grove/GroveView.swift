@@ -336,8 +336,7 @@ final class GroveView: NSView, ArcadeGame {
         var advance: CGFloat = 5
         var lineHeight: CGFloat = 10
         for candidate in stride(from: CGFloat(20), through: 8, by: -0.5) {
-            let font = NSFont.monospacedSystemFont(ofSize: candidate, weight: .regular)
-            let w = ("W" as NSString).size(withAttributes: [.font: font]).width
+            let w = ArcadeTypography.monospacedAdvance(ofSize: candidate, weight: .regular)
             let h = candidate * 1.18
             if w * cols <= availWidth && h * rows <= availHeight {
                 fontSize = candidate

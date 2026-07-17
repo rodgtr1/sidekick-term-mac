@@ -41,6 +41,25 @@ extension ArcadeGame {
     func didDismissHelp() {}
 }
 
+/// Shared text metrics for games that lay out character grids.
+enum ArcadeTypography {
+    /// Glyph advance of the monospaced system font at `size`, read straight
+    /// from CoreText. Games must use this instead of measuring a sample
+    /// character with `NSString.size(withAttributes:)`: the string-drawing
+    /// engine raises an uncatchable NSException when the font service returns
+    /// nil under pressure (crashed a Cartography draw pass in the wild), while
+    /// the CTFont path has no attribute dictionary to poison.
+    static func monospacedAdvance(ofSize size: CGFloat, weight: NSFont.Weight) -> CGFloat {
+        let font = NSFont.monospacedSystemFont(ofSize: size, weight: weight)
+        var character: UniChar = 0x4D  // "M"; every glyph shares one advance in a monospaced face
+        var glyph = CGGlyph()
+        guard CTFontGetGlyphsForCharacters(font, &character, &glyph, 1) else {
+            return size * 0.6  // SF Mono's advance ratio, should the glyph lookup itself fail
+        }
+        return CGFloat(CTFontGetAdvancesForGlyphs(font, .horizontal, &glyph, nil, 1))
+    }
+}
+
 /// The games the panel can host, in display order. Adding a game to the
 /// arcade means conforming to `ArcadeGame` and appending an entry here —
 /// the panel, persistence, and (once there are several) the game switcher

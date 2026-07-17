@@ -341,8 +341,7 @@ final class CartographyView: NSView, ArcadeGame, NSTextFieldDelegate {
         var advance: CGFloat = 5
         var lineHeight: CGFloat = 10
         for candidate in stride(from: CGFloat(14), through: 6, by: -0.5) {
-            let font = NSFont.monospacedSystemFont(ofSize: candidate, weight: .regular)
-            let w = ("M" as NSString).size(withAttributes: [.font: font]).width
+            let w = ArcadeTypography.monospacedAdvance(ofSize: candidate, weight: .regular)
             let h = candidate * 1.16
             if w * cols <= availWidth && h * rows <= availHeight {
                 fontSize = candidate

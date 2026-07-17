@@ -246,7 +246,7 @@ final class KeysmithView: NSView, ArcadeGame {
         guard !chars.isEmpty else { return }
 
         let font = NSFont.monospacedSystemFont(ofSize: 20, weight: .medium)
-        let advance = ("W" as NSString).size(withAttributes: [.font: font]).width
+        let advance = ArcadeTypography.monospacedAdvance(ofSize: 20, weight: .medium)
         let lineHeight: CGFloat = 34
         let maxWidth = bounds.width - Self.margin * 2
         let perRow = max(1, Int(maxWidth / advance))
