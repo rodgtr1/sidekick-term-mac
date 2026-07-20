@@ -24,6 +24,11 @@ final class SessionsPanel: FilterableListPanel {
     /// the panel a quick pick instead of an endless scroll.
     private let displayLimit = 50
 
+    /// The read-only transcript preview (⌘↩). Owned/retained here and reused, so
+    /// previewing many sessions never spawns a second window. Built lazily on
+    /// first preview.
+    private lazy var previewPanel = SessionPreviewPanel()
+
     // MARK: - Deep search (opt-in, in-memory)
 
     /// When ON, the query matches text INSIDE transcript bodies, not just the
@@ -67,7 +72,7 @@ final class SessionsPanel: FilterableListPanel {
     init() {
         super.init(chrome: Chrome(
             title: "Sessions",
-            placeholder: "Search past sessions…",
+            placeholder: "Search past sessions…    ⌘↩ to preview",
             size: NSSize(width: 620, height: 420),
             columnIdentifier: "SessionRecord",
             hidesOnDeactivate: true,
@@ -100,6 +105,25 @@ final class SessionsPanel: FilterableListPanel {
         let record = filtered[row]
         close()
         sessionsDelegate?.sessionsPanel(self, didSelect: record)
+    }
+
+    /// ⌘↩ previews the selected session read-only instead of resuming it. A
+    /// command-key equivalent reaches the panel here even while the search
+    /// field's field editor holds focus — plain Return does not; it goes via the
+    /// `SearchFieldDelegate` and still resumes (`activateRow`), unchanged. The
+    /// sessions panel stays open so the user can keep browsing/previewing.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command), event.keyCode == 36 { // Return
+            previewSelectedRow()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    private func previewSelectedRow() {
+        let row = tableView.selectedRow
+        guard row >= 0, row < filtered.count else { return }
+        previewPanel.show(record: filtered[row])
     }
 
     private func applyFilter() {
