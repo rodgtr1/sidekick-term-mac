@@ -24,6 +24,46 @@ final class SessionsPanel: FilterableListPanel {
     /// the panel a quick pick instead of an endless scroll.
     private let displayLimit = 50
 
+    // MARK: - Deep search (opt-in, in-memory)
+
+    /// When ON, the query matches text INSIDE transcript bodies, not just the
+    /// title. Toggled by `deepToggle`.
+    private var deepMode = false
+    /// The in-memory body-text index, built off-main on first deep use and held
+    /// only while the panel lives. Nil until loaded (or after `all` changes and
+    /// it must be rebuilt); nothing is ever written to disk.
+    private var deepIndex: SessionDeepSearch.Index?
+    /// True while a background index build is in flight, so it isn't kicked off
+    /// twice.
+    private var deepLoading = false
+    /// Bumped whenever the index is invalidated (records refreshed, panel
+    /// closed). A build captures this before dispatching and only installs its
+    /// result if the value still matches on completion — otherwise the build ran
+    /// against stale records and is discarded. Prevents an in-flight build from
+    /// silently overwriting a fresher record set with an old index.
+    private var deepGeneration = 0
+    /// Match snippets for the currently shown rows, keyed by log path, shown in
+    /// the subtitle position instead of "agent · repo · age".
+    private var snippets: [String: String] = [:]
+    /// The "Deep" toggle at the trailing edge of the search-field row.
+    private lazy var deepToggle: NSButton = {
+        let button = NSButton(checkboxWithTitle: "Deep", target: self, action: #selector(deepToggled(_:)))
+        button.toolTip = "Search inside transcript bodies (in-memory, not saved)"
+        button.font = NSFont.systemFont(ofSize: 12)
+        return button
+    }()
+    /// Footer status line ("50 of 334 · keep typing to narrow"). The window
+    /// title can't carry this — the panel hides its title bar — so it lives
+    /// visibly under the list instead.
+    private let footerLabel: NSTextField = {
+        let label = NSTextField(labelWithString: "")
+        label.font = NSFont.systemFont(ofSize: 11)
+        label.textColor = AppTheme.mutedText
+        label.alignment = .center
+        label.lineBreakMode = .byTruncatingTail
+        return label
+    }()
+
     init() {
         super.init(chrome: Chrome(
             title: "Sessions",
@@ -35,6 +75,8 @@ final class SessionsPanel: FilterableListPanel {
             // single-line default, or the subtitle clips into the next row.
             rowHeight: 46
         ))
+        installHeaderAccessory(deepToggle)
+        installFooter(footerLabel)
     }
 
     // MARK: - FilterableListPanel hooks
@@ -43,7 +85,8 @@ final class SessionsPanel: FilterableListPanel {
 
     override func cellView(forRow row: Int) -> NSView? {
         let cell = SessionRowCellView()
-        cell.configure(with: filtered[row])
+        let record = filtered[row]
+        cell.configure(with: record, snippet: snippets[record.logPath])
         return cell
     }
 
@@ -60,15 +103,126 @@ final class SessionsPanel: FilterableListPanel {
     }
 
     private func applyFilter() {
-        filtered = SessionQuery.run(
-            all,
-            search: currentQuery.isEmpty ? nil : currentQuery,
-            limit: displayLimit
-        )
-        // Reflect the cap in the title bar so the list never silently hides
-        // matches — "Sessions · 50 of 334" tells you to type to reach the rest.
-        let total = currentQuery.isEmpty ? all.count : SessionQuery.run(all, search: currentQuery).count
-        title = filtered.count < total ? "Sessions · \(filtered.count) of \(total)" : "Sessions"
+        if deepMode {
+            applyDeepFilter()
+        } else {
+            applyShallowFilter()
+        }
+    }
+
+    /// Title/metadata filter via `SessionQuery`, with one refinement over the
+    /// raw query: sessions whose *title/aiTitle* contain the phrase rank above
+    /// sessions that only matched via their cwd/repo path (typing "mac" matches
+    /// everything under sidekick-term-mac; those shouldn't bury actual title
+    /// hits). Newest-first is preserved within each group.
+    private func applyShallowFilter() {
+        snippets = [:]
+        let matches = SessionQuery.run(all, search: currentQuery.isEmpty ? nil : currentQuery)
+        if currentQuery.isEmpty {
+            filtered = Array(matches.prefix(displayLimit))
+        } else {
+            let needle = currentQuery.lowercased()
+            let titleHits = matches.filter {
+                $0.title.lowercased().contains(needle) || $0.aiTitle?.lowercased().contains(needle) == true
+            }
+            let pathOnly = matches.filter { record in !titleHits.contains(where: { $0.logPath == record.logPath }) }
+            filtered = Array((titleHits + pathOnly).prefix(displayLimit))
+        }
+        updateFooter(shown: filtered.count, total: matches.count)
+    }
+
+    /// The visible "there's more than what you see" marker.
+    private func updateFooter(shown: Int, total: Int, note: String? = nil) {
+        if let note {
+            footerLabel.stringValue = note
+        } else if shown < total {
+            footerLabel.stringValue = "\(shown) of \(total) · keep typing to narrow"
+        } else {
+            footerLabel.stringValue = total == 0 ? "no matches" : ""
+        }
+    }
+
+    /// Match against transcript bodies using the in-memory deep index. Until the
+    /// index has loaded, show the shallow results so the panel stays responsive
+    /// and refresh once the (off-main) load lands.
+    private func applyDeepFilter() {
+        guard let deepIndex else {
+            filtered = SessionQuery.run(
+                all,
+                search: currentQuery.isEmpty ? nil : currentQuery,
+                limit: displayLimit
+            )
+            snippets = [:]
+            updateFooter(shown: 0, total: 0, note: "loading deep search…")
+            loadDeepIndex()
+            return
+        }
+
+        // No phrase yet: nothing to match inside bodies — just show newest.
+        guard !currentQuery.isEmpty else {
+            snippets = [:]
+            filtered = SessionQuery.run(all, limit: displayLimit)
+            updateFooter(shown: filtered.count, total: all.count)
+            return
+        }
+
+        // Search across all sessions, newest-first, then cap for display.
+        let ordered = SessionQuery.run(all)
+        let matches = SessionDeepSearch.search(currentQuery, in: ordered, index: deepIndex)
+        let shown = Array(matches.prefix(displayLimit))
+        filtered = shown.map(\.record)
+        snippets = Dictionary(shown.map { ($0.record.logPath, $0.snippet) }, uniquingKeysWith: { first, _ in first })
+        updateFooter(shown: shown.count, total: matches.count)
+    }
+
+    /// Build the body-text index off the main thread (mirroring `loadSessions`),
+    /// then re-apply the current query on main. In-memory only; dropped with the
+    /// panel.
+    private func loadDeepIndex() {
+        guard !deepLoading, deepIndex == nil else { return }
+        deepLoading = true
+        let records = all
+        let generation = deepGeneration
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let index = SessionDeepSearch.buildIndex(for: records)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.deepLoading = false
+                // If the records changed (or the panel closed) while this build
+                // ran, it was built against stale logs — discard it and rebuild
+                // against the current records, but only if deep mode is still on
+                // and the panel is still open (a closed panel frees the index on
+                // purpose, so don't resurrect it).
+                guard generation == self.deepGeneration else {
+                    if self.deepMode, self.isVisible { self.loadDeepIndex() }
+                    return
+                }
+                self.deepIndex = index
+                guard self.deepMode else { return }
+                self.applyFilter()
+                self.reloadAndSelectFirst()
+            }
+        }
+    }
+
+    @objc private func deepToggled(_ sender: NSButton) {
+        deepMode = sender.state == .on
+        applyFilter()
+        reloadAndSelectFirst()
+        // Toggling steals first responder; hand it back so typing keeps filtering.
+        searchField.becomeFirstResponder()
+    }
+
+    /// The panel is retained by `MainWindowController`, so `close()` only orders
+    /// it out — the in-memory body index (tens of MB) would otherwise live for
+    /// the app's lifetime. Free it here; bumping the generation makes any
+    /// in-flight build discard itself. The `deepMode` toggle is left as-is so it
+    /// persists across opens; the next deep use rebuilds the index fresh.
+    override func close() {
+        super.close()
+        deepIndex = nil
+        snippets = [:]
+        deepGeneration += 1
     }
 
     func show(relativeTo parentWindow: NSWindow) {
@@ -110,6 +264,12 @@ final class SessionsPanel: FilterableListPanel {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.all = records
+                // The body index was keyed to the previous record set; drop it
+                // so deep mode rebuilds against the fresh logs. Bump the
+                // generation so any in-flight build discards itself instead of
+                // reinstalling an index built from the old records.
+                self.deepIndex = nil
+                self.deepGeneration += 1
                 self.applyFilter()
                 self.reloadAndSelectFirst()
             }
@@ -178,11 +338,18 @@ private final class SessionRowCellView: NSTableCellView {
         ])
     }
 
-    func configure(with record: SessionRecord) {
+    /// Configure the row. When a deep-search `snippet` is supplied, it replaces
+    /// the usual "agent · repo · age" subtitle with the matching context so you
+    /// can see *where* the phrase hit.
+    func configure(with record: SessionRecord, snippet: String? = nil) {
         let symbol = record.agent == .claude ? "sparkle" : "chevron.left.forwardslash.chevron.right"
         iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: record.agent.rawValue)
         titleLabel.stringValue = record.aiTitle ?? record.title
-        subtitleLabel.stringValue = Self.subtitle(for: record)
+        if let snippet, !snippet.isEmpty {
+            subtitleLabel.stringValue = snippet
+        } else {
+            subtitleLabel.stringValue = Self.subtitle(for: record)
+        }
     }
 
     private static func subtitle(for record: SessionRecord) -> String {

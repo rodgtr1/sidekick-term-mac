@@ -37,6 +37,13 @@ class FilterableListPanel: NSPanel {
     let scrollView = NSScrollView()
     let tableView = NSTableView()
     private var searchFieldDelegate: SearchFieldDelegate?
+    /// The search field's trailing constraint, held so an optional header
+    /// accessory can be inserted at the trailing edge of the search-field row
+    /// (see `installHeaderAccessory`). Nil until `setupUI` runs.
+    private var searchFieldTrailing: NSLayoutConstraint?
+    /// The scroll view's bottom constraint, held so an optional footer can be
+    /// inserted beneath the list (see `installFooter`). Nil until `setupUI` runs.
+    private var scrollViewBottom: NSLayoutConstraint?
     /// Fixed row height, from `Chrome.rowHeight`. Two-line rows (title +
     /// subtitle) need more than the single-line default.
     private let rowHeight: CGFloat
@@ -131,6 +138,15 @@ class FilterableListPanel: NSPanel {
         containerView.addSubview(searchField)
         containerView.addSubview(scrollView)
 
+        let searchTrailing = searchField.trailingAnchor.constraint(
+            equalTo: containerView.trailingAnchor, constant: -20
+        )
+        searchFieldTrailing = searchTrailing
+        let scrollBottom = scrollView.bottomAnchor.constraint(
+            equalTo: containerView.bottomAnchor, constant: -20
+        )
+        scrollViewBottom = scrollBottom
+
         NSLayoutConstraint.activate([
             containerView.topAnchor.constraint(equalTo: contentView.topAnchor),
             containerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
@@ -139,13 +155,13 @@ class FilterableListPanel: NSPanel {
 
             searchField.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 20),
             searchField.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 20),
-            searchField.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -20),
+            searchTrailing,
             searchField.heightAnchor.constraint(equalToConstant: 28),
 
             scrollView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
             scrollView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 20),
             scrollView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -20),
-            scrollView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -20)
+            scrollBottom
         ])
 
         tableView.dataSource = self
@@ -196,6 +212,51 @@ class FilterableListPanel: NSPanel {
 
     @objc private func tableViewDoubleClick(_ sender: NSTableView) {
         activateSelectedRow()
+    }
+
+    // MARK: - Header accessory
+
+    /// Install an optional control at the trailing edge of the search-field row,
+    /// shrinking the search field to make room. Subclasses call this after
+    /// `init` (once `self` exists, so the control can target it). Panels that
+    /// never call it — Quick Open, the command palette — keep the original
+    /// full-width search field, unchanged.
+    func installHeaderAccessory(_ view: NSView) {
+        guard let containerView = searchField.superview,
+              let searchFieldTrailing else { return }
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.setContentHuggingPriority(.required, for: .horizontal)
+        view.setContentCompressionResistancePriority(.required, for: .horizontal)
+        containerView.addSubview(view)
+
+        // Detach the search field from the container's trailing edge and pin it
+        // to the accessory's leading edge instead.
+        searchFieldTrailing.isActive = false
+        NSLayoutConstraint.activate([
+            view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -20),
+            view.centerYAnchor.constraint(equalTo: searchField.centerYAnchor),
+            searchField.trailingAnchor.constraint(equalTo: view.leadingAnchor, constant: -10)
+        ])
+    }
+
+    /// Insert a footer view beneath the list, shrinking the scroll view to make
+    /// room. Panels that never call this — Quick Open, the command palette —
+    /// keep the original full-height list, unchanged.
+    func installFooter(_ view: NSView) {
+        guard let containerView = scrollView.superview,
+              let scrollViewBottom else { return }
+        view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(view)
+
+        // Detach the scroll view from the container's bottom edge and pin it
+        // to the footer's top edge instead.
+        scrollViewBottom.isActive = false
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 20),
+            view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -20),
+            view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -8),
+            scrollView.bottomAnchor.constraint(equalTo: view.topAnchor, constant: -8)
+        ])
     }
 
     // MARK: - Subclass hooks
