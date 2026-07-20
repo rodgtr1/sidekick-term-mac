@@ -17,6 +17,12 @@ nonisolated enum SessionRecallCache {
         var path: String
         var mtime: Date
         var record: SessionRecord
+        /// A locally-generated title for this session (Codex only), persisted
+        /// separately from the parsed `record` so it survives re-parses and can
+        /// be set without re-scanning. Overlaid onto `record.generatedTitle`
+        /// when the cache hands records back. Optional, so caches written before
+        /// this field still decode (missing key → nil).
+        var generatedTitle: String? = nil
     }
 
     /// The whole persisted cache. A wrapper struct (rather than a bare array)
@@ -74,7 +80,34 @@ nonisolated enum SessionRecallCache {
         }
 
         save(Snapshot(entries: entries), to: cacheURL, fileManager: fileManager)
-        return entries.map(\.record)
+        return entries.map(recordWithGeneratedTitle)
+    }
+
+    /// Set (or overwrite) the locally-generated title for the entry at
+    /// `logPath`, then persist. A no-op when no entry matches the path (e.g. the
+    /// log was deleted between scan and title generation). Cheap read-modify-
+    /// write of the whole snapshot: the file is small and titling is a rare,
+    /// background trickle, so there's no need for anything finer-grained.
+    static func storeGeneratedTitle(
+        _ title: String,
+        forLogPath logPath: String,
+        cacheURL: URL,
+        fileManager: FileManager = .default
+    ) {
+        var snapshot = load(from: cacheURL, fileManager: fileManager)
+        guard let idx = snapshot.entries.firstIndex(where: { $0.path == logPath }) else { return }
+        snapshot.entries[idx].generatedTitle = title
+        save(snapshot, to: cacheURL, fileManager: fileManager)
+    }
+
+    /// Overlay an entry's persisted `generatedTitle` onto its record, so callers
+    /// read a single `record.generatedTitle`. The entry is the source of truth;
+    /// the record's own copy is only what happened to be parsed (nil on a fresh
+    /// scan).
+    private static func recordWithGeneratedTitle(_ entry: Entry) -> SessionRecord {
+        var record = entry.record
+        record.generatedTitle = entry.generatedTitle
+        return record
     }
 
     /// Decode the persisted cache, or an empty snapshot when the file is absent

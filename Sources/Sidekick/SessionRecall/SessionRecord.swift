@@ -43,6 +43,22 @@ nonisolated struct SessionRecord: Codable, Sendable, Equatable {
     let resumeCommand: String
     /// Absolute path to the source log file.
     let logPath: String
+    /// Whether this record is the *root* thread of its logical session. True for
+    /// every Claude record (each log is its own session) and for Codex rollouts
+    /// whose `id == session_id` or whose `thread_source == "user"`. False for
+    /// Codex subagent/child rollouts, which share a `sessionID` with their root.
+    /// Used by `SessionQuery.dedupeSessions` to pick the representative row when
+    /// Codex writes 2-3 rollout files for one session.
+    ///
+    /// `var` with a default so old on-disk caches (whose JSON predates this
+    /// field) still decode — see the custom `Codable` conformance below, which
+    /// decodes it as `decodeIfPresent ?? true`.
+    var isRootThread: Bool = true
+    /// A locally-generated one-line title (via `SessionTitler`/Ollama) for Codex
+    /// sessions, which have no `aiTitle` of their own. Preferred over the raw
+    /// first prompt for display, but below Claude's `aiTitle`. Nil until titled;
+    /// persisted in the cache so a session is titled at most once ever.
+    var generatedTitle: String? = nil
 
     /// The bare ARGV that resumes this session, for launching a process
     /// directly (a new tab's `command:`) rather than pasting a shell string.
@@ -57,5 +73,36 @@ nonisolated struct SessionRecord: Codable, Sendable, Equatable {
         case .claude: return ["claude", "--resume", resumeID]
         case .codex: return ["codex", "resume", resumeID]
         }
+    }
+}
+
+// MARK: - Codable (custom decode for backward-compatible new fields)
+
+/// Hand-written `init(from:)` so that cache files written before `isRootThread`
+/// and `generatedTitle` existed still decode: the flag defaults to `true`
+/// (every pre-existing record was effectively a root), and the generated title
+/// to `nil`. Declared in an extension so the synthesized memberwise initializer
+/// (used all over the parser and tests) is preserved, and `encode(to:)` stays
+/// synthesized from the same `CodingKeys`.
+extension SessionRecord {
+    enum CodingKeys: String, CodingKey {
+        case agent, cwd, repo, sessionID, resumeID, timestamp, title, aiTitle
+        case resumeCommand, logPath, isRootThread, generatedTitle
+    }
+
+    nonisolated init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        agent = try container.decode(SessionAgent.self, forKey: .agent)
+        cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+        repo = try container.decodeIfPresent(String.self, forKey: .repo)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        resumeID = try container.decode(String.self, forKey: .resumeID)
+        timestamp = try container.decodeIfPresent(Date.self, forKey: .timestamp)
+        title = try container.decode(String.self, forKey: .title)
+        aiTitle = try container.decodeIfPresent(String.self, forKey: .aiTitle)
+        resumeCommand = try container.decode(String.self, forKey: .resumeCommand)
+        logPath = try container.decode(String.self, forKey: .logPath)
+        isRootThread = try container.decodeIfPresent(Bool.self, forKey: .isRootThread) ?? true
+        generatedTitle = try container.decodeIfPresent(String.self, forKey: .generatedTitle)
     }
 }

@@ -331,6 +331,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         self.paneID = paneID
         self.initialCommand = command?.isEmpty == false ? command : nil
         super.init(nibName: nil, bundle: nil)
+        // Record an authoritative Session Recall ledger entry when Sidekick
+        // launches an agent (claude/codex): we know the cwd + branch first-hand
+        // here, so the session list can later backfill logs that never recorded
+        // a cwd. Fire-and-forget, background, and a no-op for non-agent commands.
+        if let argv = self.initialCommand {
+            let cwd = initialDirectory ?? FileManager.default.homeDirectoryForCurrentUser.path
+            SessionLaunchLedger.record(command: argv, cwd: cwd)
+        }
     }
 
     required init?(coder: NSCoder) {

@@ -90,6 +90,7 @@ nonisolated enum SessionLogScanner {
         var title: String?
         var sessionID: String?
         var rolloutID: String?
+        var threadSource: String?
 
         for record in lines {
             let type = record["type"] as? String
@@ -99,6 +100,7 @@ nonisolated enum SessionLogScanner {
                 if let value = payload["cwd"] as? String { cwd = value }
                 if let value = payload["session_id"] as? String { sessionID = value }
                 if let value = payload["id"] as? String { rolloutID = value }
+                if let value = payload["thread_source"] as? String { threadSource = value }
                 if timestamp == nil {
                     timestamp = parseTimestamp(payload["timestamp"]) ?? parseTimestamp(record["timestamp"])
                 }
@@ -129,6 +131,16 @@ nonisolated enum SessionLogScanner {
             }
         }
 
+        // Root vs subagent: Codex writes one rollout per thread. The root thread
+        // has `thread_source == "user"` (or, equivalently, its rollout `id`
+        // equals the `session_id`); child/subagent threads set `thread_source ==
+        // "subagent"` and a distinct id. Computed from the RAW session_meta
+        // values before the id fallbacks below, so a subagent is never mistaken
+        // for a root. Absent a session_meta the values are nil and this is false;
+        // such orphan rollouts keep a unique sessionID and survive dedupe anyway.
+        let isRootThread = threadSource == "user"
+            || (rolloutID != nil && sessionID != nil && rolloutID == sessionID)
+
         // Resume id: prefer the rollout uuid from session_meta; fall back to
         // the uuid embedded in the filename (rollout-<ts>-<uuid>.jsonl).
         if rolloutID == nil {
@@ -152,7 +164,8 @@ nonisolated enum SessionLogScanner {
             timestamp: timestamp,
             title: title,
             aiTitle: nil,
-            logPath: url.path
+            logPath: url.path,
+            isRootThread: isRootThread
         )
     }
 
@@ -259,7 +272,8 @@ nonisolated enum SessionLogScanner {
         timestamp: Date?,
         title: String?,
         aiTitle: String?,
-        logPath: String
+        logPath: String,
+        isRootThread: Bool = true
     ) -> SessionRecord {
         let verb = agent == .claude ? "claude --resume" : "codex resume"
         let resumeCommand: String
@@ -279,7 +293,8 @@ nonisolated enum SessionLogScanner {
             title: String((title ?? "(no prompt found)").prefix(100)),
             aiTitle: aiTitle,
             resumeCommand: resumeCommand,
-            logPath: logPath
+            logPath: logPath,
+            isRootThread: isRootThread
         )
     }
 

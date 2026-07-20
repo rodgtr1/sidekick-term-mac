@@ -29,6 +29,19 @@ final class SessionsPanel: FilterableListPanel {
     /// first preview.
     private lazy var previewPanel = SessionPreviewPanel()
 
+    // MARK: - Codex titling (background, local Ollama)
+
+    /// Generates one-line titles for Codex sessions (which have no `aiTitle`).
+    private let titler = SessionTitler()
+    /// Serializes title generation to one Ollama call at a time — the model is
+    /// several GB, so overlapping calls would thrash. Low priority: titling is a
+    /// background nicety, never on the critical path.
+    private let titlingQueue = DispatchQueue(label: "com.sidekick.session-recall.titling", qos: .utility)
+    /// Log paths already handed to the titler this app run, whether they
+    /// succeeded or failed. Prevents re-attempting a session that produced no
+    /// usable title (ollama down, garbage output) on every subsequent refresh.
+    private var attemptedTitlePaths: Set<String> = []
+
     // MARK: - Deep search (opt-in, in-memory)
 
     /// When ON, the query matches text INSIDE transcript bodies, not just the
@@ -285,9 +298,16 @@ final class SessionsPanel: FilterableListPanel {
                 codexSessionsRoot: codexRoot,
                 cacheURL: cacheURL
             )
+            // Backfill the cwd of records whose log never recorded one, using the
+            // authoritative launch ledger Sidekick writes at spawn time. Done
+            // off-main (ledger read + pure match) before dedupe/filter see them.
+            let ledger = SessionLaunchLedger.entries()
+            let backfilled = SessionLaunchLedger.backfillCWDs(records, using: ledger)
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.all = records
+                // Collapse Codex's per-subagent rollout files down to one row per
+                // logical session before anything else sees the records.
+                self.all = SessionQuery.dedupeSessions(backfilled)
                 // The body index was keyed to the previous record set; drop it
                 // so deep mode rebuilds against the fresh logs. Bump the
                 // generation so any in-flight build discards itself instead of
@@ -296,8 +316,58 @@ final class SessionsPanel: FilterableListPanel {
                 self.deepGeneration += 1
                 self.applyFilter()
                 self.reloadAndSelectFirst()
+                self.queueTitleGeneration()
             }
         }
+    }
+
+    // MARK: - Codex titling
+
+    /// Queue local title generation for the currently-visible Codex rows that
+    /// still show their raw prompt (no `aiTitle`, no `generatedTitle`) and
+    /// haven't been attempted yet. Scoped to the visible set so we title what the
+    /// user is actually looking at, not the whole history. Each result is
+    /// persisted and folded into the live rows as it lands; a missing/stopped
+    /// Ollama simply produces nothing and the rows stay as they are.
+    private func queueTitleGeneration() {
+        let titler = self.titler
+        let cacheURL = SessionRecallCache.defaultCacheURL()
+        let candidates = filtered.filter { record in
+            record.agent == .codex
+                && record.aiTitle == nil
+                && record.generatedTitle == nil
+                && !attemptedTitlePaths.contains(record.logPath)
+        }
+        guard !candidates.isEmpty else { return }
+
+        for record in candidates {
+            attemptedTitlePaths.insert(record.logPath)
+            let logPath = record.logPath
+            let rawTitle = record.title
+            titlingQueue.async { [weak self] in
+                guard let generated = titler.title(for: rawTitle) else { return }
+                SessionRecallCache.storeGeneratedTitle(generated, forLogPath: logPath, cacheURL: cacheURL)
+                DispatchQueue.main.async {
+                    self?.applyGeneratedTitle(generated, forLogPath: logPath)
+                }
+            }
+        }
+    }
+
+    /// Fold a freshly-generated title into the in-memory record sets and redraw
+    /// just its row if it's visible. Records are matched by `logPath` (captured
+    /// at queue time) so a refresh that reordered the arrays in between can't
+    /// misapply a title.
+    private func applyGeneratedTitle(_ title: String, forLogPath logPath: String) {
+        if let i = all.firstIndex(where: { $0.logPath == logPath }) {
+            all[i].generatedTitle = title
+        }
+        guard let row = filtered.firstIndex(where: { $0.logPath == logPath }) else { return }
+        filtered[row].generatedTitle = title
+        tableView.reloadData(
+            forRowIndexes: IndexSet(integer: row),
+            columnIndexes: IndexSet(integer: 0)
+        )
     }
 }
 
@@ -368,7 +438,7 @@ private final class SessionRowCellView: NSTableCellView {
     func configure(with record: SessionRecord, snippet: String? = nil) {
         let symbol = record.agent == .claude ? "sparkle" : "chevron.left.forwardslash.chevron.right"
         iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: record.agent.rawValue)
-        titleLabel.stringValue = record.aiTitle ?? record.title
+        titleLabel.stringValue = record.aiTitle ?? record.generatedTitle ?? record.title
         if let snippet, !snippet.isEmpty {
             subtitleLabel.stringValue = snippet
         } else {

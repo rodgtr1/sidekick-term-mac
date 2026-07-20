@@ -62,4 +62,34 @@ nonisolated enum SessionQuery {
 
         return results
     }
+
+    /// Collapse the multiple rollout files Codex writes for a single logical
+    /// session down to one representative record.
+    ///
+    /// Codex emits a root thread plus one child rollout per subagent, all
+    /// sharing a `session_id`; left alone, one session shows up 2-3 times in the
+    /// list. Records are grouped by `(agent, sessionID)` and one survivor is kept
+    /// per group: the root thread (`isRootThread`) when present, otherwise the
+    /// newest by timestamp. Claude records each have a unique `sessionID`, so
+    /// they form singleton groups and pass through untouched. First-seen group
+    /// order is preserved; callers re-sort as needed.
+    static func dedupeSessions(_ records: [SessionRecord]) -> [SessionRecord] {
+        var groups: [String: [SessionRecord]] = [:]
+        var order: [String] = []
+        for record in records {
+            let key = "\(record.agent.rawValue)\u{01}\(record.sessionID)"
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(record)
+        }
+
+        return order.compactMap { key -> SessionRecord? in
+            guard let group = groups[key] else { return nil }
+            if group.count == 1 { return group[0] }
+            if let root = group.first(where: { $0.isRootThread }) { return root }
+            // No root among them: newest wins (missing timestamps sink).
+            return group.max { lhs, rhs in
+                (lhs.timestamp ?? .distantPast) < (rhs.timestamp ?? .distantPast)
+            }
+        }
+    }
 }
