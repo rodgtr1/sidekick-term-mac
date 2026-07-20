@@ -50,6 +50,20 @@ One action spins up an isolated
 git worktree, optionally launching an agent straight into it, so parallel
 agents never fight over the same working tree.
 
+**Session Recall**: `⌃⇧S` opens a searchable list of every Claude Code and
+Codex session on the machine, across all repos, newest first: each row shows
+a one-line title (Claude's own AI title, or one generated locally for Codex),
+the repo, and the session's age. Enter resumes the selected session in a new
+tab that is already sitting in the session's original directory, so
+`claude --resume` and `codex resume` just work; `⌘↩` opens a read-only
+transcript preview instead, for when you only need to re-read a conversation
+(and copy from it) without resuming anything. A Deep toggle searches inside
+transcript bodies (prompts, replies, and the commands the agent ran) for the
+"I remember a phrase but not which session" case, entirely in memory. No
+database and nothing leaves the machine: it reads the agents' own session
+logs behind an incremental cache, and Codex titles come from a local Ollama
+model when one is installed.
+
 **Editor**: a built-in editor with tree-sitter syntax highlighting (Swift,
 Go, Rust, Python, TypeScript/JavaScript/JSX/TSX, Markdown), or set
 `file_open_mode = "terminal"` to open files in your own `$EDITOR`/nvim
@@ -168,6 +182,7 @@ via `⌘K` ("Keyboard Shortcuts").
 | `⇧⌘E` / `⇧⌘G` / `⇧⌘F` | Files / Git / Search panel |
 | `⌘P` / `⇧⌘P` | Quick open / command palette |
 | `⇧⌘J` | Jump to the next agent that needs attention |
+| `⌃⇧S` | Session Recall: find, preview, and resume past agent sessions |
 | `⌘B` | Toggle sidebar |
 | `⌘=` / `⌘-` / `⌘0` | Zoom in / out / reset |
 | `⌘,` | Preferences |
