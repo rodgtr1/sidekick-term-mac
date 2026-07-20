@@ -1,7 +1,7 @@
 import Foundation
 
 /// Which agent CLI produced a session log.
-nonisolated enum SessionAgent: String, Sendable {
+nonisolated enum SessionAgent: String, Codable, Sendable {
     case claude
     case codex
 }
@@ -12,7 +12,10 @@ nonisolated enum SessionAgent: String, Sendable {
 /// thread, so it is explicitly `nonisolated`/`Sendable` even though the
 /// `Sidekick` module defaults to `@MainActor` (see `Package.swift`
 /// `.defaultIsolation(MainActor.self)`).
-nonisolated struct SessionRecord: Sendable, Equatable {
+///
+/// `Codable` so `SessionRecallCache` can persist records to (and reload them
+/// from) an on-disk JSON cache without re-parsing every log file.
+nonisolated struct SessionRecord: Codable, Sendable, Equatable {
     /// The agent CLI that wrote the log.
     let agent: SessionAgent
     /// The session's working directory, taken ONLY from an in-record field.

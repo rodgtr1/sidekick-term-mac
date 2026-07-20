@@ -156,6 +156,14 @@ nonisolated enum SessionLogScanner {
         )
     }
 
+    /// One discovered log file paired with the agent that wrote it, so callers
+    /// can decide *whether* to parse it (e.g. the incremental cache compares
+    /// mtimes) before dispatching to the right parser.
+    nonisolated struct DiscoveredLog: Sendable, Equatable {
+        let url: URL
+        let agent: SessionAgent
+    }
+
     /// Scan a Claude projects root and a Codex sessions root into a combined
     /// list of records. Roots are explicit `URL`s so tests can point at a
     /// fixture tree; missing roots contribute nothing.
@@ -164,10 +172,36 @@ nonisolated enum SessionLogScanner {
         codexSessionsRoot: URL,
         fileManager: FileManager = .default
     ) -> [SessionRecord] {
-        var records: [SessionRecord] = []
-        records.append(contentsOf: scanClaudeRoot(claudeProjectsRoot, fileManager: fileManager))
-        records.append(contentsOf: scanCodexRoot(codexSessionsRoot, fileManager: fileManager))
-        return records
+        discoverLogs(
+            claudeProjectsRoot: claudeProjectsRoot,
+            codexSessionsRoot: codexSessionsRoot,
+            fileManager: fileManager
+        ).compactMap { parse($0, fileManager: fileManager) }
+    }
+
+    /// Enumerate every Claude + Codex log file under the two roots without
+    /// parsing them. Split out from `scan` so the cache can stat each file and
+    /// re-parse only the ones whose mtime changed. Order is Claude-then-Codex,
+    /// matching the pre-split `scan`.
+    static func discoverLogs(
+        claudeProjectsRoot: URL,
+        codexSessionsRoot: URL,
+        fileManager: FileManager = .default
+    ) -> [DiscoveredLog] {
+        var logs: [DiscoveredLog] = []
+        logs += discoverClaudeLogs(claudeProjectsRoot, fileManager: fileManager)
+            .map { DiscoveredLog(url: $0, agent: .claude) }
+        logs += discoverCodexLogs(codexSessionsRoot, fileManager: fileManager)
+            .map { DiscoveredLog(url: $0, agent: .codex) }
+        return logs
+    }
+
+    /// Parse a single discovered log with the parser its agent demands.
+    static func parse(_ log: DiscoveredLog, fileManager: FileManager = .default) -> SessionRecord? {
+        switch log.agent {
+        case .claude: return parseClaudeSession(at: log.url, fileManager: fileManager)
+        case .codex: return parseCodexRollout(at: log.url, fileManager: fileManager)
+        }
     }
 
     /// Convenience that scans the real `~/.claude/projects` and
@@ -183,40 +217,36 @@ nonisolated enum SessionLogScanner {
 
     // MARK: - Directory walking
 
-    private static func scanClaudeRoot(_ root: URL, fileManager: FileManager) -> [SessionRecord] {
+    private static func discoverClaudeLogs(_ root: URL, fileManager: FileManager) -> [URL] {
         guard let projectDirs = try? fileManager.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
         ) else { return [] }
 
-        var records: [SessionRecord] = []
+        var urls: [URL] = []
         for project in projectDirs {
             guard (try? project.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
                   let files = try? fileManager.contentsOfDirectory(
                       at: project, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
                   ) else { continue }
             for file in files where file.pathExtension == "jsonl" {
-                if let record = parseClaudeSession(at: file, fileManager: fileManager) {
-                    records.append(record)
-                }
+                urls.append(file)
             }
         }
-        return records
+        return urls
     }
 
-    private static func scanCodexRoot(_ root: URL, fileManager: FileManager) -> [SessionRecord] {
+    private static func discoverCodexLogs(_ root: URL, fileManager: FileManager) -> [URL] {
         guard let enumerator = fileManager.enumerator(
             at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
         ) else { return [] }
 
-        var records: [SessionRecord] = []
+        var urls: [URL] = []
         for case let file as URL in enumerator {
             let name = file.lastPathComponent
             guard name.hasPrefix("rollout-"), name.hasSuffix(".jsonl") else { continue }
-            if let record = parseCodexRollout(at: file, fileManager: fileManager) {
-                records.append(record)
-            }
+            urls.append(file)
         }
-        return records
+        return urls
     }
 
     // MARK: - Record assembly
