@@ -43,4 +43,19 @@ nonisolated struct SessionRecord: Codable, Sendable, Equatable {
     let resumeCommand: String
     /// Absolute path to the source log file.
     let logPath: String
+
+    /// The bare ARGV that resumes this session, for launching a process
+    /// directly (a new tab's `command:`) rather than pasting a shell string.
+    /// Unlike `resumeCommand`, it carries no `cd` prefix — the cwd is supplied
+    /// out of band via the tab's working directory. The verb differs by agent:
+    /// Claude uses `--resume`, Codex uses a `resume` subcommand.
+    ///
+    /// `nonisolated` (inherited from the type) so it is safe to read off the
+    /// main thread; it is the correctness-critical bit and is unit-tested.
+    var resumeArgv: [String] {
+        switch agent {
+        case .claude: return ["claude", "--resume", resumeID]
+        case .codex: return ["codex", "resume", resumeID]
+        }
+    }
 }

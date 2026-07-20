@@ -23,6 +23,7 @@ enum KeyboardCommand: Equatable {
     case pasteIntoTerminal
     case focusAgentAttention
     case toggleArcade
+    case showSessions
 }
 
 extension KeyboardCommand {
@@ -57,6 +58,7 @@ extension KeyboardCommand {
         case .pasteIntoTerminal: return "⌘V"
         case .focusAgentAttention: return "⇧⌘J"
         case .toggleArcade: return "⌃`"
+        case .showSessions: return "⌃⇧S"
         default: return nil
         }
     }
@@ -86,6 +88,12 @@ struct KeyboardCommandRouter {
         // through to the terminal instead of being swallowed.
         if keyCode == 50 && modifiers == .control {
             return .toggleArcade
+        }
+
+        // ⌃⇧S opens Session Recall. Control+Shift is otherwise unused (only
+        // ⌃⇧Tab is bound, and keyCode 48 returned above), so no collision.
+        if keyCode == 1 && modifiers == [.control, .shift] {
+            return .showSessions
         }
 
         if modifiers == [.command, .shift] {

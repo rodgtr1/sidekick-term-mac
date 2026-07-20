@@ -147,6 +147,9 @@ class MainWindowController: NSWindowController {
     private var activeTabIndex: Int { tabController.activeTabIndex }
     private var currentPaneSplitController: PaneSplitController? { tabController.currentSplitController }
     private var quickOpenPanel: QuickOpenPanel?
+    /// Retained so ⌃⇧S reuses one Session Recall panel instead of stacking
+    /// duplicates, mirroring `quickOpenPanel`.
+    private var sessionsPanel: SessionsPanel?
     private var preferencesWindowController: PreferencesWindowController?
     // Set on the main actor; removed in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var keyEventMonitor: Any?
@@ -1145,6 +1148,18 @@ extension MainWindowController: SidebarContainerDelegate {
         quickOpenPanel?.show(relativeTo: window, workingDirectory: currentWorkingDirectory)
     }
 
+    func showSessions() {
+        guard let window = window else { return }
+
+        // Create or reuse the Session Recall panel.
+        if sessionsPanel == nil {
+            sessionsPanel = SessionsPanel()
+            sessionsPanel?.sessionsDelegate = self
+        }
+
+        sessionsPanel?.show(relativeTo: window)
+    }
+
     func showPreferences() {
         // Reuse only a still-open window. The controller snapshots the config it
         // was built with, so once it has closed (or config reloaded from disk),
@@ -1227,6 +1242,17 @@ extension MainWindowController: QuickOpenPanelDelegate {
     func quickOpenPanel(_ panel: QuickOpenPanel, didSelectFile filePath: String) {
         let url = URL(fileURLWithPath: filePath)
         openFileInEditor(url)
+    }
+}
+
+// MARK: - SessionsPanelDelegate
+extension MainWindowController: SessionsPanelDelegate {
+    func sessionsPanel(_ panel: SessionsPanel, didSelect record: SessionRecord) {
+        // Resume in a NEW tab: the cwd goes via workingDirectory (not a `cd`),
+        // and the resume ARGV via command: so the app's existing claude/codex
+        // approval-flag injection applies. A nil cwd falls back to the active
+        // pane's directory.
+        createNewTab(workingDirectory: record.cwd, command: record.resumeArgv)
     }
 }
 

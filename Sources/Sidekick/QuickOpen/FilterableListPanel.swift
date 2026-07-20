@@ -37,6 +37,9 @@ class FilterableListPanel: NSPanel {
     let scrollView = NSScrollView()
     let tableView = NSTableView()
     private var searchFieldDelegate: SearchFieldDelegate?
+    /// Fixed row height, from `Chrome.rowHeight`. Two-line rows (title +
+    /// subtitle) need more than the single-line default.
+    private let rowHeight: CGFloat
 
     /// Per-panel appearance and behavior supplied by the subclass.
     struct Chrome {
@@ -47,9 +50,13 @@ class FilterableListPanel: NSPanel {
         /// Quick Open stays up while other tasks run; the palette dismisses on
         /// deactivation.
         let hidesOnDeactivate: Bool
+        /// Row height. Defaults to 32 (single-line rows); two-line rows should
+        /// pass a taller value.
+        var rowHeight: CGFloat = 32
     }
 
     init(chrome: Chrome) {
+        rowHeight = chrome.rowHeight
         super.init(
             contentRect: NSRect(origin: .zero, size: chrome.size),
             styleMask: [.titled, .resizable],
@@ -217,7 +224,7 @@ extension FilterableListPanel: NSTableViewDelegate {
         return cellView(forRow: row)
     }
 
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { 32 }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rowHeight }
 }
 
 // MARK: - Search Field Delegate

@@ -35,6 +35,7 @@ protocol PaletteCommandHost: AnyObject {
     // Files / misc
     func saveCurrentFile()
     func showQuickOpen()
+    func showSessions()
     func showPreferences()
     func openConfigFile()
 
@@ -97,6 +98,7 @@ final class PaletteCommandRegistry {
             ("Jump to Previous Prompt", "arrow.up.to.line", .jumpToPrompt(previous: true)),
             ("Jump to Next Prompt", "arrow.down.to.line", .jumpToPrompt(previous: false)),
             ("Quick Open File", "doc.text.magnifyingglass", .quickOpen),
+            ("Recall Session", "clock.arrow.circlepath", .showSessions),
             ("Toggle Sidebar", "sidebar.left", .toggleSidebar),
             ("Toggle Hidden Files", "eye.slash", .toggleHiddenFiles),
             ("Zoom In", "plus.magnifyingglass", .zoomIn),
@@ -192,6 +194,8 @@ final class PaletteCommandRegistry {
             host.toggleSidebar()
         case .quickOpen:
             host.showQuickOpen()
+        case .showSessions:
+            host.showSessions()
         case .preferences:
             host.showPreferences()
         case .focusPane(let forward):
