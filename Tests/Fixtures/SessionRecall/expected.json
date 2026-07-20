@@ -1,0 +1,111 @@
+{
+  "_comment": [
+    "Golden contract for the Session Recall parser (Phase 1, Swift).",
+    "These are the CORRECT expected parse results for the fixtures under home/ -",
+    "NOT a snapshot of the Python prototype, which has two known bugs captured in",
+    "prototype_deltas below. A conforming parser MUST reproduce the `records` here.",
+    "Fields asserted per record: agent, cwd (unless cwd_recovery=ambiguous),",
+    "repo, session_id, resume_id, timestamp (ISO8601 UTC), title, ai_title.",
+    "resume_cmd is derived: `cd <cwd> && claude --resume <resume_id>` or",
+    "`cd <cwd> && codex resume <resume_id>`."
+  ],
+  "records": [
+    {
+      "fixture": "claude/aaaaaaa1 (normal, string content, has aiTitle)",
+      "agent": "claude",
+      "cwd": "/Users/alice/Repos/acme-web",
+      "repo": "acme-web",
+      "session_id": "aaaaaaa1-0000-4000-8000-000000000001",
+      "resume_id": "aaaaaaa1-0000-4000-8000-000000000001",
+      "timestamp": "2026-07-18T10:00:00Z",
+      "title": "Add pagination to the products API endpoint",
+      "ai_title": "Add pagination to products API",
+      "cwd_recovery": "in-record"
+    },
+    {
+      "fixture": "claude/aaaaaaa2 (wrapper first user, list content, no aiTitle)",
+      "agent": "claude",
+      "cwd": "/Users/alice/Repos/acme-web",
+      "repo": "acme-web",
+      "session_id": "aaaaaaa2-0000-4000-8000-000000000002",
+      "resume_id": "aaaaaaa2-0000-4000-8000-000000000002",
+      "timestamp": "2026-07-18T11:00:00Z",
+      "title": "Refactor the auth middleware to use async/await",
+      "ai_title": null,
+      "cwd_recovery": "in-record",
+      "note": "First user turn is a slash-command wrapper (<command-name>/init) and MUST be skipped for the title."
+    },
+    {
+      "fixture": "claude/aaaaaaa3 (malformed line + no in-record cwd)",
+      "agent": "claude",
+      "cwd": null,
+      "repo": null,
+      "session_id": "aaaaaaa3-0000-4000-8000-000000000003",
+      "resume_id": "aaaaaaa3-0000-4000-8000-000000000003",
+      "timestamp": "2026-07-18T09:30:00Z",
+      "title": "Fix the flaky login test",
+      "ai_title": null,
+      "cwd_recovery": "ambiguous",
+      "note": "The malformed 2nd line MUST be skipped without crashing. No in-record cwd exists; the encoded dir name '-Users-alice-Repos-acme-web' is LOSSY (a literal '-' in a path segment is indistinguishable from an encoded '/'), so cwd is NOT reliably recoverable and MUST NOT be asserted. A correct parser prefers in-record cwd and marks this best-effort/unknown. This is the case that justifies the Phase 2 launch-time ledger."
+    },
+    {
+      "fixture": "codex/d1 (normal, prompt via event_msg/user_message)",
+      "agent": "codex",
+      "cwd": "/Users/alice/Repos/acme-api",
+      "repo": "acme-api",
+      "session_id": "019f8000-0000-7000-8000-0000000000aa",
+      "resume_id": "019f8000-0000-7000-8000-0000000000d1",
+      "timestamp": "2026-07-18T10:00:00Z",
+      "title": "Write integration tests for the billing webhook",
+      "ai_title": null,
+      "cwd_recovery": "in-record",
+      "note": "Prompt arrives via event_msg/user_message (plain `message` string), NOT response_item/message. A correct parser MUST read both channels. The developer-role permissions block MUST be skipped."
+    },
+    {
+      "fixture": "codex/e2 (wrapper first user via response_item, real prompt after)",
+      "agent": "codex",
+      "cwd": "/Users/alice/Repos/acme-api",
+      "repo": "acme-api",
+      "session_id": "019f8000-0000-7000-8000-0000000000bb",
+      "resume_id": "019f8000-0000-7000-8000-0000000000e2",
+      "timestamp": "2026-07-18T11:00:00Z",
+      "title": "Investigate the memory leak in the worker pool",
+      "ai_title": null,
+      "cwd_recovery": "in-record",
+      "note": "First user turn is the injected 'The following is the Codex agent history...' wrapper and MUST be skipped for the title."
+    },
+    {
+      "fixture": "codex/f3 (no usable human prompt)",
+      "agent": "codex",
+      "cwd": "/Users/alice/Repos/acme-api",
+      "repo": "acme-api",
+      "session_id": "019f8000-0000-7000-8000-0000000000cc",
+      "resume_id": "019f8000-0000-7000-8000-0000000000f3",
+      "timestamp": "2026-07-18T12:00:00Z",
+      "title": "(no prompt found)",
+      "ai_title": null,
+      "cwd_recovery": "in-record",
+      "note": "Only wrapper/system/task events exist. Session MUST still be listed with title fallback. Timestamp is recoverable from the filename even if payloads lacked one."
+    }
+  ],
+  "prototype_deltas": [
+    {
+      "id": "codex-user_message-ignored",
+      "severity": "real bug",
+      "fixture": "codex/d1",
+      "prototype_output": "(no prompt found)",
+      "expected": "Write integration tests for the billing webhook",
+      "cause": "The Python spike only reads response_item/message user turns; it never inspects event_msg/user_message. Real Codex logs use both channels, so the spike under-titles real sessions.",
+      "phase1_requirement": "Swift parser reads BOTH event_msg/user_message and response_item/message."
+    },
+    {
+      "id": "claude-cwd-decode-lossy",
+      "severity": "real bug",
+      "fixture": "claude/aaaaaaa3",
+      "prototype_output": "cwd=/Users/alice/Repos/acme/web, repo=web",
+      "expected": "cwd unknown/best-effort (ambiguous); repo not reliably recoverable",
+      "cause": "The spike decodes the encoded dir by replacing every '-' with '/', which mangles path segments containing a literal hyphen (acme-web -> acme/web). The encoding is lossy and cannot be inverted.",
+      "phase1_requirement": "Swift parser ALWAYS prefers in-record cwd (and, in-app, the Phase 2 launch ledger). Encoded-dir decode is a last-ditch, explicitly-lossy fallback, never authoritative."
+    }
+  ]
+}

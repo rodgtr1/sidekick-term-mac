@@ -1,0 +1,3 @@
+{"type":"mode","mode":"default","sessionId":"aaaaaaa3-0000-4000-8000-000000000003"}
+this line is deliberately not valid json {{{ >>> to exercise malformed-line skipping
+{"type":"user","sessionId":"aaaaaaa3-0000-4000-8000-000000000003","timestamp":"2026-07-18T09:30:00.000Z","userType":"external","uuid":"u1","message":{"role":"user","content":"Fix the flaky login test"}}

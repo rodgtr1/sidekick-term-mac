@@ -1,0 +1,4 @@
+{"type":"mode","mode":"default","sessionId":"aaaaaaa1-0000-4000-8000-000000000001"}
+{"type":"user","cwd":"/Users/alice/Repos/acme-web","gitBranch":"main","sessionId":"aaaaaaa1-0000-4000-8000-000000000001","timestamp":"2026-07-18T10:00:00.000Z","userType":"external","uuid":"u1","message":{"role":"user","content":"Add pagination to the products API endpoint"}}
+{"type":"assistant","cwd":"/Users/alice/Repos/acme-web","sessionId":"aaaaaaa1-0000-4000-8000-000000000001","timestamp":"2026-07-18T10:00:05.000Z","uuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"Sure, I'll add cursor-based pagination."}]}}
+{"type":"ai-title","aiTitle":"Add pagination to products API","sessionId":"aaaaaaa1-0000-4000-8000-000000000001"}
