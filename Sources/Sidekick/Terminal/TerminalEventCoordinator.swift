@@ -37,7 +37,7 @@ final class TerminalEventCoordinator {
         panes.append(WeakPane(controller: controller))
         if monitor == nil {
             monitor = NSEvent.addLocalMonitorForEvents(
-                matching: [.scrollWheel, .leftMouseUp, .leftMouseDragged]
+                matching: [.scrollWheel, .leftMouseDown, .leftMouseUp, .leftMouseDragged]
             ) { [weak self] event in
                 self?.dispatch(event) ?? event
             }
@@ -66,6 +66,11 @@ final class TerminalEventCoordinator {
 
     private func dispatch(_ event: NSEvent) -> NSEvent? {
         switch event.type {
+        case .leftMouseDown:
+            // Never consumed — the pane it lands on only notes whether the
+            // press starts a ⌘+click, whose mouse reports Sidekick keeps to
+            // itself. Every registered pane is offered it; each self-filters.
+            return deliver(event) { $0.handleTerminalMouseDown(event) }
         case .leftMouseDragged:
             // A drag is a selection gesture; note it and let SwiftTerm finish it.
             sawLeftMouseDrag = true

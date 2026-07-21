@@ -99,6 +99,63 @@ enum MouseReportClassifier {
     }
 }
 
+/// Turns the string SwiftTerm reports under a clicked cell into a URL worth
+/// handing to the browser.
+///
+/// SwiftTerm's implicit matcher is a path matcher as much as a URL one, so it
+/// happily returns `developers.cloudflare.com/docs-for-agents/` — a real link
+/// with no scheme. `NSWorkspace` can't open that (it fails with -50, "The
+/// application can't be opened"), so a link whose first segment reads as a
+/// hostname is promoted to https here. Everything else that isn't http(s) is
+/// refused: file paths get their turn earlier, in the ⌘+click file handler.
+enum TerminalLinkNormalizer {
+    nonisolated static func openableURL(from raw: String) -> URL? {
+        var candidate = raw
+        // Trim punctuation that commonly trails URLs in prose.
+        while let last = candidate.last, ".,;:!?".contains(last) {
+            candidate.removeLast()
+        }
+        guard !candidate.isEmpty else { return nil }
+
+        let lowered = candidate.lowercased()
+        if lowered.hasPrefix("http://") || lowered.hasPrefix("https://") {
+            return URL(string: candidate)
+        }
+        // Scheme-ish text that isn't http(s) — mailto:, file:, a Windows path —
+        // is none of our business. Checked before the hostname test because a
+        // dotted authority with a port (`host.com:8080/x`) parses as a URL whose
+        // "scheme" is the host: dots are legal scheme characters.
+        guard !lowered.contains("://"),
+              looksLikeHostname(candidate.prefix { $0 != "/" }) else { return nil }
+        return URL(string: "https://" + candidate)
+    }
+
+    /// A dotted authority (`docs.example.com`, `example.co.uk:8080`) as opposed
+    /// to a relative file path. Requires two or more labels and an alphabetic
+    /// last one, so `src/main.rs` and `build/out.tar.gz` stay paths.
+    nonisolated private static func looksLikeHostname(_ authority: Substring) -> Bool {
+        var host = authority
+        // Strip a trailing :port, but only if it really is digits.
+        if let colon = host.lastIndex(of: ":") {
+            let port = host[host.index(after: colon)...]
+            guard !port.isEmpty, port.allSatisfy(\.isNumber) else { return false }
+            host = host[..<colon]
+        }
+
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2 else { return false }
+        for label in labels {
+            guard !label.isEmpty,
+                  label.first != "-", label.last != "-",
+                  label.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") })
+            else { return false }
+        }
+        guard let tld = labels.last, tld.count >= 2, tld.count <= 24,
+              tld.allSatisfy({ $0.isASCII && $0.isLetter }) else { return false }
+        return true
+    }
+}
+
 private final class AgentAwareTerminalView: LocalProcessTerminalView {
     var onOutput: ((String) -> Void)?
     /// Carries the keystroke's bytes so the agent-state detector can tell a
@@ -110,15 +167,16 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
     /// drag (motion with a button held) — the two are byte-identical otherwise.
     private var mouseButtonDown = false
 
-    /// Set while the click that switched pane focus is in flight. That click
-    /// belongs to Sidekick — its job was picking a pane, so its mouse reports
-    /// must not ALSO reach the app inside and pick whatever option sat under
-    /// the pointer. Armed by the pane-activation monitor (which runs before
-    /// the view sees the mouse-down), disarmed by the gesture's release.
+    /// Set while a click that belongs to Sidekick rather than to the app inside
+    /// is in flight — the click that switched pane focus (its job was picking a
+    /// pane, not picking whatever option sat under the pointer) and any
+    /// ⌘+click (its job is opening a link or file). Their mouse reports must
+    /// not reach the app. Armed from the click monitors, which run before the
+    /// view sees the mouse-down, and disarmed by the gesture's release.
     private var suppressFocusClickReports = false
 
-    /// Arms the focus-click gate for the in-flight click gesture.
-    func suppressReportsForFocusClick() {
+    /// Arms the gate for the in-flight click gesture.
+    func suppressReportsForClickGesture() {
         suppressFocusClickReports = true
     }
 
@@ -391,6 +449,32 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    /// A ⌘+click is Sidekick's gesture — it opens a link in the browser or a
+    /// file in the editor — so none of its mouse reports may reach the app in
+    /// this terminal. `handleTerminalMouseUp` already swallows the release, but
+    /// the press ran ahead of it and was forwarded: on the alternate screen
+    /// (where Claude Code sits with mouse reporting on) the agent saw a plain
+    /// click on the same link and opened it itself, so one ⌘+click landed two
+    /// browser tabs. The xterm protocol has no bit for Command, so the app
+    /// could not tell that click apart from an ordinary one.
+    ///
+    /// Always returns the event: SwiftTerm still needs the mouse-down for
+    /// selection, and the pane-activation monitor still needs to see it. Only
+    /// the reports going upstream to the child process are gated.
+    func handleTerminalMouseDown(_ event: NSEvent) -> NSEvent? {
+        guard event.modifierFlags.contains(.command),
+              let window = view.window,
+              event.window === window,
+              let terminalView = terminalView,
+              !terminalView.isHiddenOrHasHiddenAncestor else { return event }
+
+        let pointInView = terminalView.convert(event.locationInWindow, from: nil)
+        guard terminalView.bounds.contains(pointInView) else { return event }
+
+        (terminalView as? AgentAwareTerminalView)?.suppressReportsForClickGesture()
+        return event
+    }
+
     /// Owns link/file activation over the terminal. ⌘+click opens file paths
     /// in the built-in editor and URLs in the external browser. When the release
     /// lands on a link/file the event is swallowed so SwiftTerm's own handler
@@ -450,19 +534,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // Ask SwiftTerm for the link at this cell: it spans wrapped rows (so a
         // URL broken across lines is returned whole, not just the clicked
         // fragment) and understands OSC 8 hyperlinks.
-        guard var candidate = terminalView.getTerminal().link(
+        guard let candidate = terminalView.getTerminal().link(
             at: .screen(Position(col: col, row: row)),
             mode: .explicitAndImplicit
         ), !candidate.isEmpty else { return nil }
 
-        // Trim punctuation that commonly trails URLs in prose.
-        while let last = candidate.last, ".,;:!?".contains(last) {
-            candidate.removeLast()
-        }
-        guard let url = URL(string: candidate),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else { return nil }
-        return url
+        return TerminalLinkNormalizer.openableURL(from: candidate)
     }
 
     /// SwiftTerm's scrollWheel only ever scrolls the scrollback buffer, which
@@ -1509,7 +1586,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// reports must not reach the app in this terminal. Called by the
     /// pane-activation monitor before the view processes the mouse-down.
     func suppressMouseReportsForFocusClick() {
-        (terminalView as? AgentAwareTerminalView)?.suppressReportsForFocusClick()
+        (terminalView as? AgentAwareTerminalView)?.suppressReportsForClickGesture()
     }
 
     /// True when keyboard input is actually going to this terminal (not an
