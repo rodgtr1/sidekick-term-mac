@@ -63,7 +63,16 @@ chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
 # across rebuilds. Without this the app is ad-hoc signed and its cdhash
 # changes every build, so macOS re-prompts for every permission.
 # Run ./scripts/create-signing-cert.sh once to create the identity.
-SIGN_IDENTITY="${SIGN_IDENTITY:-Sidekick Dev}"
+#
+# RELEASE=1 switches to the Developer ID identity with secure timestamps,
+# which notarization requires (see scripts/notarize.sh for the next step).
+if [ "${RELEASE:-0}" = "1" ]; then
+    SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: TRAVIS KEITH RODGERS (2UWZ923R8C)}"
+    TIMESTAMP_FLAG="--timestamp"
+else
+    SIGN_IDENTITY="${SIGN_IDENTITY:-Sidekick Dev}"
+    TIMESTAMP_FLAG=""
+fi
 
 # Create sidekick-ctl CLI tool in bundle
 echo "📋 Adding sidekick-ctl CLI..."
@@ -101,17 +110,20 @@ cp "${SKILL_SOURCE}/agents/openai.yaml" "${SKILL_DEST}/agents/openai.yaml"
 if security find-identity -p codesigning -v 2>/dev/null | grep -q "${SIGN_IDENTITY}"; then
     echo "🔏 Signing with '${SIGN_IDENTITY}'..."
     for HELPER in sidekick-ctl sidekick-agent-status sidekick-mcp sidekick-telemetry; do
-        codesign --force --options runtime \
+        codesign --force --options runtime ${TIMESTAMP_FLAG} \
             --entitlements Sidekick.entitlements \
             --sign "${SIGN_IDENTITY}" \
             "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/${HELPER}"
     done
-    codesign --force --options runtime \
+    codesign --force --options runtime ${TIMESTAMP_FLAG} \
         --entitlements Sidekick.entitlements \
         --sign "${SIGN_IDENTITY}" \
         "${BUILD_DIR}/${BUNDLE_NAME}"
     codesign --verify --deep --strict --verbose=2 "${BUILD_DIR}/${BUNDLE_NAME}"
     echo "✅ Signed. TCC grants will persist across rebuilds."
+elif [ "${RELEASE:-0}" = "1" ]; then
+    echo "❌ RELEASE=1 but signing identity '${SIGN_IDENTITY}' is not in the keychain."
+    exit 1
 else
     echo "⚠️  No '${SIGN_IDENTITY}' identity found — app is ad-hoc signed and macOS"
     echo "    will re-prompt for folder/app access on every rebuild."
@@ -136,6 +148,13 @@ ln -s /Applications "${DMG_STAGING}/Applications"
 rm -f "${BUILD_DIR}/Sidekick.dmg"
 hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_STAGING}" -ov -format UDZO "${BUILD_DIR}/Sidekick.dmg"
 rm -rf "${DMG_STAGING}"
+
+# Release DMGs get their own Developer ID signature so Gatekeeper can vouch
+# for the container, not just the app inside it.
+if [ "${RELEASE:-0}" = "1" ]; then
+    echo "🔏 Signing DMG..."
+    codesign --sign "${SIGN_IDENTITY}" --timestamp "${BUILD_DIR}/Sidekick.dmg"
+fi
 
 echo "✅ App bundle created at: ${BUILD_DIR}/${BUNDLE_NAME}"
 echo "✅ Distribution DMG at:   ${BUILD_DIR}/Sidekick.dmg"
