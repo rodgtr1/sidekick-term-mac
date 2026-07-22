@@ -9,7 +9,7 @@ final class DepthLadderView: NSView, ArcadeGame {
     static let howToPlay = """
     Solve each picture-logic grid by filling the cells described by the row and column clues. Each clue is the length of one consecutive run of filled cells; separate runs have at least one empty cell between them.
 
-    A wrong fill counts as a mistake and is crossed automatically. Three mistakes fail the floor and burn one lantern. Your three lanterns refill at midnight.
+    A wrong fill counts as a mistake and is crossed automatically. Three mistakes fail the floor and burn one lantern. Your three lanterns refill at midnight. Filling a crossed cell clears the cross first; fill again to commit.
 
     Arrow keys  Move
     Space or Return  Fill a cell
@@ -161,7 +161,7 @@ final class DepthLadderView: NSView, ArcadeGame {
             cursor = (0, 0)
         case .mistake:
             flashMistake(at: index)
-        case .filled, .ignored:
+        case .filled, .uncrossed, .ignored:
             break
         }
     }

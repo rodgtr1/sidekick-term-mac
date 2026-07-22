@@ -113,7 +113,25 @@ final class DepthLadderGameTests: XCTestCase {
         XCTAssertEqual(game.fill(at: wrongIndex), .mistake)
         XCTAssertEqual(game.marks[wrongIndex], 0, "wrong fill auto-crosses")
         XCTAssertEqual(game.mistakes, 1)
-        XCTAssertEqual(game.fill(at: wrongIndex), .ignored, "marked cells can't be re-filled")
+        XCTAssertEqual(game.fill(at: wrongIndex), .uncrossed, "filling a crossed cell clears the cross")
+        XCTAssertEqual(game.marks[wrongIndex], -1)
+        XCTAssertEqual(game.mistakes, 1, "clearing a cross is free")
+    }
+
+    func testFillOnCrossedCellUncrossesThenFills() {
+        let game = startedGame()
+        guard let puzzle = game.puzzle,
+              let filledIndex = puzzle.solution.firstIndex(of: true) else {
+            return XCTFail("expected a filled cell")
+        }
+        // A stray cross on a cell the solution fills must not dead-end the
+        // floor: the first fill lifts the cross, the second lands.
+        game.toggleCross(at: filledIndex)
+        XCTAssertEqual(game.fill(at: filledIndex), .uncrossed)
+        XCTAssertEqual(game.marks[filledIndex], -1)
+        XCTAssertEqual(game.fill(at: filledIndex), .filled)
+        XCTAssertEqual(game.marks[filledIndex], 1)
+        XCTAssertEqual(game.mistakes, 0)
     }
 
     func testThreeMistakesFailTheFloorAndBurnALantern() {

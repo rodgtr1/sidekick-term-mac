@@ -24,6 +24,7 @@ final class DepthLadderGame {
 
     enum FillResult {
         case filled
+        case uncrossed
         case mistake
         case floorCleared
         case floorFailed
@@ -111,9 +112,16 @@ final class DepthLadderGame {
 
     /// Attempts to fill a cell. Fills are validated against the solution
     /// immediately: a wrong fill auto-crosses the cell and counts a mistake,
-    /// and the third mistake fails the floor (burning a lantern).
+    /// and the third mistake fails the floor (burning a lantern). Filling a
+    /// crossed cell clears the cross instead — never a silent no-op — so the
+    /// next fill lands for real.
     func fill(at index: Int) -> FillResult {
-        guard let puzzle, marks.indices.contains(index), marks[index] == -1 else { return .ignored }
+        guard let puzzle, marks.indices.contains(index), marks[index] != 1 else { return .ignored }
+
+        if marks[index] == 0 {
+            marks[index] = -1
+            return .uncrossed
+        }
 
         guard puzzle.solution[index] else {
             marks[index] = 0
