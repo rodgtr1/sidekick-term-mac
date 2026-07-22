@@ -26,7 +26,7 @@ if [ ! -d "${APP}" ]; then
     echo "❌ ${APP} not found — run RELEASE=1 ./build-app.sh first."
     exit 1
 fi
-if ! codesign -dv "${APP}" 2>&1 | grep -q "Authority=Developer ID"; then
+if ! codesign -dvv "${APP}" 2>&1 | grep -q "Authority=Developer ID"; then
     echo "❌ ${APP} is not signed with a Developer ID identity."
     echo "   Rebuild with: RELEASE=1 ./build-app.sh"
     exit 1
