@@ -994,6 +994,20 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // The window title stays as "Sidekick"
     }
 
+    /// SwiftTerm's own link activation. On the normal screen its `mouseDown`
+    /// runs a selection tracking loop that pulls the release straight out of the
+    /// event queue, so that release never reaches our shared mouse-up monitor —
+    /// SwiftTerm handles the link click itself and calls this. Left to the
+    /// library default it would `NSWorkspace.open` the raw string, which double-
+    /// opens alongside the monitor when both do see the release, and fails with
+    /// -50 on the schemeless links the implicit matcher returns. Routing it
+    /// through the same normalizer and open path gives link opening one owner;
+    /// the dedupe downstream absorbs the case where both paths fire.
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        guard let url = TerminalLinkNormalizer.openableURL(from: link) else { return }
+        delegate?.terminalRequestsOpenURL(self, url: url)
+    }
+
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         // OSC 7 command received - update current directory
         // The directory comes as a file:// URL, convert to path

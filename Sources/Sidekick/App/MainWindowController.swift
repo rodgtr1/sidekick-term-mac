@@ -154,6 +154,11 @@ class MainWindowController: NSWindowController {
     // Set on the main actor; removed in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var keyEventMonitor: Any?
     nonisolated(unsafe) private var clickEventMonitor: Any?
+    /// The last URL handed to the browser and when, so a single ⌘+click that
+    /// two code paths both react to (SwiftTerm's own link handler and the shared
+    /// mouse-up monitor) opens one tab, not two. Same URL inside the window is
+    /// treated as the echo and dropped.
+    private var lastOpenedURL: (url: URL, at: Date)?
     private let keyboardCommandRouter = KeyboardCommandRouter()
     /// Owns the ⇧⌘P palette and the keyboard-command dispatch table; drives the
     /// behaviors back through the `PaletteCommandHost` conformance below.
@@ -772,6 +777,10 @@ class MainWindowController: NSWindowController {
 
     @objc private func paneOpenURLRequested(_ notification: Notification) {
         guard let url = notification.userInfo?["url"] as? URL else { return }
+        if let last = lastOpenedURL, last.url == url, Date().timeIntervalSince(last.at) < 0.7 {
+            return
+        }
+        lastOpenedURL = (url, Date())
         NSWorkspace.shared.open(url)
     }
 
