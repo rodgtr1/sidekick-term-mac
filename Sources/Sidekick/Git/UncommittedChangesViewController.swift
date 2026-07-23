@@ -209,10 +209,31 @@ final class UncommittedChangesViewController: NSViewController {
         container.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
 
         let header = makeHeaderView(section)
+        container.addSubview(header)
+
+        // An image can't be shown as a text diff — git reports it as binary and
+        // the section body would just read "(binary)". When the working-tree
+        // file decodes as an image, show the picture itself instead.
+        if let preview = makeImagePreview(for: section) {
+            container.addSubview(preview.view)
+            NSLayoutConstraint.activate([
+                header.topAnchor.constraint(equalTo: container.topAnchor),
+                header.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                header.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                header.heightAnchor.constraint(equalToConstant: Metrics.headerHeight),
+
+                preview.view.topAnchor.constraint(equalTo: header.bottomAnchor),
+                preview.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                preview.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                preview.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                preview.view.heightAnchor.constraint(equalToConstant: preview.height)
+            ])
+            return container
+        }
+
         let renderedDiff = InlineDiffRenderer.render(section.diff, fileExtension: (section.relativePath as NSString).pathExtension.lowercased())
         let diffView = makeDiffColumn(text: renderedDiff)
 
-        container.addSubview(header)
         container.addSubview(diffView)
 
         // Size the diff to its full content height and let the outer scroll
@@ -283,6 +304,85 @@ final class UncommittedChangesViewController: NSViewController {
         ])
 
         return header
+    }
+
+    /// Extensions AppKit's image loaders (ImageIO) decode from disk. SVG is
+    /// included, but NSImage rasterizes it inconsistently, so the decode guard
+    /// below falls back to the readable XML text diff whenever the draw fails.
+    private static let previewableImageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "heic", "heif", "webp",
+        "tiff", "tif", "bmp", "ico", "icns", "svg"
+    ]
+
+    /// Renders the working-tree image for `section` when the file is one AppKit
+    /// can decode, capped to a sensible height. Returns nil for non-images or a
+    /// file that won't load, so the caller falls back to the text diff. The
+    /// working copy is shown (the new or modified bytes), which is the version
+    /// worth eyeballing before a commit.
+    private func makeImagePreview(for section: ChangeSection) -> (view: NSView, height: CGFloat)? {
+        let ext = (section.relativePath as NSString).pathExtension.lowercased()
+        guard Self.previewableImageExtensions.contains(ext) else { return nil }
+
+        let path = section.absolutePath(repositoryPath: repositoryPath)
+        guard FileManager.default.fileExists(atPath: path),
+              let image = NSImage(contentsOfFile: path),
+              image.size.width > 0, image.size.height > 0 else { return nil }
+
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let imageView = NSImageView()
+        imageView.image = image
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.imageAlignment = .alignCenter
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+
+        let caption = NSTextField(labelWithString: imageCaption(path: path, image: image, ext: ext))
+        caption.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        caption.textColor = DiffViewController.DiffColors.context
+        caption.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(imageView)
+        container.addSubview(caption)
+
+        // Cap the picture's height; a tall image scales down proportionally
+        // rather than stretching the section past the panel.
+        let maxImageHeight: CGFloat = 360
+        let imageHeight = min(image.size.height, maxImageHeight)
+
+        NSLayoutConstraint.activate([
+            imageView.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+            imageView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            imageView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            imageView.heightAnchor.constraint(equalToConstant: imageHeight),
+
+            caption.topAnchor.constraint(equalTo: imageView.bottomAnchor, constant: 8),
+            caption.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            caption.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -12)
+        ])
+
+        // header content inset (10 top) + image + caption gap/line + bottom pad.
+        let totalHeight = 10 + imageHeight + 8 + 16 + 10
+        return (container, totalHeight)
+    }
+
+    /// A one-line summary under the picture: type, pixel size, on-disk bytes.
+    private func imageCaption(path: String, image: NSImage, ext: String) -> String {
+        var parts = [ext.uppercased()]
+
+        let pixels = image.representations
+            .map { (width: $0.pixelsWide, height: $0.pixelsHigh) }
+            .first { $0.width > 0 && $0.height > 0 }
+        if let pixels {
+            parts.append("\(pixels.width)×\(pixels.height)")
+        } else {
+            parts.append("\(Int(image.size.width))×\(Int(image.size.height))")
+        }
+
+        if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int {
+            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func makeDiffColumn(text: NSAttributedString) -> NSTextView {
